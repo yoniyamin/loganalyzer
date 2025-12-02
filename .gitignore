@@ -1,0 +1,4 @@
+*.log
+reptask_DB2_TO_DB2 (2).log
+backend/api/__pycache__/*
+*.pyc

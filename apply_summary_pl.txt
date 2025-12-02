@@ -1,0 +1,481 @@
+
+my $DATA = q(\Program Files\Attunity\Replicate\data);  # hack!
+my $LINES = 5*10**6;
+my $usage = qq(Usage:\n\tperl $0 reptask_xxx.log  [ > redirected_output_file ]\n\t-h for help\n);
+my $help = << "EOF";
+
+  apply_summary.pl    Hein van den Heuvel, Attunity, 13-Jul-2015
+ 
+$usage
+
+    This script can be used to summarize the Target Apply activity for an
+	Attunity Replicate CDC task log.
+	
+    The Attunity Replicate task log must be provided as the input file
+	and the LOGGING LEVEL for TARGET_APPLY must have been set to DEBUG
+
+	These are the main lines the script looks for:
+	
+[TARGET_APPLY    ]D:  Going to run insert statement, from seq 1 to seq 1
+# INSERT  INTO [dbo].[authservice] ([createid],[updateid]...
+
+	Target applies are done in Batches, which are pre-loaded into a helper
+	table on the table with a name like attrep_changes92857F920498243B.
+	
+	Each row in that table has a SEQ number and we apply in ranges for that SEQ number.
+	Seeing 'from seq 1' implies we finished one batch, and we report on that, 
+	and we start a next batch.
+	
+	Detailed output when 'verbose' is requested colums are constructed as:
+	
+	logtime_hhmmss, gap, verb, from, to, count, table
+	
+	Note: That gap is the time in seconds between the current line and when the prior
+	line started and thus refers to the prior command, not the current.	
+  
+    Arguments:
+			Input file specification. Mandatory      
+    Options:
+		-d	Data directory ( used to access dynamic_metadata to look up table number )
+				Defaults to $DATA
+		-b	Report summary detail for each batch
+		-c	CSV output for individual 
+		-o	Report details for One-By-One data
+		-v	Verbose Output with each individual apply (includes -b and -o)
+		-t	Per Table totals, including table for one-by-one apply statistics if those occured.
+		-x  X eXtra high volume greater or equal than X - start and stop reporting.
+		-A  After  [[[yyyy-]mm-]ddT]hh[:mm[:ss]]  Defaults to First Date in log hh:00:00
+		-B  Before [[[yyyy-]mm-]ddT]hh[:mm[:ss]]  Defaults to First Date in log, or After-day, hh:00:00 
+		-h	Display this Help text
+		-a	Display creation of attrep_changes table
+EOF
+
+use DBI;
+use strict;
+use warnings;
+use Time::Local;
+
+# Program argument and help and usage handling.
+#
+use Getopt::Std;
+my %opt;
+if (!getopts ('abmc:dhHvotA:B:x:',\%opt)) { print STDERR $usage; exit; };
+if ($opt{h} || $opt{H}) { print STDERR $help; exit; };
+my $show_attrep_changes = $opt{a};
+my $verbose           = $opt{v};
+my $log   = shift or die "Must have a REPTASK LOG file, with DEBUG level APPLY_TARGET, to work one";
+my $batch_report      = $opt{b};
+my $csv               = $opt{c};
+my $one_by_one        = $opt{o};
+my $data              = $opt{d};
+my $metadata          = $opt{m};
+my $report_per_table  = $opt{t};
+my $after_time        = $opt{A};
+my $before_time       = $opt{B};
+my $x                 = $opt{x}; # extra_high_volume
+
+$DATA = $data if $data;
+
+my ($i, $from, $to, $to_last, $to_max, $verb, $verbs, $verbs_in_batch, $table, @data, %per_table, %one_table, %per_tableX, $rows);
+my ($one_by_one_time_max, $one_by_one_switches, $one_by_one_events, $one_by_one_time_total, $one_by_one_active, $one_by_one_size);
+my ($failed_to_execute, $failed_to_execute_total, $affected,$csv_header, $batch_finish, $sequential);
+my ($gap, $gap_batch_max, $gap_batch_max_text, $gap_max, $gap_max_text, $batches, $max_batch, $one_by_one_max_text);
+my ($logtime, $logtime_last, $logtime_batch, $logtime_first, $batch_time, $batch_time_max, $logtime_hhmmss, $logtime_first_hhmmss);
+my ($changes, $changes_batch, $changes_max, $changes_total, $apply, $singles,$closing_log);
+my ($no_bulk, $no_bulk_total, %no_bulk, $no_pk, $no_pk_total, %no_pk,$table_name,%table_names);
+my ($apply_start, $apply_end, $apply_start_hhmmss, $bulk_finished_line);
+
+$to = $to_last = $to_max = $changes_max = $changes_total = $gap_max = $batch_time_max = $gap_batch_max = $closing_log = 0;
+$i = $singles = $no_bulk = $no_bulk_total =  $no_pk = $no_pk_total = $affected = $csv_header = $sequential = $bulk_finished_line = 0;
+$one_by_one_time_max = $one_by_one_switches = $one_by_one_events = $one_by_one_time_total = $failed_to_execute = $failed_to_execute_total = 0;
+$table = '?';
+$batch_finish = $gap_batch_max_text = "   ";
+
+open (LOG, "<$log") or die "Failed to open file: $log\n$!";
+
+	#00109048: 2015-02-11T22:28:19 [SERVER          ]I:  Task Server Log - TSK_ATT06_NZP_PLANDATA_FL_PRD (V4.0.0.138 DC01ATTEDWPV06.molina.mhc #Microsoft Windows 64-bit, PID: 141436) started at Wed Feb 11 22:28:19 2015  (logger.c:448)
+$_ = <LOG>;
+my $task_name = (/Task Server Log -\s+(\S+)/)? $1 : 'N.A.';
+my ($year,$mon,$day);
+if (/ (\d+)-(\d\d)-(\d\d)T/) {
+	($year,$mon,$day) = ($1,$2,$3);
+	} else {
+	die "Bad Hair Day : $_";
+	}
+
+if ($after_time) {
+	$after_time = $day  . q(T) . $after_time unless $after_time =~               /\d\dT/;
+	$after_time = $mon  . q(-) . $after_time unless $after_time =~          /\d\d-\d\dT/;
+	$after_time = $year . q(-) . $after_time unless $after_time =~ /\d\d\d\d-\d\d-\d\dT/;
+	$after_time =~ m/(\d+)-(\d\d)-(\d\d)/;
+	($year,$mon,$day) = ($1,$2,$3);
+	}
+	
+if ($before_time) {
+	$before_time = $day  . q(T) . $before_time unless $before_time =~               /\d\dT/;
+	$before_time = $mon  . q(-) . $before_time unless $before_time =~          /\d\d-\d\dT/;
+	$before_time = $year . q(-) . $before_time unless $before_time =~ /\d\d\d\d-\d\d-\d\dT/;
+	}
+
+#print "$year/$mon/$day - $after_time - $before_time\n"; exit 0;	
+
+open (CSV, ">$csv") or die "Failed to create CSV file: $csv\n$!" if $csv;
+
+while ($log) {		
+	while (<LOG>) {
+		print STDERR sprintf(qq(%02d:%02d:%02d), (localtime)[2,1,0]) . " $. lines...\n" unless $. % $LINES;
+		if (/(\d+)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)\s/) {
+			$logtime_hhmmss = "$2/$3 $4:$5:$6";
+			$logtime =  timelocal($6,$5,$4,$3,$2-1,$1);
+			my $t = "$1-$2-$3T$4:$5:$6";
+			next if $after_time  and ($t lt $after_time);
+			last if $before_time and ($t ge $before_time);
+		}
+
+		# 00225784: 2015-01-22T15:17:54 [TARGET_APPLY    ]D:  Create table statement: CREATE TABLE "EDW"."attrep_changes92857F920498243B" (  "seq" INTEGER NOT NULL, "col1" VARCHAR(20000), "col2" VARCHAR(20000), "col3" VARCHAR(8192), "col4" VARCHAR(128), "col5" VARCHAR(120), "col6" VARCHAR(120), "col7" VARCHAR(60), "col8" VARCHAR(60), "col9" VARCHAR(60), "col10" VARCHAR(60), "col11" VARCHAR(37), "col12" VARCHAR(37), "col13" VARCHAR(37), "col14" VARCHAR(37), "col15" VARCHAR(37), "col16" VARCHAR(37), "col17" VARCHAR(37), "col18" VARCHAR(37), "col19" VARCHAR(37), "col20" VARCHAR(37), "col21" VARCHAR(37), "col22" VARCHAR(37), "col23" VARCHAR(37), "col24" VARCHAR(37), "col25" VARCHAR(37), "col26" VARCHAR(37), "col27" VARCHAR(37), "col28" VARCHAR(37), "col29" VARCHAR(37), "col30" VARCHAR(37), "col31" VARCHAR(37), "col32" VARCHAR(37), "col33" VARCHAR(37), "col34" VARCHAR(37), "col35" VARCHAR(30), "col36" VARCHAR(30), "col37" VARCHAR(30), "col38" VARCHAR(30), "col39" VARCHAR(30), "col40" VARCHAR(25), "col41" VARCHAR(21), "col42	
+
+		if (/^\S+\s+(\S+).*Create table.*?attrep_changes.*(col\d+)/) {
+			print "$1 create table attrep_changes - $2\n" if $show_attrep_changes;
+			next;
+			}
+	# Apply no Bulk Event - 'UPDATE (3)' for table 714  (bulk_apply.c:1747)
+		if (/Apply no Bulk.*table\s+(\d+)/) {
+			$no_bulk++;
+			$no_bulk_total++;
+			$no_bulk{$1}++;
+			next;
+			}
+			
+		if (/no PK for table (\d+)/) {
+			$no_pk++;
+			$no_pk_total++;
+			$no_pk{$1}++;
+			next;
+			}
+			
+		$closing_log = 1 if /Closing log/;
+		
+	# [METADATA_MANAGER]W:  Target table 'EDW.CAPMESSAGEQUEUE' does not have a primary key or a unique index. 
+		if (/Target table\s+(\S+)/) {
+			$table_name = $1;
+			next;
+			}
+
+# 00012980: 2015-08-20T18:22:53 [TARGET_APPLY    ]D:  Execute: 'select id from sysobjects o where  schema_name(o.uid) = N'dbo' and o.name= N'benegroup' and o.type=N'U''  (ar_odbc_stmt.c:2069)
+if ($metadata && /Execute.*sysobjects.*name= N.(\w+)/) {
+	print ("$logtime_hhmmss - get metadata for : $1\n");
+}
+		
+	# Move Inserts with no PK for table 742 to events with no PK list.  
+		if (/for table\s+(\d+)/ && $table_name) {
+			$table_names{$1} = $table_name;
+			$table_name = '';
+			next;
+			}
+
+	#
+	# Statements beyong this point expect logtime and logtime_hhmmss.
+	#		
+	next unless /TARGET_APPLY/;
+			
+		#
+		# Did we catch an apply on the last go around?
+		#
+		if ($apply_start) {
+			my $duration = $logtime - $apply_start;
+			$per_table{"$table DURATION"} += $duration;
+			$per_table{"$table TOTAL"} += $rows;
+			$per_table{"$table $verb"} += $rows;
+			$gap = ($apply_start and $apply_end)? $apply_start - $apply_end : 0;
+			if ($x && $rows >= $x) {
+				$per_tableX{"$table X_start"} = $logtime_hhmmss unless $per_tableX{"$table X_start"};
+				$per_tableX{"$table X_end"} = $logtime_hhmmss;
+				}
+			if ($csv) {
+				print CSV "LogStartTime,Duration,Gap,Verb,From,To,Rows,Table\n" unless $csv_header++;
+				print CSV qq($apply_start_hhmmss,$duration,$gap,$verb,$from,$to,$rows,$table\n);
+			} else {
+				printf("%s%5d %5d %s  %5d %5d %3d %s\n", $apply_start_hhmmss, $duration, $gap, $verb, $from, $to, $rows, $table) if $verbose
+			}
+			$apply_end = $logtime;
+			undef $apply_start;
+		}
+		
+
+		$failed_to_execute=0 if /Applying \S+ one-by-one/;
+		$failed_to_execute++ if /Failed to execute statement/;
+		
+		$affected = $1 if /rows affected (\d+)/;
+		
+	# 00130208: 2015-02-16T16:31:05 [TARGET_APPLY    ]I:  Applying UPDATES one-by-one for table 'dbo'.'authservice' 
+	# 00130208: 2015-02-16T16:31:19 [TARGET_APPLY    ]I:  Switch back to bulk apply mode  (bulk_apply.c:3907)	
+
+
+	#0130760: 2015-02-17T15:06:44 [TARGET_APPLY    ]I:  Applying UPDATES one-by-one for table 'dbo'.'claim' (160)  (bulk_apply.c:3846)
+		if (/(Applying\s+\S+\s+one-by-one for table\s+)(\S+)/i) {
+			$one_by_one_size = (defined($to) && defined($from)) ? $to - $from + 1 : undef ;
+			$one_by_one_active = sprintf ("%s for %s events", $1.$2, defined($one_by_one_size )? $one_by_one_size  : '?');
+			$table = $2;
+			$one_table{"$table TOTAL"} += $one_by_one_size;
+			$logtime_last = $logtime unless $logtime_last;
+			$logtime_first = $logtime unless $logtime_first;
+			$logtime_first_hhmmss = $logtime_hhmmss unless $logtime_first_hhmmss;
+			next;
+			}
+		
+		if (/back to bulk/) {
+			if ($logtime_last) {
+				my $one_by_one_time = $logtime - $logtime_last;
+				$logtime_last = $logtime;
+				if ($one_by_one_time > $one_by_one_time_max) {
+					$one_by_one_time_max = $one_by_one_time;
+					$one_by_one_max_text = " table $table @ $logtime_hhmmss";
+					}
+				$one_by_one_time_total += $one_by_one_time;
+				$failed_to_execute_total += $failed_to_execute;
+				$one_table{"$table DURATION"} += $one_by_one_time;
+				$one_table{"$table FAIL"} += $failed_to_execute;
+
+				$one_by_one_switches++;
+				$one_by_one_events += $one_by_one_size  if defined($one_by_one_size );
+				$one_by_one_active = '';
+				$affected = 0;
+				
+				printf( qq(%s%5d one-by-one mode - %3d Failed to execute out of %3s for %s\n), 
+					$logtime_hhmmss, $one_by_one_time, $failed_to_execute, defined($one_by_one_size)? $one_by_one_size  : '?', $table) if $verbose or $one_by_one;
+				$failed_to_execute = 0;
+				$table = '?';
+				} else {
+					print qq($logtime_hhmmss    Back to bulk, but start not seen.\n);
+				}
+			next;
+			}
+		
+	# Early versions of this script triggered the end of one batch when the beginning 
+	# of the next batch was seen as "from seq 1 ". Look for "Bulk finished" instead.
+	#1-First
+	#INSERT (1) on table 311 has the same PK as a PK that was previously updated in the same bulk
+	#Update on table 311 changes PK to a PK that was previously updated in the same bulk
+	#Update on table 311 changes PK to a previously deleted one in the same bulk 
+	#Finished applying bulk changes for tables with PK 
+	#00004476: 2015-07-22T14:58:30 [TARGET_APPLY    ]D:  Bulk finished because memory usage has exceeded the limit  (bulk_apply.c:1710)
+	#00004476: 2015-07-22T14:55:50 [TARGET_APPLY    ]D:  Finish bulk because stream timeout  (bulk_apply.c:660)
+	#00014656: 2015-08-25T00:32:36 [TARGET_APPLY    ]D:  Finish Bulk because Bulk timeout  (bulk_apply.c:615)
+	#00004476: 2015-07-23T15:52:11 [TARGET_APPLY    ]D:  Finish Bulk after resume at the same point as the last not confirmed
+	#2-Followed by
+	#00004476: 2015-07-22T14:55:50 [TARGET_APPLY    ]D:  Bulk finished. Total sequencial events #0  (bulk_apply.c:1715)
+
+		if (/table (\d+) .*same bulk/) {
+			$no_bulk = $1; # Overload for reporting!! Sorry.
+			$batch_finish = q(PKi) if /INSERT/;
+			$batch_finish = q(PKu) if /Update.*updated/;
+			$batch_finish = q(PKd) if /deleted/;
+			}
+		if (/inish/) {  # FINISHED?
+			$batch_finish = q(MEM) if /because memory/;
+			$batch_finish = q(TIM) if /stream timeout/;
+			$batch_finish = q(TMO) if /Bulk timeout/;
+			$batch_finish = q(RES) if /resume at the same/;
+			$batch_finish = q(SNG) if /tables with PK/; #SiNGle
+			$sequential   = $1     if /sequencial events #(\d+)/;
+
+			if (/Bulk finished\./ && $. > $bulk_finished_line) {   #  (/Finished applying bulk changes/) {
+				$bulk_finished_line = $. + 1; # Catch adjacent finished messages.
+				$batches++;
+				if ($logtime_batch) {
+					$batch_time = $logtime - $logtime_batch;
+					$batch_time_max = $batch_time if $batch_time > $batch_time_max;
+					printf("%s $batch_finish Batch %2d. %4d seconds, %5d Changes, %2d applies. seq=$sequential nobulk=$no_bulk nopk=$no_pk $gap_batch_max_text\n",
+						$logtime_hhmmss, $batches, $batch_time, $to, $verbs_in_batch,   ) if $verbose or $batch_report;
+					}
+				$logtime_batch = $logtime;
+				$gap_batch_max = $to = $to_last = $verbs_in_batch = $no_bulk = $no_pk = 0;
+				$batch_finish = q(!!!)
+			}
+		}
+		
+		next unless /from seq (\d+) to seq (\d+)/;
+
+		#print "== $_" unless $i++ > 10;
+		$apply_start = $logtime;
+		$apply_start_hhmmss = $logtime_hhmmss;
+		$to_last = $to;
+		$from = $1;
+		$to = $2;
+		$rows = $to - $from + 1;
+		$to_max = $to if $to > $to_max;
+		$changes = $to - $from + 1;
+		$changes_total += $changes;
+		$changes_batch += $changes;
+		$changes_max = $changes if $changes > $changes_max;
+		$singles++ if $from == $to;
+		$verbs++;
+		$verbs_in_batch++;
+		
+		if (/CREATE TABLE.*?attrep_changes.*(col\d+)/) {
+			print STDERR "$logtime_hhmmss create table attrep_changes - $1\n";
+			}
+		# Netezza: 0108664: 2015-01-27T00:43:03 [TARGET_APPLY    ]D:  Going to run delete statement, from seq 1 to seq 250
+	#DELETE  FROM "EDW"."CLAIM" WHERE ( "CLAIMID" ) IN ( SELECT   CAST( "EDW"."attrep_changes92857F920498243B"."seg1" as  VARCHAR(15))  FROM  #"EDW"."attrep_changes92857F920498243B" WHERE "EDW"."attrep_changes92857F920498243B"."seq" >= ? and 
+
+		$_ = <LOG>; # read the actual statement.
+		if (/(\w+).*?\[(\w+)\]\s/){  # sql
+			$verb = $1;
+			$table = $2;
+			}
+		if (/(\w+).*?"\."(\w+)"[\s|\)]/){  # Netezza
+	#	print "-- $1 $2 -- $_";
+			$verb = $1;
+			$table = $2;
+			}
+			
+	# Applying UPDATES one-by-one for table 'dbo'.'claimdetail' 
+	# <not yet implemented>		
+			
+		if ($from ==1 ) {
+			next unless $to_last;
+			next if $batch_finish eq q(!!!);
+			$gap_batch_max = 0;
+			$batches++;
+			if ($logtime_batch) {
+				$batch_time = $logtime - $logtime_batch;
+				$batch_time_max = $batch_time if $batch_time > $batch_time_max;
+				printf("%s Batch %2d. %4d seconds, %5d Changes, %2d applies. $no_bulk no bulk, $no_pk no pk $gap_batch_max_text\n", 
+				  $logtime_hhmmss, $batches, $batch_time, $to_last, $verbs_in_batch  ) if $verbose or $batch_report;
+				}
+			$logtime_batch = $logtime;
+			$verbs_in_batch = 0;
+			$no_bulk = 0;
+			$no_pk = 0;
+		}
+		
+		# print "$logtime_hhmmss $from $to $verb $table\n" ;   #if $i++ < 10; # Debug
+		if ($logtime_last) { # First time is special
+			$gap = $logtime - $logtime_last;
+			$logtime_last = $logtime;
+			if ($gap > $gap_max) {
+				$gap_max = $gap;
+				$gap_max_text = "gap $gap @ $logtime_hhmmss";
+				}
+			if ($gap > $gap_batch_max) {
+				$gap_batch_max = $gap;
+				$gap_batch_max_text = "gap $gap @ $logtime_hhmmss";
+				}	
+		} else {
+				$logtime_batch = $logtime;
+				$logtime_last  = $logtime;
+				$logtime_first = $logtime;
+				$logtime_first_hhmmss = $logtime_hhmmss;
+		}
+	}
+	$log = shift;
+	if ($log) {
+		print STDERR "Next log: $log\n";
+		close LOG;
+		open (LOG, "<$log") or die "Failed to open file: $log\n$!";
+			
+		#00109048: 2015-02-11T22:28:19 [SERVER          ]I:  Task Server Log - TSK_ATT06_NZP_PLANDATA_FL_PRD (V4.0.0.138 DC01ATTEDWPV06.molina.mhc #Microsoft Windows 64-bit, PID: 141436) started at Wed Feb 11 22:28:19 2015  (logger.c:448)
+		$_ = <LOG>;
+		my $new_task_name = (/Task Server Log -\s+(\S+)/)? $1 : 'N.A.';
+		print STDERR "Old task name = $task_name, New task name = $new_task_name\n" unless $task_name eq $new_task_name;
+	}
+}
+$batches++;
+$_ = ($one_by_one_size && $affected && ($affected < $one_by_one_size)) ? $one_by_one_size - $affected : '?';
+print "-- $one_by_one_active $failed_to_execute Failed so far. $_ expected.\n" if $one_by_one_active;
+if ($logtime_batch) {
+	$batch_time = $logtime_last - $logtime_batch; # can't take the last record time.
+	my $changes_per_second = sprintf ( "%.1f", $changes_total/($logtime - $logtime_first));
+	print "Last batch # $batches. $batch_time seconds, $to Changes. ", ($closing_log) ? 'Log Closed' : 'Could still be active',  "($.)\n\n";
+	print "$task_name from $logtime_first_hhmmss thru $logtime_hhmmss.\n";
+	print "Total $batches Batches in log, largest $to_max, longest duration $batch_time_max\n";
+	print "$changes_per_second changes/second overall. $changes_total total, Longest $gap_max_text\n";
+	print "no_bulk:$no_bulk_total, no pk:$no_pk_total, $verbs applies, $singles singles, max $changes_max.\n\n";
+	
+	if ($one_by_one_events) {
+		print "$one_by_one_time_total Seconds for $one_by_one_events One-By-One applies recording $failed_to_execute_total errors\n";
+		print "$one_by_one_switches One-By-One switches. Worst case $one_by_one_time_max seconds for$one_by_one_max_text\n";
+		}		
+
+	} else {
+	print STDERR "Not enough, or no, TARGET_APPLY data in log for batch summary. ($. lines read)\n";
+	}
+	
+
+if (($report_per_table) and keys %per_table) {
+	my $format = qq(%-30s %9s %9s %9s %9s %9s %9s%s\n);
+	print "\n";
+	printf $format, qw(Table_Name Total Insert Update Delete TotTime AvgTime), '';
+	printf $format, '-'x30, '-'x9, '-'x9, '-'x9, '-'x9, '-'x9, '-'x9, '';
+	
+	for (sort {$per_table{$b} <=> $per_table{$a}} keys %per_table) {
+		next unless /\sTOTAL/; # only
+		my $table = (split)[0];
+		my $i = $per_table{"$table INSERT"};
+		my $u = $per_table{"$table UPDATE"};
+		my $d = $per_table{"$table DELETE"};
+		my $t = $per_table{"$table TOTAL"};
+		my $s = $per_table{"$table DURATION"};
+		$i = 0 unless $i;
+		$u = 0 unless $u;
+		$d = 0 unless $d;
+		my $xx = '';
+		if ($x && $per_tableX{"$table X_start"} ) { $xx = ' ' . $per_tableX{"$table X_start"} . ' - ' . $per_tableX{"$table X_end"} };		printf $format, $table, $per_table{"$_"}, $i , $u, $d, $s,
+			sprintf (qq(%5.4f),($s and $t) ? ($s / $t) : 0), $xx;
+	}
+}
+	
+if (($report_per_table) and keys %one_table) {
+	my $format = qq(%-30s %9s %10s %9s %9s %9s\n);
+	print "\n";
+	printf $format, qw(Table_Name Changes One-by-One Failed Time AvgTime);
+	printf $format, '-'x30, '-'x9, '-'x10, '-'x9, '-'x9, '-'x9;
+	
+	for (sort {$one_table{$b} <=> $one_table{$a}} keys %one_table) {
+		next unless /\sTOTAL/; # only
+		my $table = (split)[0];
+		my $TABLE = uc($1) if /(\w+). TOTAL/;  #'dbo'.'ClaimDetailPriceCode'
+		my $o = $one_table{"$table TOTAL"};
+		my $t = $per_table{"$TABLE TOTAL"};
+		my $f = $one_table{"$table FAIL"};
+		my $s = $one_table{"$table DURATION"};
+		$s = 0 unless $s;
+		$f = 0 unless $f;
+		$t = 0 unless $t;
+		printf $format, $TABLE, $t, $o, $f, $s,
+			sprintf (qq(%5.4f),($s and $o) ? ($s / $o) : 0);
+	}
+}
+
+
+
+# Connect to SQLite database in TASK directory to map table number to names.
+
+	
+if ($no_bulk_total or $no_pk_total) {
+
+	my $dbh = DBI->connect("dbi:SQLite:${DATA}\\tasks\\${task_name}\\dynamic_metadata.sqlite", "", "",
+                    { RaiseError => 1, AutoCommit => 1 });
+    my $sth = $dbh->prepare('SELECT table_owner_and_name from table_definitions WHERE table_id = ?')
+                or die "Couldn't prepare statement: " . $dbh->errstr;
+   for (keys %no_bulk, keys %no_pk) {
+		if (!$table_names{$_}){
+			$sth->execute($_)             # Execute the query
+				or print STDERR "Couldn't get name for table $_ executing statement: " . $sth->errstr . "\n";
+			$table_names{$_} = $data[0] if (@data = $sth->fetchrow_array());
+			}				
+		}
+			
+	if ($no_bulk_total) {
+		print "\nTable  No Bulk - Table Name\n";
+		for (sort {$no_bulk{$b} <=> $no_bulk{$a}} keys %no_bulk) {
+			printf	"%5d%9d %s\n", $_, $no_bulk{$_}, ($table_names{$_}) ? $table_names{$_} : 'N.A.';
+			}
+		}
+	if ($no_pk_total) {
+		print "\nTable  No PK - Table Name\n";
+		for (sort {$no_pk{$b} <=> $no_pk{$a}} keys %no_pk) {
+			printf	"%5d%9d %s\n", $_, $no_pk{$_}, ($table_names{$_}) ? $table_names{$_} : 'N.A.';
+		}
+	}	
+}
