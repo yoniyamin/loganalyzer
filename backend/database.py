@@ -78,6 +78,128 @@ class LogError(Base):
 
     file = relationship("LogFile", back_populates="errors")
 
+
+class LogBatch(Base):
+    """Track batch events with closure reasons, duration, and size."""
+    __tablename__ = "batches"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    line_number = Column(Integer, index=True)
+    start_timestamp = Column(DateTime, nullable=True, index=True)
+    end_timestamp = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    closure_reason = Column(String, nullable=True)  # PKi, PKu, PKd, MEM, TIM, TMO, SNG, RES, LOAD, Normal
+    changes_count = Column(Integer, default=0)
+    applies_count = Column(Integer, default=0)
+    tables = Column(Text, nullable=True)  # JSON list of tables in this batch
+    
+    file = relationship("LogFile", backref="batches")
+
+
+class LogSorterEvent(Base):
+    """Track sorter events: throughput, memory, transactions."""
+    __tablename__ = "sorter_events"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    line_number = Column(Integer, index=True)
+    timestamp = Column(DateTime, nullable=True, index=True)
+    event_type = Column(String)  # throughput, memory_warning, transaction, reload, disconnect
+    value = Column(Float, nullable=True)  # for numeric values like throughput
+    details = Column(Text, nullable=True)  # JSON for additional context
+    
+    file = relationship("LogFile", backref="sorter_events")
+
+
+class LogFileOperation(Base):
+    """Track file operations (CSV upload, compression) for cloud targets."""
+    __tablename__ = "file_operations"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    line_number = Column(Integer, index=True)
+    timestamp = Column(DateTime, nullable=True, index=True)
+    file_name = Column(String)
+    file_size_bytes = Column(Integer, nullable=True)
+    compress_time_seconds = Column(Float, nullable=True)
+    upload_time_seconds = Column(Float, nullable=True)
+    total_time_seconds = Column(Float, nullable=True)
+    throughput_kbps = Column(Float, nullable=True)
+    tables = Column(Text, nullable=True)  # JSON list of tables in this file
+    
+    file = relationship("LogFile", backref="file_operations")
+
+
+class LogApplyEvent(Base):
+    """Track apply events per table: MERGE vs standard, timing."""
+    __tablename__ = "apply_events"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    line_number = Column(Integer, index=True)
+    timestamp = Column(DateTime, nullable=True, index=True)
+    table_name = Column(String, index=True)
+    apply_method = Column(String)  # MERGE, INSERT, UPDATE, DELETE, ONE_BY_ONE
+    operation_count = Column(Integer, default=0)
+    duration_seconds = Column(Float, nullable=True)
+    batch_id = Column(Integer, nullable=True)  # Link to batch if applicable
+    
+    file = relationship("LogFile", backref="apply_events")
+
+
+class LogTableStats(Base):
+    """Aggregated stats per table for performance analysis."""
+    __tablename__ = "table_stats"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    table_name = Column(String, index=True)
+    total_inserts = Column(Integer, default=0)
+    total_updates = Column(Integer, default=0)
+    total_deletes = Column(Integer, default=0)
+    total_merges = Column(Integer, default=0)
+    total_apply_time_seconds = Column(Float, default=0.0)
+    avg_apply_time_seconds = Column(Float, nullable=True)
+    max_apply_time_seconds = Column(Float, nullable=True)
+    one_by_one_count = Column(Integer, default=0)
+    has_pk = Column(Boolean, nullable=True)  # None=unknown, True/False
+    error_count = Column(Integer, default=0)
+    
+    file = relationship("LogFile", backref="table_stats")
+
+
+class LogTaskConfig(Base):
+    """Store extracted task configuration values."""
+    __tablename__ = "task_config"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"), unique=True)
+    bulk_timeout_ms = Column(Integer, nullable=True)
+    bulk_timeout_min_ms = Column(Integer, nullable=True)
+    bulk_max_file_size_kb = Column(Integer, nullable=True)
+    parallel_apply_threads = Column(Integer, nullable=True)
+    stream_buffer_size = Column(Integer, nullable=True)
+    stream_buffers_number = Column(Integer, nullable=True)
+    stop_on_memory_limit = Column(Boolean, nullable=True)
+    target_type = Column(String, nullable=True)  # Databricks, BigQuery, etc.
+    source_type = Column(String, nullable=True)
+    apply_mode = Column(String, nullable=True)  # bulk, transactional
+    merge_enabled = Column(Boolean, nullable=True)
+    
+    file = relationship("LogFile", backref="task_config")
+
+
+class UserSettings(Base):
+    """Store user settings like color schemes."""
+    __tablename__ = "user_settings"
+    
+    id = Column(Integer, primary_key=True)
+    key = Column(String, unique=True, index=True)  # e.g., 'color_scheme', 'custom_themes'
+    value = Column(Text)  # JSON string
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 

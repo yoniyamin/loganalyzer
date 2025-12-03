@@ -1,0 +1,438 @@
+/* Log Colors - CSS Variables for Log Line Syntax Highlighting */
+/* Default color scheme - Qlik Theme */
+
+:root {
+    /* Log element colors */
+    --log-thread-color: #60a5fa;        /* Blue - Thread ID */
+    --log-timestamp-color: #6b7280;     /* Gray - Timestamp */
+    --log-component-color: #a855f7;     /* Purple - Component name */
+    --log-quoted-color: #fbbf24;        /* Yellow - Quoted strings */
+    --log-source-ref-color: #4b5563;    /* Dark gray - Source file reference */
+    
+    /* Log level colors */
+    --log-level-info-color: #10b981;    /* Green - Info level */
+    --log-level-warning-color: #f59e0b; /* Orange - Warning level */
+    --log-level-error-color: #ef4444;   /* Red - Error level */
+    --log-level-trace-color: #8b5cf6;   /* Purple - Trace level */
+    
+    /* Background colors for log levels */
+    --log-level-warning-bg: rgba(245, 158, 11, 0.1);
+    --log-level-error-bg: rgba(239, 68, 68, 0.15);
+    
+    /* Additional syntax colors */
+    --log-number-color: #f472b6;        /* Pink - Numbers */
+    --log-keyword-color: #22d3ee;       /* Cyan - Keywords */
+    --log-path-color: #a3e635;          /* Lime - File paths */
+}
+
+/* Apply syntax highlighting to log lines */
+.log-scroll-area .log-line .log-thread {
+    color: var(--log-thread-color);
+    font-weight: 500;
+}
+
+.log-scroll-area .log-line .log-timestamp {
+    color: var(--log-timestamp-color);
+}
+
+.log-scroll-area .log-line .log-component {
+    color: var(--log-component-color);
+    font-weight: 600;
+}
+
+.log-scroll-area .log-line .log-quoted {
+    color: var(--log-quoted-color);
+}
+
+.log-scroll-area .log-line .log-source-ref {
+    color: var(--log-source-ref-color);
+    font-style: italic;
+}
+
+/* Log level styling */
+.log-scroll-area .log-line .log-level-i {
+    color: var(--log-level-info-color);
+    font-weight: bold;
+}
+
+.log-scroll-area .log-line .log-level-w {
+    color: var(--log-level-warning-color);
+    font-weight: bold;
+}
+
+.log-scroll-area .log-line .log-level-e {
+    color: var(--log-level-error-color);
+    font-weight: bold;
+}
+
+.log-scroll-area .log-line .log-level-t {
+    color: var(--log-level-trace-color);
+    font-weight: bold;
+}
+
+/* Warning line background */
+.log-scroll-area .log-line.warning-line {
+    background: var(--log-level-warning-bg);
+}
+
+/* Error line background */
+.log-scroll-area .log-line.error-line {
+    background: var(--log-level-error-bg);
+}
+
+/* Additional syntax colors */
+.log-scroll-area .log-line .log-number {
+    color: var(--log-number-color);
+}
+
+.log-scroll-area .log-line .log-keyword {
+    color: var(--log-keyword-color);
+}
+
+.log-scroll-area .log-line .log-path {
+    color: var(--log-path-color);
+}
+
+/* ============================================================
+   COLOR SCHEMA MODAL STYLES
+   ============================================================ */
+
+.color-schema-modal {
+    max-width: 560px;
+    width: 90%;
+}
+
+.color-schema-modal h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.color-schema-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.color-schema-section {
+    background: #111827;
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.color-schema-section h4 {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin: 0 0 10px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.color-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    background: #1f2937;
+    border-radius: 4px;
+}
+
+.color-item:last-child {
+    margin-bottom: 0;
+}
+
+.color-item-label {
+    font-size: 0.8rem;
+    color: #e5e7eb;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.color-item-preview {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #374151;
+}
+
+.color-item input[type="color"] {
+    width: 36px;
+    height: 26px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    background: transparent;
+    padding: 0;
+}
+
+.color-item input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+.color-item input[type="color"]::-webkit-color-swatch {
+    border-radius: 3px;
+    border: 1px solid #374151;
+}
+
+/* Preset themes section */
+.preset-themes-section {
+    margin-bottom: 20px;
+}
+
+.preset-themes-section h4 {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin: 0 0 10px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.preset-themes-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.preset-theme-btn {
+    padding: 6px 12px;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    background: #1f2937;
+    color: #e5e7eb;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.preset-theme-btn:hover {
+    background: #374151;
+    border-color: #4b5563;
+}
+
+.preset-theme-btn.active {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.2);
+}
+
+.preset-theme-btn .theme-colors {
+    display: flex;
+    gap: 2px;
+}
+
+.preset-theme-btn .theme-color-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+/* Save theme input */
+.save-theme-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.save-theme-row input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    background: #111827;
+    color: #e5e7eb;
+    font-size: 0.8rem;
+}
+
+.save-theme-row input:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+.save-theme-btn {
+    padding: 6px 12px;
+    background: #10b981;
+    color: #111827;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.save-theme-btn:hover {
+    background: #22c55e;
+}
+
+/* Preview section */
+.color-preview-section {
+    background: #020617;
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 20px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.75rem;
+    overflow-x: auto;
+}
+
+.color-preview-section .preview-title {
+    font-size: 0.7rem;
+    color: #6b7280;
+    margin-bottom: 8px;
+    font-family: system-ui, sans-serif;
+}
+
+.preview-log-line {
+    white-space: nowrap;
+    line-height: 1.6;
+}
+
+/* Custom themes list */
+.custom-themes-list {
+    margin-top: 12px;
+}
+
+.custom-theme-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: #111827;
+    border-radius: 4px;
+    margin-bottom: 4px;
+}
+
+.custom-theme-item:last-child {
+    margin-bottom: 0;
+}
+
+.custom-theme-name {
+    font-size: 0.8rem;
+    color: #e5e7eb;
+    cursor: pointer;
+}
+
+.custom-theme-name:hover {
+    color: #3b82f6;
+}
+
+/* Custom theme button (inherits from preset-theme-btn) */
+.custom-theme-btn {
+    position: relative;
+}
+
+.custom-theme-btn .theme-name {
+    flex: 1;
+}
+
+.custom-theme-btn .custom-theme-delete {
+    background: transparent;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.85rem;
+    font-weight: bold;
+    margin-left: 6px;
+    line-height: 1;
+}
+
+.custom-theme-btn .custom-theme-delete:hover {
+    background: #ef4444;
+    color: white;
+}
+
+/* Old custom theme styles - kept for backward compatibility */
+.custom-theme-delete {
+    background: transparent;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 3px;
+    font-size: 0.75rem;
+}
+
+.custom-theme-delete:hover {
+    background: #ef4444;
+    color: white;
+}
+
+/* Modal actions */
+.color-schema-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.color-schema-actions-left {
+    display: flex;
+    gap: 8px;
+}
+
+.reset-colors-btn {
+    padding: 8px 16px;
+    background: #374151;
+    color: #9ca3af;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.reset-colors-btn:hover {
+    background: #4b5563;
+    color: #e5e7eb;
+}
+
+/* Color schema button in header */
+.color-schema-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    background: #1f2937;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    color: #9ca3af;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.color-schema-btn:hover {
+    background: #374151;
+    color: #e5e7eb;
+    border-color: #4b5563;
+}
+
+.color-schema-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Log syntax toggle */
+.syntax-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: #9ca3af;
+}
+
+.syntax-toggle input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.syntax-toggle label {
+    cursor: pointer;
+}
+

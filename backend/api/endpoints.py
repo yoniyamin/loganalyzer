@@ -7,7 +7,7 @@ import os
 import uuid
 from datetime import datetime
 
-from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex
+from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, UserSettings
 from backend.core.indexer import process_log_file
 from backend.core.reader import LogReader
 
@@ -1244,6 +1244,9 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
         'task_name': None,
         'version': None,
         'server': None,
+        'host': None,
+        'os_info': None,
+        'pid': None,
         'start_time': None,
         'end_time': None,
         'duration': None,
@@ -1251,6 +1254,7 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
         'start_mode': None,
         'source_endpoint': None,
         'target_endpoint': None,
+        'license_info': None,
         'tables_count': 0,
         'tables': [],
         'log_levels_changed': [],
@@ -1263,7 +1267,8 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
         'cdc_started': False,
         'key_events': [],
         'log_properly_closed': False,  # Indicates if "Closing log file" was found
-        'incomplete_log_warning': None  # Warning message if log appears incomplete
+        'incomplete_log_warning': None,  # Warning message if log appears incomplete
+        'is_rollover': False  # Indicates if log was created from a rollover
     }
     
     first_timestamp = None
@@ -1281,13 +1286,36 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
             except:
                 pass
         
-        # Task Server Log line
+        # Task Server Log line - extract comprehensive task info
         if 'Task Server Log -' in line:
             task_match = re.search(r'Task Server Log - (\S+)\s+\(V([\d.]+)\s+(\S+)', line)
             if task_match:
                 summary['task_name'] = task_match.group(1)
                 summary['version'] = task_match.group(2)
+                summary['host'] = task_match.group(3)
                 summary['server'] = task_match.group(3)
+                
+                # Extract OS info
+                os_match = re.search(r'V[\d.]+\s+\S+\s+(.+?)(?:,\s+Revision:|,\s+PID:)', line)
+                if os_match:
+                    summary['os_info'] = os_match.group(1).strip()
+                
+                # Extract PID
+                pid_match = re.search(r'PID:\s+(\d+)', line)
+                if pid_match:
+                    summary['pid'] = pid_match.group(1)
+        
+        # License information
+        if 'Licensed to' in line and not summary['license_info']:
+            license_match = re.search(r'Licensed to\s+([^,]+),?\s*(.*?)(?:\s*\(|,\s*sources:)', line)
+            if license_match:
+                license_holder = license_match.group(1).strip()
+                license_type = license_match.group(2).strip() if license_match.group(2) else ''
+                summary['license_info'] = f"{license_holder} - {license_type}" if license_type else license_holder
+        
+        # Check for log rollover
+        if '(at_logger.c:1775)' in line and 'rolled over' in line:
+            summary['is_rollover'] = True
         
         # Running mode
         if "Task '" in line and "running" in line:
@@ -1375,3 +1403,403 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
         summary['incomplete_log_warning'] = 'Log file may be incomplete or the process was aborted abnormally. No "Closing log file" message found at the end.'
     
     return summary
+
+
+@router.get("/files/{file_id}/performance-cockpit")
+def get_performance_cockpit(file_id: int, db: Session = Depends(get_db)):
+    """
+    Get comprehensive performance analysis including:
+    - Latency breakdown with bottleneck identification
+    - Spike and plateau detection
+    - Batch behavior analysis
+    - Pain tables ranking
+    - File operations summary
+    - Actionable recommendations
+    """
+    import re
+    import json
+    from datetime import datetime
+    from collections import defaultdict
+    from backend.core.analysis import PerformanceCockpit, LatencyAnalyzer
+    from backend.core.patterns import (
+        classify_batch_closure_reason, extract_table_name, extract_timestamp,
+        BATCH_START_RE, BATCH_END_RE, APPLY_SEQ_RANGE_RE, FINISHED_APPLYING_RE,
+        MERGE_STATEMENT_RE, FILE_UPLOAD_SUCCESS_RE, CSV_FILE_NAME_RE,
+        FILE_COMPRESS_START_RE, BULK_TIMEOUT_RE, BULK_TIMEOUT_MIN_RE,
+        BULK_MAX_FILE_SIZE_RE, PARALLEL_APPLY_RE, SOURCE_ENDPOINT_RE,
+        TARGET_ENDPOINT_RE, NO_PK_RE, START_APPLYING_RE,
+        SORTER_MEMORY_WARNING_RE, TARGET_DISCONNECT_EVENT_RE,
+        SOURCE_RECONNECT_RE, NETWORK_ERROR_RE, RESOURCE_LIMIT_RE
+    )
+    
+    f = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if not os.path.exists(f.file_path):
+        raise HTTPException(status_code=404, detail="File not found at path")
+    
+    try:
+        # Get performance data from database
+        perfs = db.query(LogPerformance).filter(LogPerformance.file_id == file_id).order_by(LogPerformance.timestamp).all()
+        performance_data = [
+            {
+                "timestamp": p.timestamp,
+                "line_number": p.line_number,
+                "source_latency": p.source_latency,
+                "target_latency": p.target_latency,
+                "handling_latency": p.handling_latency
+            }
+            for p in perfs
+        ]
+        
+        # Get errors from database
+        errors = db.query(LogError).filter(LogError.file_id == file_id).all()
+        error_data = [
+            {
+                "line_number": e.line_number,
+                "timestamp": e.timestamp,
+                "component": e.component,
+                "text": e.text
+            }
+            for e in errors
+        ]
+        
+        # Parse log file for additional metrics
+        batches = []
+        table_stats = defaultdict(lambda: {
+            "total_inserts": 0, "total_updates": 0, "total_deletes": 0,
+            "total_merges": 0, "total_apply_time_seconds": 0,
+            "apply_count": 0, "max_apply_time_seconds": 0,
+            "one_by_one_count": 0, "has_pk": None, "error_count": 0
+        })
+        file_operations = []
+        config = {}
+        
+        # Batch tracking state
+        current_batch = None
+        batch_start_time = None
+        batch_changes = 0
+        batch_applies = 0
+        batch_tables = set()
+        batch_closure_reason = None
+        
+        # File operation tracking
+        file_op_tracking = {}
+        current_file_tables = set()
+        
+        # Apply timing tracking
+        apply_start_times = {}  # table -> start_time
+        
+        # Sorter/CDC Pipeline event tracking
+        sorter_events = []
+        source_events = []
+        
+        with open(f.file_path, "r", encoding="utf-8", errors="replace") as file:
+            for line_num, line in enumerate(file):
+                if line_num > 500000:  # Limit for performance
+                    break
+                
+                timestamp = extract_timestamp(line)
+                
+                # === CONFIG EXTRACTION ===
+                if 'Set Bulk Timeout' in line and 'Min' not in line:
+                    match = BULK_TIMEOUT_RE.search(line)
+                    if match:
+                        config['bulk_timeout_ms'] = int(match.group(1))
+                
+                if 'Set Bulk Timeout Min' in line:
+                    match = BULK_TIMEOUT_MIN_RE.search(line)
+                    if match:
+                        config['bulk_timeout_min_ms'] = int(match.group(1))
+                
+                if 'Bulk max file size' in line:
+                    match = BULK_MAX_FILE_SIZE_RE.search(line)
+                    if match:
+                        config['bulk_max_file_size_kb'] = int(match.group(2))
+                
+                if 'Parallel bulk apply' in line:
+                    match = PARALLEL_APPLY_RE.search(line)
+                    if match:
+                        config['parallel_apply_threads'] = int(match.group(1))
+                
+                if 'Source endpoint' in line and 'provider' in line:
+                    match = SOURCE_ENDPOINT_RE.search(line)
+                    if match:
+                        config['source_type'] = match.group(1)
+                
+                if 'Target endpoint' in line and 'provider' in line:
+                    match = TARGET_ENDPOINT_RE.search(line)
+                    if match:
+                        config['target_type'] = match.group(1)
+                
+                # === MERGE MODE DETECTION ===
+                if 'Going to execute MERGE' in line or 'Merge table statement MERGE' in line:
+                    config['merge_enabled'] = True
+                    config['apply_mode'] = 'merge'
+                
+                # === BATCH TRACKING ===
+                if 'TARGET_APPLY' in line:
+                    # Batch start
+                    if BATCH_START_RE.search(line):
+                        batch_start_time = timestamp
+                        batch_changes = 0
+                        batch_applies = 0
+                        batch_tables = set()
+                        batch_closure_reason = None
+                    
+                    # Track closure reasons
+                    if 'Finish Bulk' in line or 'Finish bulk' in line:
+                        batch_closure_reason = classify_batch_closure_reason(line)
+                    
+                    # PK conflict patterns
+                    if 'same bulk' in line and ('same PK' in line or 'changes PK' in line):
+                        batch_closure_reason = classify_batch_closure_reason(line)
+                    
+                    # Apply sequence (count changes)
+                    seq_match = APPLY_SEQ_RANGE_RE.search(line)
+                    if seq_match:
+                        from_seq = int(seq_match.group(2))
+                        to_seq = int(seq_match.group(3))
+                        batch_changes += to_seq - from_seq + 1
+                        batch_applies += 1
+                    
+                    # Start applying for table (track timing)
+                    start_match = START_APPLYING_RE.search(line)
+                    if start_match and timestamp:
+                        table_name = f"{start_match.group(3)}.{start_match.group(4)}"
+                        apply_start_times[table_name] = timestamp
+                        batch_tables.add(table_name)
+                        
+                        op_type = start_match.group(1)
+                        if op_type == 'UNKNOWN':
+                            table_stats[table_name]["total_merges"] += int(start_match.group(2))
+                        elif op_type == 'INSERT':
+                            table_stats[table_name]["total_inserts"] += int(start_match.group(2))
+                        elif op_type == 'UPDATE':
+                            table_stats[table_name]["total_updates"] += int(start_match.group(2))
+                        elif op_type == 'DELETE':
+                            table_stats[table_name]["total_deletes"] += int(start_match.group(2))
+                    
+                    # Finished applying (calculate duration)
+                    finish_match = FINISHED_APPLYING_RE.search(line)
+                    if finish_match and timestamp:
+                        table_name = f"{finish_match.group(3)}.{finish_match.group(4)}"
+                        if table_name in apply_start_times:
+                            duration = (timestamp - apply_start_times[table_name]).total_seconds()
+                            table_stats[table_name]["total_apply_time_seconds"] += duration
+                            table_stats[table_name]["apply_count"] += 1
+                            if duration > table_stats[table_name]["max_apply_time_seconds"]:
+                                table_stats[table_name]["max_apply_time_seconds"] = duration
+                            del apply_start_times[table_name]
+                    
+                    # Batch end
+                    if 'Bulk finished.' in line:
+                        if batch_start_time and timestamp:
+                            duration = (timestamp - batch_start_time).total_seconds()
+                            batches.append({
+                                "line_number": line_num,
+                                "start_timestamp": batch_start_time,
+                                "end_timestamp": timestamp,
+                                "duration_seconds": duration,
+                                "closure_reason": batch_closure_reason or "Normal",
+                                "changes_count": batch_changes,
+                                "applies_count": batch_applies,
+                                "tables": list(batch_tables)
+                            })
+                        batch_start_time = None
+                    
+                    # One-by-one detection
+                    if 'one-by-one' in line.lower() and 'Applying' in line:
+                        table_name = extract_table_name(line)
+                        if table_name:
+                            table_stats[table_name]["one_by_one_count"] += 1
+                    
+                    # No PK detection
+                    if NO_PK_RE.search(line):
+                        table_name = extract_table_name(line)
+                        if table_name:
+                            table_stats[table_name]["has_pk"] = False
+                    
+                    # === FILE OPERATIONS ===
+                    # Compression start
+                    if 'going to compress file' in line.lower():
+                        file_match = CSV_FILE_NAME_RE.search(line)
+                        if file_match and timestamp:
+                            file_name = file_match.group(1)
+                            file_op_tracking[file_name] = {
+                                'compress_start': timestamp,
+                                'tables': list(current_file_tables)
+                            }
+                    
+                    # Upload success
+                    upload_match = FILE_UPLOAD_SUCCESS_RE.search(line)
+                    if upload_match and timestamp:
+                        file_path = upload_match.group(1)
+                        file_size = int(upload_match.group(2))
+                        file_match = CSV_FILE_NAME_RE.search(file_path)
+                        
+                        if file_match:
+                            file_name = file_match.group(1)
+                            if file_name in file_op_tracking:
+                                start = file_op_tracking[file_name]['compress_start']
+                                total_time = (timestamp - start).total_seconds()
+                                throughput = (file_size / 1024) / total_time if total_time > 0 else 0
+                                
+                                file_operations.append({
+                                    "line_number": line_num,
+                                    "timestamp": timestamp,
+                                    "file_name": file_name,
+                                    "file_size_bytes": file_size,
+                                    "total_time_seconds": total_time,
+                                    "throughput_kbps": throughput,
+                                    "tables": file_op_tracking[file_name].get('tables', [])
+                                })
+                                del file_op_tracking[file_name]
+                    
+                    # Track tables for file operations
+                    if 'bulk_map:' in line:
+                        table_name = extract_table_name(line)
+                        if table_name:
+                            current_file_tables.add(table_name)
+                
+                # === SORTER/CDC PIPELINE EVENTS ===
+                if 'SORTER' in line:
+                    # Memory warnings
+                    if SORTER_MEMORY_WARNING_RE.search(line):
+                        sorter_events.append({
+                            'event_type': 'memory_warning',
+                            'line_number': line_num,
+                            'timestamp': timestamp,
+                            'text': line[:200]
+                        })
+                    # Overflow events
+                    if 'overflow' in line.lower() or 'buffer full' in line.lower():
+                        sorter_events.append({
+                            'event_type': 'overflow',
+                            'line_number': line_num,
+                            'timestamp': timestamp,
+                            'text': line[:200]
+                        })
+                
+                # Target disconnection events
+                if TARGET_DISCONNECT_EVENT_RE.search(line):
+                    sorter_events.append({
+                        'event_type': 'target_disconnect',
+                        'line_number': line_num,
+                        'timestamp': timestamp,
+                        'text': line[:200]
+                    })
+                
+                # === SOURCE EVENTS ===
+                if 'SOURCE_CAPTURE' in line or 'SOURCE_UNLOAD' in line:
+                    # Reconnection events
+                    if SOURCE_RECONNECT_RE.search(line):
+                        source_events.append({
+                            'event_type': 'reconnect',
+                            'line_number': line_num,
+                            'timestamp': timestamp,
+                            'text': line[:200]
+                        })
+                    # Network errors
+                    if NETWORK_ERROR_RE.search(line):
+                        source_events.append({
+                            'event_type': 'network_error',
+                            'line_number': line_num,
+                            'timestamp': timestamp,
+                            'text': line[:200]
+                        })
+                    # Resource limits
+                    if RESOURCE_LIMIT_RE.search(line):
+                        source_events.append({
+                            'event_type': 'resource_limit',
+                            'line_number': line_num,
+                            'timestamp': timestamp,
+                            'text': line[:200]
+                        })
+        
+        # Calculate average apply times
+        for table_name, stats in table_stats.items():
+            if stats["apply_count"] > 0:
+                stats["avg_apply_time_seconds"] = stats["total_apply_time_seconds"] / stats["apply_count"]
+        
+        # Convert table_stats to list format
+        table_stats_list = [
+            {"table_name": name, **stats}
+            for name, stats in table_stats.items()
+        ]
+        
+        # Auto-detect merge_enabled based on table stats if not already set
+        if 'merge_enabled' not in config:
+            total_merges = sum(stats.get('total_merges', 0) for stats in table_stats_list)
+            if total_merges > 0:
+                config['merge_enabled'] = True
+                config['apply_mode'] = 'merge'
+        
+        # Generate cockpit summary
+        cockpit = PerformanceCockpit(
+            performance_data=performance_data,
+            batches=batches,
+            table_stats=table_stats_list,
+            file_operations=file_operations,
+            errors=error_data,
+            config=config,
+            sorter_events=sorter_events,
+            source_events=source_events
+        )
+        
+        return cockpit.generate_summary()
+    
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=f"Failed to generate performance cockpit: {str(e)}\n{traceback.format_exc()}")
+
+
+# ============== User Settings Endpoints ==============
+
+class SettingsRequest(BaseModel):
+    key: str
+    value: dict  # JSON object
+
+@router.get("/settings/{key}")
+async def get_setting(key: str, db: Session = Depends(get_db)):
+    """Get a user setting by key."""
+    import json
+    setting = db.query(UserSettings).filter(UserSettings.key == key).first()
+    if not setting:
+        return {"key": key, "value": None}
+    try:
+        return {"key": key, "value": json.loads(setting.value)}
+    except:
+        return {"key": key, "value": setting.value}
+
+@router.post("/settings")
+async def save_setting(request: SettingsRequest, db: Session = Depends(get_db)):
+    """Save a user setting."""
+    import json
+    
+    existing = db.query(UserSettings).filter(UserSettings.key == request.key).first()
+    value_str = json.dumps(request.value)
+    
+    if existing:
+        existing.value = value_str
+        existing.updated_at = datetime.utcnow()
+    else:
+        new_setting = UserSettings(key=request.key, value=value_str)
+        db.add(new_setting)
+    
+    db.commit()
+    return {"status": "ok", "key": request.key}
+
+@router.get("/settings")
+async def get_all_settings(db: Session = Depends(get_db)):
+    """Get all user settings."""
+    import json
+    settings = db.query(UserSettings).all()
+    result = {}
+    for s in settings:
+        try:
+            result[s.key] = json.loads(s.value)
+        except:
+            result[s.key] = s.value
+    return result

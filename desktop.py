@@ -68,7 +68,8 @@ def main():
         width=1200,
         height=800,
         js_api=api,
-        maximized=True
+        maximized=True,
+        text_select=True  # Enable text selection and copying
     )
     api.set_window(window)
     

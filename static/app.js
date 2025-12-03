@@ -306,6 +306,16 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   
+  // Colors button for Analysis Tab
+  const analysisColorsBtn = document.getElementById('analysisColorsBtn');
+  if (analysisColorsBtn) {
+    analysisColorsBtn.addEventListener('click', () => {
+      if (window.LogColors && window.LogColors.openModal) {
+        window.LogColors.openModal();
+      }
+    });
+  }
+  
   // Component/Thread Search
   if (componentThreadSearch) {
     componentThreadSearch.addEventListener('input', () => {
@@ -1260,6 +1270,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (fileOperationsLink) fileOperationsLink.style.display = 'none';
     if (issuesLink) issuesLink.style.display = 'none';
     if (logSummaryLink) logSummaryLink.style.display = 'none';
+    const performanceCockpitLink = document.getElementById('performanceCockpitLink');
+    if (performanceCockpitLink) performanceCockpitLink.style.display = 'none';
+    
+    // Reset performance cockpit data
+    window.performanceCockpitData = null;
     
     // Clear issues view
     const issuesMainView = document.getElementById('issuesMainView');
@@ -1751,12 +1766,27 @@ document.addEventListener("DOMContentLoaded", () => {
       div.dataset.lineNumber = lineNumber;
       div.dataset.originalText = line;
       
-      // Create line number span and text content
+      // Create line number span
       const lineNumSpan = document.createElement("span");
       lineNumSpan.className = "line-number";
       lineNumSpan.textContent = lineNumber;
       div.appendChild(lineNumSpan);
-      div.appendChild(document.createTextNode(line));
+      
+      // Apply syntax highlighting if available
+      if (window.LogColors && window.LogColors.isEnabled()) {
+        const contentSpan = document.createElement("span");
+        contentSpan.innerHTML = window.LogColors.highlightLine(line);
+        div.appendChild(contentSpan);
+      } else {
+        div.appendChild(document.createTextNode(line));
+      }
+      
+      // Add warning/error class for background highlighting
+      if (line.includes(']W:')) {
+        div.classList.add('warning-line');
+      } else if (line.includes(']E:')) {
+        div.classList.add('error-line');
+      }
       
       // Calculate time gap
       const tsMatch = line.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
@@ -1789,6 +1819,63 @@ document.addEventListener("DOMContentLoaded", () => {
     // Apply search highlights if there are any active search matches
     applySearchHighlightsToAllLines();
   }
+  
+  // Function to refresh log display (called when colors change)
+  window.refreshLogDisplay = function() {
+    // Re-render the current log lines with new syntax highlighting (main log view)
+    const logLines = logPreview.querySelectorAll('.log-line');
+    logLines.forEach(div => {
+      const originalText = div.dataset.originalText;
+      if (originalText) {
+        const lineNumSpan = div.querySelector('.line-number');
+        div.innerHTML = '';
+        if (lineNumSpan) {
+          div.appendChild(lineNumSpan);
+        }
+        if (window.LogColors && window.LogColors.isEnabled()) {
+          const contentSpan = document.createElement("span");
+          contentSpan.innerHTML = window.LogColors.highlightLine(originalText);
+          div.appendChild(contentSpan);
+        } else {
+          div.appendChild(document.createTextNode(originalText));
+        }
+      }
+    });
+    
+    // Also refresh the thread activity view (analysis tab)
+    if (threadLogView) {
+      const activityLines = threadLogView.querySelectorAll('.log-line');
+      activityLines.forEach(div => {
+        const originalText = div.dataset.originalText;
+        if (originalText) {
+          div.innerHTML = '';
+          if (window.LogColors && window.LogColors.isEnabled()) {
+            const contentSpan = document.createElement("span");
+            contentSpan.innerHTML = window.LogColors.highlightLine(originalText);
+            div.appendChild(contentSpan);
+          } else {
+            div.textContent = originalText;
+          }
+        }
+      });
+    }
+    
+    // Also refresh the findings view
+    const findingsList = document.getElementById('findingsList');
+    if (findingsList) {
+      const findingLines = findingsList.querySelectorAll('.finding-line');
+      findingLines.forEach(div => {
+        const originalText = div.dataset.originalText;
+        if (originalText) {
+          if (window.LogColors && window.LogColors.isEnabled()) {
+            div.innerHTML = window.LogColors.highlightLine(originalText);
+          } else {
+            div.textContent = originalText;
+          }
+        }
+      });
+    }
+  };
 
   function updateStats(data) {
     let html = `<h3>${data.filename}</h3>`;
@@ -1823,6 +1910,9 @@ document.addEventListener("DOMContentLoaded", () => {
       
       // Fetch and display log summary
       fetchLogSummary();
+      
+      // Fetch Performance Cockpit data to check if there's anything to show
+      fetchPerformanceCockpitCheck();
       
       // Group components by name and show threads
       threadListDiv.innerHTML = "";
@@ -1947,6 +2037,7 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById('fileOperationsMainView').style.display = 'none';
       document.getElementById('issuesMainView').style.display = 'none';
       document.getElementById('logSummaryMainView').style.display = 'none';
+      document.getElementById('performanceCockpitMainView').style.display = 'none';
       
       // Show thread log view
       document.getElementById('threadLogView').style.display = 'block';
@@ -2022,10 +2113,18 @@ document.addEventListener("DOMContentLoaded", () => {
               matches.forEach((m, idx) => {
                   const div = document.createElement("div");
                   div.className = "log-line";
-                  div.textContent = m.text;
                   div.dataset.idx = m.line;
                   div.dataset.originalText = m.text; // Store for searching
                   div.style.cursor = "pointer";
+                  
+                  // Apply syntax highlighting if available
+                  if (window.LogColors && window.LogColors.isEnabled()) {
+                      const contentSpan = document.createElement("span");
+                      contentSpan.innerHTML = window.LogColors.highlightLine(m.text);
+                      div.appendChild(contentSpan);
+                  } else {
+                      div.textContent = m.text;
+                  }
                   
                   // Calculate time gap from previous line
                   if (idx > 0 && linesWithTimestamps[idx].timestamp && linesWithTimestamps[idx-1].timestamp) {
@@ -2152,7 +2251,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     y: sourceLatencies,
                     mode: 'lines+markers',
                     name: 'Source Latency',
-                    line: { color: '#3b82f6' },
+                    line: { color: '#f59e0b' },  // Orange
                     marker: { size: 4 }
                 },
                 {
@@ -2160,7 +2259,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     y: targetLatencies,
                     mode: 'lines+markers',
                     name: 'Target Latency',
-                    line: { color: '#10b981' },
+                    line: { color: '#3b82f6' },  // Blue
                     marker: { size: 4 }
                 },
                 {
@@ -2168,7 +2267,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     y: handlingLatencies,
                     mode: 'lines+markers',
                     name: 'Handling Latency',
-                    line: { color: '#f59e0b' },
+                    line: { color: '#10b981' },  // Green
                     marker: { size: 4 }
                 }
             ];
@@ -2411,7 +2510,19 @@ document.addEventListener("DOMContentLoaded", () => {
           div.className = "finding-item";
           div.style.fontFamily = "monospace";
           div.style.fontSize = "0.75rem";
-          div.textContent = f;
+          
+          // Create a container for the log line content with syntax highlighting
+          const lineContainer = document.createElement("div");
+          lineContainer.className = "finding-line";
+          lineContainer.dataset.originalText = f;
+          
+          // Apply syntax highlighting if available
+          if (window.LogColors && window.LogColors.isEnabled()) {
+              lineContainer.innerHTML = window.LogColors.highlightLine(f);
+          } else {
+              lineContainer.textContent = f;
+          }
+          div.appendChild(lineContainer);
           
           // Add remove button
           const removeBtn = document.createElement("button");
@@ -2483,53 +2594,19 @@ document.addEventListener("DOMContentLoaded", () => {
     
     let html = '';
     
-    // Log Rollover Warning
+    // Log Rollover Warning (compact version)
     if (props.is_rollover) {
       html += `
-        <div class="property-section" style="background: #451a03; border: 1px solid #f59e0b; border-radius: 4px; padding: 8px; margin-bottom: 10px;">
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <span style="font-size: 1.2rem;">🔄</span>
-            <div>
-              <div style="color: #fbbf24; font-weight: bold; font-size: 0.75rem;">Log Rollover</div>
-              <div style="color: #d1d5db; font-size: 0.7rem;">This log was created from a rollover. Run mode information may not be available.</div>
-            </div>
+        <div style="background: #451a03; border: 1px solid #f59e0b; border-radius: 4px; padding: 6px; margin-bottom: 8px;">
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <span style="font-size: 0.9rem;">🔄</span>
+            <span style="color: #fbbf24; font-weight: bold; font-size: 0.7rem;">Log Rollover</span>
           </div>
         </div>
       `;
     }
     
-    // Task Info
-    if (props.task_info) {
-      const info = props.task_info;
-      html += `
-        <div class="property-section">
-          <div class="property-label">Task</div>
-          <div class="property-value">${info.task_name}</div>
-        </div>
-        <div class="property-section">
-          <div class="property-label">Version</div>
-          <div class="property-value">${info.version}</div>
-        </div>
-        <div class="property-section">
-          <div class="property-label">Host</div>
-          <div class="property-value">${info.host}</div>
-        </div>
-        <div class="property-section">
-          <div class="property-label">OS</div>
-          <div class="property-value" style="font-size: 0.7rem;">${info.os_info}</div>
-        </div>
-        <div class="property-section">
-          <div class="property-label">PID</div>
-          <div class="property-value">${info.pid}</div>
-        </div>
-        <div class="property-section">
-          <div class="property-label">Started</div>
-          <div class="property-value" style="font-size: 0.7rem;">${info.start_time}</div>
-        </div>
-      `;
-    }
-    
-    // Run Mode
+    // Run Mode - This is the key operational info for the panel
     if (props.run_mode) {
       const mode = props.run_mode;
       const isFreshStart = mode.start_mode.toLowerCase().includes('fresh');
@@ -2537,7 +2614,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const modeColor = isFreshStart ? '#10b981' : isResume ? '#f59e0b' : '#3b82f6';
       
       html += `
-        <div class="property-section" style="border-top: 1px solid #374151; padding-top: 8px; margin-top: 8px;">
+        <div class="property-section">
           <div class="property-label">Run Mode</div>
           <div class="property-value">${mode.running_mode}</div>
         </div>
@@ -2547,16 +2624,15 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       `;
     } else if (props.is_rollover) {
-      // Show rollover info if no run mode found
       html += `
-        <div class="property-section" style="border-top: 1px solid #374151; padding-top: 8px; margin-top: 8px;">
+        <div class="property-section">
           <div class="property-label">Run Mode</div>
-          <div class="property-value" style="color: #9ca3af; font-style: italic;">Not available (log rollover)</div>
+          <div class="property-value" style="color: #6b7280; font-style: italic; font-size: 0.7rem;">Not available (rollover)</div>
         </div>
       `;
     }
     
-    // Loggers
+    // Active Loggers - Important for troubleshooting
     if (props.loggers && props.loggers.length > 0) {
       html += `
         <div class="property-section" style="border-top: 1px solid #374151; padding-top: 8px; margin-top: 8px;">
@@ -2577,9 +2653,12 @@ document.addEventListener("DOMContentLoaded", () => {
       html += `</div>`;
     }
     
-    if (html === '') {
-      html = '<p class="placeholder-text-small">No task properties found</p>';
-    }
+    // Quick tip
+    html += `
+      <div style="margin-top: 10px; padding: 6px; background: rgba(59, 130, 246, 0.1); border-radius: 4px; font-size: 0.65rem; color: #9ca3af;">
+        💡 <strong>Tip:</strong> Click "Log Summary" in Available Reports for full task details.
+      </div>
+    `;
     
     taskPropertiesContent.innerHTML = html;
   }
@@ -2780,10 +2859,13 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
       
+      // Check if MERGE is being used (important for target like Databricks)
+      const hasMerge = operationCounts.MERGE > 0;
+      
       // Build panel content
       let panelHTML = `
         <div class="table-summary">
-          <div class="table-summary-grid" style="grid-template-columns: repeat(5, 1fr);">
+          <div class="table-summary-grid" style="grid-template-columns: repeat(${hasMerge ? 6 : 5}, 1fr);">
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">INSERT</div>
               <div class="table-summary-stat-value" style="color: #10b981;">${operationCounts.INSERT || 0}</div>
@@ -2796,6 +2878,10 @@ document.addEventListener("DOMContentLoaded", () => {
               <div class="table-summary-stat-label">DELETE</div>
               <div class="table-summary-stat-value" style="color: #ef4444;">${operationCounts.DELETE || 0}</div>
             </div>
+            ${hasMerge ? `<div class="table-summary-stat">
+              <div class="table-summary-stat-label">MERGE</div>
+              <div class="table-summary-stat-value" style="color: #a855f7; font-weight: bold;">${operationCounts.MERGE}</div>
+            </div>` : ''}
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">SINGLE (1:1)</div>
               <div class="table-summary-stat-value" style="color: #fbbf24; font-weight: bold;">${singleRecordCount}</div>
@@ -2910,7 +2996,7 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Helper to set active report link
   function setActiveReportLink(activeId) {
-    const reportLinks = ['logSummaryLink', 'bulkMapLink', 'bulkActivityLink', 'fileOperationsLink', 'issuesLink'];
+    const reportLinks = ['logSummaryLink', 'bulkMapLink', 'bulkActivityLink', 'fileOperationsLink', 'issuesLink', 'performanceCockpitLink'];
     reportLinks.forEach(id => {
       const link = document.getElementById(id);
       if (link) {
@@ -2932,6 +3018,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById('threadActivityControls').style.display = 'none';
     document.getElementById('issuesMainView').style.display = 'none';
     document.getElementById('logSummaryMainView').style.display = 'none';
+    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show bulk map view
     const bulkMapView = document.getElementById('bulkMapMainView');
@@ -3147,223 +3234,91 @@ document.addEventListener("DOMContentLoaded", () => {
     if (bulkActivityInsights.length > 0) {
       bulkActivityInsights.forEach(insight => {
         const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
-        const color = colors[insight.severity] || colors.info;
-        html += `<div style="margin-bottom: 6px; padding: 6px 10px; background: #1f2937; border-left: 3px solid ${color}; border-radius: 3px; font-size: 0.7rem; display: flex; align-items: center; gap: 8px;">
-          <span style="color: ${color}; font-weight: 600; white-space: nowrap;">${insight.title}:</span>
-          <span style="color: #d1d5db; flex: 1;">${insight.message}</span>
-          <span style="color: #10b981; cursor: help;" title="${insight.recommendation}">💡</span>
-        </div>`;
+        const c = colors[insight.severity] || colors.info;
+        html += `<div style="margin-bottom:4px;padding:4px 8px;background:#1f2937;border-left:3px solid ${c};border-radius:2px;font-size:0.65rem;display:flex;align-items:center;gap:6px;"><span style="color:${c};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="color:#d1d5db;flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
       });
     }
     
     // Summary Section
-    html += `
-      <div class="bulk-activity-section">
-        <div style="margin: 0 0 8px 0; font-size: 0.75rem; color: #fbbf24; display: flex; align-items: center; gap: 4px;">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V3zM2 7a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V7zM2 11a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1v-1z"/>
-          </svg>
-          <span>Summary</span>
-        </div>
-        <div class="bulk-stats-grid">
-          <div class="bulk-stat-item">
-            <div class="bulk-stat-label">Total Batches</div>
-            <div class="bulk-stat-value">${summary.total_batches}</div>
-          </div>
-          <div class="bulk-stat-item">
-            <div class="bulk-stat-label">Total Changes</div>
-            <div class="bulk-stat-value">${summary.total_changes.toLocaleString()}</div>
-          </div>
-          <div class="bulk-stat-item">
-            <div class="bulk-stat-label">Total Applies</div>
-            <div class="bulk-stat-value">${summary.total_applies}</div>
-          </div>
-          <div class="bulk-stat-item">
-            <div class="bulk-stat-label">Avg Changes/Batch</div>
-            <div class="bulk-stat-value">${summary.total_batches > 0 ? Math.round(summary.total_changes / summary.total_batches) : 0}</div>
-          </div>
-        </div>
-    `;
+    const avgChg = summary.total_batches > 0 ? Math.round(summary.total_changes / summary.total_batches) : 0;
+    html += `<div class="bulk-activity-section"><div style="margin:0 0 6px 0;font-size:0.7rem;color:#fbbf24;display:flex;align-items:center;gap:4px;"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V3zM2 7a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V7zM2 11a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1v-1z"/></svg><span>Summary</span></div><div class="bulk-stats-grid"><div class="bulk-stat-item"><div class="bulk-stat-label">Total Batches</div><div class="bulk-stat-value">${summary.total_batches}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Total Changes</div><div class="bulk-stat-value">${summary.total_changes.toLocaleString()}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Total Applies</div><div class="bulk-stat-value">${summary.total_applies}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Avg/Batch</div><div class="bulk-stat-value">${avgChg}</div></div></div>`;
+    
+    const warnSvg = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg>';
     
     if (summary.one_by_one_switches > 0) {
-      html += `
-        <div class="bulk-stats-warning">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: #f59e0b;">
-            <path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-          </svg>
-          <span style="color: #f59e0b; font-weight: bold;">One-by-One Mode</span>
-          <span>${summary.one_by_one_switches} switches detected</span>
-        </div>
-      `;
+      html += `<div class="bulk-stats-warning">${warnSvg}<span style="color:#f59e0b;font-weight:bold;">One-by-One</span><span>${summary.one_by_one_switches} switches</span></div>`;
     }
     
     if (summary.no_bulk_total > 0 || summary.no_pk_total > 0) {
-      html += `<div class="bulk-stats-issues">`;
+      html += '<div class="bulk-stats-issues">';
       if (summary.no_bulk_total > 0) {
-        html += `<span style="color: #ef4444; display: flex; align-items: center; gap: 4px;">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-          </svg>
-          ${summary.no_bulk_total} no-bulk events</span>`;
+        html += `<span style="color:#ef4444;display:flex;align-items:center;gap:4px;">${warnSvg}${summary.no_bulk_total} no-bulk</span>`;
       }
       if (summary.no_pk_total > 0) {
-        html += `<span style="color: #ef4444; display: flex; align-items: center; gap: 4px;">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-          </svg>
-          ${summary.no_pk_total} no-PK events</span>`;
+        html += `<span style="color:#ef4444;display:flex;align-items:center;gap:4px;">${warnSvg}${summary.no_pk_total} no-PK</span>`;
       }
-      html += `</div>`;
+      html += '</div>';
     }
     
     // Display bulk finish reasons
     if (analysis.bulk_finish_reasons && Object.keys(analysis.bulk_finish_reasons).length > 0) {
-      html += `
-        <div style="margin-top: 12px; padding: 8px; background: #1f2937; border-radius: 4px;">
-          <div style="font-size: 0.7rem; color: #9ca3af; margin-bottom: 6px;">Bulk Close Reasons:</div>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-      `;
-      
       const reasonLabels = {
-        'MEM': { label: 'Memory limit', color: '#ef4444' },
-        'TIM': { label: 'Stream timeout', color: '#f59e0b' },
-        'TMO': { label: 'Bulk timeout', color: '#f59e0b' },
+        'MEM': { label: 'Mem', color: '#ef4444' },
+        'TIM': { label: 'Stream TMO', color: '#f59e0b' },
+        'TMO': { label: 'Bulk TMO', color: '#f59e0b' },
         'RES': { label: 'Resume', color: '#3b82f6' },
-        'SNG': { label: 'Single table', color: '#10b981' },
-        'PKi': { label: 'PK insert conflict', color: '#8b5cf6' },
-        'PKu': { label: 'PK update conflict', color: '#8b5cf6' },
-        'PKd': { label: 'PK delete conflict', color: '#8b5cf6' },
+        'SNG': { label: 'Single', color: '#10b981' },
+        'PKi': { label: 'PK-ins', color: '#8b5cf6' },
+        'PKu': { label: 'PK-upd', color: '#8b5cf6' },
+        'PKd': { label: 'PK-del', color: '#8b5cf6' },
         'Normal': { label: 'Normal', color: '#10b981' }
       };
-      
+      let reasonsHtml = '<div style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;"><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:4px;">Close Reasons:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
       for (const [reason, count] of Object.entries(analysis.bulk_finish_reasons)) {
         const info = reasonLabels[reason] || { label: reason, color: '#9ca3af' };
-        html += `
-          <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; background: #111827; border-radius: 3px; font-size: 0.65rem;">
-            <span style="color: ${info.color}; font-weight: bold;">${reason}</span>
-            <span style="color: #9ca3af;">${info.label}:</span>
-            <span style="color: #e5e7eb; font-weight: bold;">${count}</span>
-          </span>
-        `;
+        reasonsHtml += `<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;background:#111827;border-radius:2px;font-size:0.6rem;"><span style="color:${info.color};font-weight:bold;">${reason}</span><span style="color:#9ca3af;">${info.label}:</span><span style="color:#e5e7eb;font-weight:bold;">${count}</span></span>`;
       }
-      
-      html += `</div></div>`;
+      reasonsHtml += '</div></div>';
+      html += reasonsHtml;
     }
     
     // Display file operations statistics
     if (summary.file_operations_count && summary.file_operations_count > 0) {
-      const avgCompressTime = summary.file_compress_time_total / summary.file_operations_count;
-      const avgUploadTime = summary.file_upload_time_total / summary.file_operations_count;
-      
-      html += `
-        <div style="margin-top: 12px; padding: 8px; background: #1f2937; border-radius: 4px;">
-          <div style="font-size: 0.7rem; color: #9ca3af; margin-bottom: 6px;">File Operations (${summary.file_operations_count} files):</div>
-          <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-            <span style="font-size: 0.65rem;">
-              <span style="color: #9ca3af;">Avg Compress:</span>
-              <span style="color: #3b82f6; font-weight: bold; margin-left: 4px;">${avgCompressTime.toFixed(2)}s</span>
-            </span>
-            <span style="font-size: 0.65rem;">
-              <span style="color: #9ca3af;">Avg Upload:</span>
-              <span style="color: #10b981; font-weight: bold; margin-left: 4px;">${avgUploadTime.toFixed(2)}s</span>
-            </span>
-            <span style="font-size: 0.65rem;">
-              <span style="color: #9ca3af;">Total Time:</span>
-              <span style="color: #e5e7eb; font-weight: bold; margin-left: 4px;">${(summary.file_compress_time_total + summary.file_upload_time_total).toFixed(2)}s</span>
-            </span>
-          </div>
-        </div>
-      `;
+      const avgC = (summary.file_compress_time_total / summary.file_operations_count).toFixed(2);
+      const avgU = (summary.file_upload_time_total / summary.file_operations_count).toFixed(2);
+      const tot = (summary.file_compress_time_total + summary.file_upload_time_total).toFixed(2);
+      html += `<div style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;"><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:4px;">File Ops (${summary.file_operations_count}):</div><div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.6rem;"><span><span style="color:#9ca3af;">Compress:</span><span style="color:#3b82f6;font-weight:bold;margin-left:3px;">${avgC}s</span></span><span><span style="color:#9ca3af;">Upload:</span><span style="color:#10b981;font-weight:bold;margin-left:3px;">${avgU}s</span></span><span><span style="color:#9ca3af;">Total:</span><span style="color:#e5e7eb;font-weight:bold;margin-left:3px;">${tot}s</span></span></div></div>`;
     }
     
-    html += `</div>`;
+    html += '</div>';
     
     // Batches Section
     if (analysis.batches && analysis.batches.length > 0) {
-      html += `
-        <div class="bulk-activity-section">
-          <div style="margin: 0 0 8px 0; font-size: 0.75rem; color: #10b981; display: flex; align-items: center; gap: 4px;">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M3.5 0a.5.5 0 01.5.5V1h8V.5a.5.5 0 011 0V1h1a2 2 0 012 2v11a2 2 0 01-2 2H2a2 2 0 01-2-2V3a2 2 0 012-2h1V.5a.5.5 0 01.5-.5zM2 2a1 1 0 00-1 1v1h14V3a1 1 0 00-1-1H2zm13 3H1v9a1 1 0 001 1h12a1 1 0 001-1V5z"/>
-            </svg>
-            <span>Batch Details (${analysis.batches.length})</span>
-          </div>
-          <table class="bulk-activity-table">
-            <thead>
-              <tr>
-                <th style="width: 8%;">#</th>
-                <th style="width: 18%;">Start Time</th>
-                <th style="width: 12%;">Changes</th>
-                <th style="width: 10%;">Applies</th>
-                <th style="width: 15%;">Reason</th>
-                <th>Tables</th>
-              </tr>
-            </thead>
-            <tbody>
-      `;
+      html += `<div class="bulk-activity-section"><div style="margin:0 0 6px 0;font-size:0.7rem;color:#10b981;display:flex;align-items:center;gap:4px;"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 0a.5.5 0 01.5.5V1h8V.5a.5.5 0 011 0V1h1a2 2 0 012 2v11a2 2 0 01-2 2H2a2 2 0 01-2-2V3a2 2 0 012-2h1V.5a.5.5 0 01.5-.5zM2 2a1 1 0 00-1 1v1h14V3a1 1 0 00-1-1H2zm13 3H1v9a1 1 0 001 1h12a1 1 0 001-1V5z"/></svg><span>Batches (${analysis.batches.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:6%;">#</th><th style="width:18%;">Time</th><th style="width:12%;">Changes</th><th style="width:10%;">Applies</th><th style="width:14%;">Reason</th><th>Tables</th></tr></thead><tbody>`;
       
       analysis.batches.slice(0, 50).forEach((batch, idx) => {
-        const reasonClass = batch.finish_reason === 'Normal' ? 'normal' : 
-                           batch.finish_reason.includes('timeout') ? 'timeout' : 'memory';
-        
-        html += `
-          <tr>
-            <td style="color: #9ca3af;">${idx + 1}</td>
-            <td style="font-family: monospace; color: #9ca3af;">${batch.start_time || 'N/A'}</td>
-            <td>${batch.changes.toLocaleString()}</td>
-            <td>${batch.applies}</td>
-            <td><span class="batch-reason-badge batch-reason-${reasonClass}">${batch.finish_reason}</span></td>
-            <td style="font-size: 0.65rem; color: #9ca3af;">${batch.tables.length > 0 ? batch.tables.slice(0, 2).join(', ') + (batch.tables.length > 2 ? ` +${batch.tables.length - 2}` : '') : 'N/A'}</td>
-          </tr>
-        `;
+        const rc = batch.finish_reason === 'Normal' ? 'normal' : batch.finish_reason.includes('timeout') ? 'timeout' : 'memory';
+        const tbls = batch.tables.length > 0 ? batch.tables.slice(0, 2).join(', ') + (batch.tables.length > 2 ? ` +${batch.tables.length - 2}` : '') : 'N/A';
+        html += `<tr><td style="color:#9ca3af;">${idx + 1}</td><td style="font-family:monospace;color:#9ca3af;">${batch.start_time || 'N/A'}</td><td>${batch.changes.toLocaleString()}</td><td>${batch.applies}</td><td><span class="batch-reason-badge batch-reason-${rc}">${batch.finish_reason}</span></td><td style="font-size:0.6rem;color:#9ca3af;">${tbls}</td></tr>`;
       });
       
-      html += `
-            </tbody>
-          </table>
-      `;
-      
+      html += '</tbody></table>';
       if (analysis.batches.length > 50) {
-        html += `<p style="text-align: center; color: #9ca3af; font-size: 0.7rem; margin: 8px 0;">Showing 50 of ${analysis.batches.length} batches</p>`;
+        html += `<p style="text-align:center;color:#9ca3af;font-size:0.6rem;margin:4px 0;">Showing 50 of ${analysis.batches.length}</p>`;
       }
-      
-      html += `</div>`;
+      html += '</div>';
     }
     
     // One-by-One Section
     if (analysis.one_by_one && analysis.one_by_one.length > 0) {
-      html += `
-        <div class="bulk-activity-section">
-          <div style="margin: 0 0 8px 0; font-size: 0.75rem; color: #f59e0b; display: flex; align-items: center; gap: 4px;">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-            </svg>
-            <span>One-by-One Applies (${analysis.one_by_one.length})</span>
-          </div>
-          <table class="bulk-activity-table">
-            <thead>
-              <tr>
-                <th style="width: 35%;">Table</th>
-                <th style="width: 25%;">Start Time</th>
-                <th style="width: 25%;">End Time</th>
-                <th style="width: 15%;">Failed</th>
-              </tr>
-            </thead>
-            <tbody>
-      `;
+      html += `<div class="bulk-activity-section"><div style="margin:0 0 6px 0;font-size:0.7rem;color:#f59e0b;display:flex;align-items:center;gap:4px;">${warnSvg}<span>One-by-One (${analysis.one_by_one.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:35%;">Table</th><th style="width:25%;">Start</th><th style="width:25%;">End</th><th style="width:15%;">Failed</th></tr></thead><tbody>`;
       
       analysis.one_by_one.forEach(obo => {
-        html += `
-          <tr>
-            <td style="font-family: monospace; color: #fbbf24;">${obo.table}</td>
-            <td style="color: #9ca3af; font-family: monospace;">${obo.start_time || 'N/A'}</td>
-            <td style="color: #9ca3af; font-family: monospace;">${obo.end_time || 'N/A'}</td>
-            <td style="color: ${obo.failed_executions > 0 ? '#ef4444' : '#10b981'};">${obo.failed_executions}</td>
-          </tr>
-        `;
+        const fc = obo.failed_executions > 0 ? '#ef4444' : '#10b981';
+        html += `<tr><td style="font-family:monospace;color:#fbbf24;">${obo.table}</td><td style="color:#9ca3af;font-family:monospace;">${obo.start_time||'N/A'}</td><td style="color:#9ca3af;font-family:monospace;">${obo.end_time||'N/A'}</td><td style="color:${fc};">${obo.failed_executions}</td></tr>`;
       });
       
-      html += `</tbody></table></div>`;
+      html += '</tbody></table></div>';
     }
     
     // Store data for later processing
@@ -3414,18 +3369,8 @@ document.addEventListener("DOMContentLoaded", () => {
       
       // Create header
       const header = document.createElement('div');
-      header.style.margin = '0 0 8px 0';
-      header.style.fontSize = '0.75rem';
-      header.style.color = '#3b82f6';
-      header.style.display = 'flex';
-      header.style.alignItems = 'center';
-      header.style.gap = '4px';
-      header.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M2 4a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4zm2-1a1 1 0 00-1 1v1h10V4a1 1 0 00-1-1H4zM3 7v5a1 1 0 001 1h8a1 1 0 001-1V7H3z"/>
-        </svg>
-        <span>Table Details</span>
-      `;
+      header.style.cssText = 'margin:0 0 6px 0;font-size:0.7rem;color:#3b82f6;display:flex;align-items:center;gap:4px;';
+      header.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4zm2-1a1 1 0 00-1 1v1h10V4a1 1 0 00-1-1H4zM3 7v5a1 1 0 001 1h8a1 1 0 001-1V7H3z"/></svg><span>Table Details</span>';
       section.appendChild(header);
       
       // Create tabs wrapper
@@ -3451,10 +3396,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const tabButton = document.createElement('button');
         tabButton.className = `ba-tab-button ${idx === 0 ? 'ba-active' : ''}`;
         tabButton.setAttribute('data-table', stat.table);
-        tabButton.innerHTML = `
-          ${stat.table.split('.')[1] || stat.table}
-          <span class="ba-tab-count">${operationsCount.toLocaleString()}</span>
-        `;
+        tabButton.innerHTML = `${stat.table.split('.')[1] || stat.table}<span class="ba-tab-count">${operationsCount.toLocaleString()}</span>`;
         tabButton.addEventListener('click', () => switchBulkTableTab(stat.table));
         tabsHeader.appendChild(tabButton);
         
@@ -3474,56 +3416,13 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         });
         
-        // Build panel content
-        let panelHTML = `
-          <div class="table-summary">
-            <div class="table-summary-grid" style="grid-template-columns: repeat(5, 1fr);">
-              <div class="table-summary-stat">
-                <div class="table-summary-stat-label">INSERT</div>
-                <div class="table-summary-stat-value" style="color: #10b981;">${operationCounts.INSERT.toLocaleString()}</div>
-              </div>
-              <div class="table-summary-stat">
-                <div class="table-summary-stat-label">UPDATE</div>
-                <div class="table-summary-stat-value" style="color: #3b82f6;">${operationCounts.UPDATE.toLocaleString()}</div>
-              </div>
-              <div class="table-summary-stat">
-                <div class="table-summary-stat-label">DELETE</div>
-                <div class="table-summary-stat-value" style="color: #ef4444;">${operationCounts.DELETE.toLocaleString()}</div>
-              </div>
-              <div class="table-summary-stat">
-                <div class="table-summary-stat-label">SINGLE (1:1)</div>
-                <div class="table-summary-stat-value" style="color: #fbbf24; font-weight: bold;">${singleRecordCount.toLocaleString()}</div>
-              </div>
-              <div class="table-summary-stat">
-                <div class="table-summary-stat-label">TOTAL</div>
-                <div class="table-summary-stat-value" style="color: #e5e7eb; font-weight: bold;">${(operationCounts.INSERT + operationCounts.UPDATE + operationCounts.DELETE + operationCounts.MERGE).toLocaleString()}</div>
-              </div>
-            </div>
-          </div>
-        `;
+        // Build panel content - include MERGE if present
+        const hasMerge = operationCounts.MERGE > 0;
+        const totOps = (operationCounts.INSERT + operationCounts.UPDATE + operationCounts.DELETE + operationCounts.MERGE).toLocaleString();
+        let panelHTML = `<div class="table-summary"><div class="table-summary-grid" style="grid-template-columns:repeat(${hasMerge ? 6 : 5},1fr);"><div class="table-summary-stat"><div class="table-summary-stat-label">INSERT</div><div class="table-summary-stat-value" style="color:#10b981;">${operationCounts.INSERT.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">UPDATE</div><div class="table-summary-stat-value" style="color:#3b82f6;">${operationCounts.UPDATE.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">DELETE</div><div class="table-summary-stat-value" style="color:#ef4444;">${operationCounts.DELETE.toLocaleString()}</div></div>${hasMerge ? `<div class="table-summary-stat"><div class="table-summary-stat-label">MERGE</div><div class="table-summary-stat-value" style="color:#a855f7;font-weight:bold;">${operationCounts.MERGE.toLocaleString()}</div></div>` : ''}<div class="table-summary-stat"><div class="table-summary-stat-label">SINGLE</div><div class="table-summary-stat-value" style="color:#fbbf24;font-weight:bold;">${singleRecordCount.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">TOTAL</div><div class="table-summary-stat-value" style="color:#e5e7eb;font-weight:bold;">${totOps}</div></div></div></div>`;
         
         if (bulkMapForTable.length > 0) {
-          panelHTML += `
-            <div style="margin: 8px 0 6px 0; font-size: 0.7rem; color: #10b981; display: flex; align-items: center; gap: 4px;">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm2 1v2h2V4H4zm3 0v2h2V4H7zm3 0v2h2V4h-2zM4 7v2h2V7H4zm3 0v2h2V7H7zm3 0v2h2V7h-2zM4 10v2h2v-2H4zm3 0v2h2v-2H7zm3 0v2h2v-2h-2z"/>
-              </svg>
-              <span>Bulk Map Operations (${bulkMapForTable.length})</span>
-            </div>
-            <table class="bulk-activity-table">
-              <thead>
-                <tr>
-                  <th style="width: 20%;">Sequence</th>
-                  <th style="width: 10%;">Records</th>
-                  <th style="width: 13%;">Operation</th>
-                  <th style="width: 16%;">Time</th>
-                  <th style="width: 10%;">Gap</th>
-                  <th style="width: 10%;">RPS</th>
-                  <th style="width: 21%;">Line</th>
-                </tr>
-              </thead>
-              <tbody>
-          `;
+          panelHTML += `<div style="margin:6px 0 4px 0;font-size:0.65rem;color:#10b981;display:flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm2 1v2h2V4H4zm3 0v2h2V4H7zm3 0v2h2V4h-2zM4 7v2h2V7H4zm3 0v2h2V7H7zm3 0v2h2V7h-2zM4 10v2h2v-2H4zm3 0v2h2v-2H7zm3 0v2h2v-2h-2z"/></svg><span>Bulk Map (${bulkMapForTable.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:20%;">Seq</th><th style="width:10%;">Recs</th><th style="width:13%;">Op</th><th style="width:16%;">Time</th><th style="width:10%;">Gap</th><th style="width:10%;">RPS</th><th style="width:21%;">Line</th></tr></thead><tbody>`;
           
           // Calculate gaps
           const timeGaps = [];
@@ -3678,6 +3577,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById('threadActivityControls').style.display = 'none';
     document.getElementById('issuesMainView').style.display = 'none';
     document.getElementById('logSummaryMainView').style.display = 'none';
+    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show bulk activity view
     const bulkActivityView = document.getElementById('bulkActivityMainView');
@@ -3701,6 +3601,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById('threadActivityControls').style.display = 'none';
     document.getElementById('issuesMainView').style.display = 'none';
     document.getElementById('logSummaryMainView').style.display = 'none';
+    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show file operations view
     const fileOpsView = document.getElementById('fileOperationsMainView');
@@ -3863,6 +3764,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById('bulkActivityMainView').style.display = 'none';
     document.getElementById('fileOperationsMainView').style.display = 'none';
     document.getElementById('logSummaryMainView').style.display = 'none';
+    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show issues view (uses flexbox layout)
     document.getElementById('issuesMainView').style.display = 'flex';
@@ -3892,7 +3794,8 @@ document.addEventListener("DOMContentLoaded", () => {
             ${data.timeline.events.map((evt, idx) => `
               <div class="timeline-dot ${evt.severity}" 
                    style="left: ${evt.position}%;" 
-                   onclick="scrollToIssueByLine(${evt.line_number})"
+                   data-line="${evt.line_number}"
+                   onclick="scrollToIssueByLine(${evt.line_number}, this)"
                    title="${evt.severity.toUpperCase()} at ${formatTimelineTime(evt.timestamp)}">
               </div>
             `).join('')}
@@ -3932,8 +3835,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const groupId = `issue-group-${idx}`;
       const firstTimestamp = issue.occurrences[0]?.timestamp || '';
       
+      // Get all line numbers for this issue group
+      const groupLineNumbers = issue.occurrences.map(occ => occ.line_number);
+      
       html += `
-        <div class="issue-group" id="${groupId}">
+        <div class="issue-group" id="${groupId}" data-lines="${groupLineNumbers.join(',')}">
           <div class="issue-group-header" onclick="toggleIssueGroup('${groupId}')">
             <svg class="issue-expand-icon" width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
               <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/>
@@ -4009,8 +3915,32 @@ document.addEventListener("DOMContentLoaded", () => {
   // Toggle issue group expansion
   window.toggleIssueGroup = function(groupId) {
     const group = document.getElementById(groupId);
-    if (group) {
-      group.classList.toggle('expanded');
+    if (!group) return;
+    
+    const isExpanding = !group.classList.contains('expanded');
+    
+    // Close all other expanded groups (accordion behavior)
+    document.querySelectorAll('.issue-group.expanded').forEach(g => {
+      if (g.id !== groupId) {
+        g.classList.remove('expanded');
+      }
+    });
+    
+    // Clear all active timeline dots
+    document.querySelectorAll('.timeline-dot.active').forEach(dot => dot.classList.remove('active'));
+    
+    // Toggle this group
+    group.classList.toggle('expanded');
+    
+    // If expanding, highlight corresponding timeline dots
+    if (isExpanding) {
+      const lineNumbers = group.dataset.lines ? group.dataset.lines.split(',').map(Number) : [];
+      lineNumbers.forEach(lineNum => {
+        const dot = document.querySelector(`.timeline-dot[data-line="${lineNum}"]`);
+        if (dot) {
+          dot.classList.add('active');
+        }
+      });
     }
   };
   
@@ -4041,8 +3971,11 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   
   // Scroll to issue by line number (called from timeline marker click)
-  window.scrollToIssueByLine = function(lineNumber) {
+  window.scrollToIssueByLine = function(lineNumber, clickedDot) {
     if (!window.issuesData || !window.issuesData.issues) return;
+    
+    // Clear all active timeline dots first
+    document.querySelectorAll('.timeline-dot.active').forEach(dot => dot.classList.remove('active'));
     
     // Find the issue group that contains this line number
     let foundGroupIdx = -1;
@@ -4059,8 +3992,24 @@ document.addEventListener("DOMContentLoaded", () => {
       const groupId = `issue-group-${foundGroupIdx}`;
       const group = document.getElementById(groupId);
       if (group) {
-        // Expand the group
+        // Close all other expanded groups (accordion behavior)
+        document.querySelectorAll('.issue-group.expanded').forEach(g => {
+          if (g.id !== groupId) {
+            g.classList.remove('expanded');
+          }
+        });
+        
+        // Expand this group
         group.classList.add('expanded');
+        
+        // Highlight all timeline dots for this group
+        const lineNumbers = group.dataset.lines ? group.dataset.lines.split(',').map(Number) : [];
+        lineNumbers.forEach(lineNum => {
+          const dot = document.querySelector(`.timeline-dot[data-line="${lineNum}"]`);
+          if (dot) {
+            dot.classList.add('active');
+          }
+        });
         
         // Scroll to it with a small delay to allow expansion
         setTimeout(() => {
@@ -4088,6 +4037,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!currentFileId) return;
     
     const summaryLink = document.getElementById('logSummaryLink');
+    const releaseNotesLink = document.getElementById('releaseNotesLink');
     if (!summaryLink) return;
     
     fetch(`/api/files/${currentFileId}/log-summary`)
@@ -4095,6 +4045,20 @@ document.addEventListener("DOMContentLoaded", () => {
       .then(data => {
         summaryLink.style.display = 'flex';
         window.logSummaryData = data;
+        
+        // Show Release Notes link if we have version info
+        if (releaseNotesLink && data.version) {
+          releaseNotesLink.style.display = 'flex';
+          window.taskVersion = data.version;
+          window.sourceEndpoint = data.source_endpoint;
+          window.targetEndpoint = data.target_endpoint;
+        }
+        
+        // Auto-show log summary as default view when data loads
+        // This ensures summary is the first thing users see in Analysis tab
+        setTimeout(() => {
+          showLogSummaryInMain();
+        }, 100);
       })
       .catch(err => {
         console.error('Failed to load log summary:', err);
@@ -4111,6 +4075,9 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById('bulkActivityMainView').style.display = 'none';
     document.getElementById('fileOperationsMainView').style.display = 'none';
     document.getElementById('issuesMainView').style.display = 'none';
+    document.getElementById('performanceCockpitMainView').style.display = 'none';
+    const releaseNotesView = document.getElementById('releaseNotesMainView');
+    if (releaseNotesView) releaseNotesView.style.display = 'none';
     
     // Show log summary view
     document.getElementById('logSummaryMainView').style.display = 'block';
@@ -4127,176 +4094,818 @@ document.addEventListener("DOMContentLoaded", () => {
     const summaryContent = document.getElementById('logSummaryMainContent');
     if (!summaryContent) return;
     
-    let html = `
-      <div class="log-summary-section" id="logSummarySection">
-        <div class="summary-header-row">
-          <div class="summary-title">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="color: #8b5cf6;">
-              <path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V2zm2-1a1 1 0 00-1 1v12a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H4z"/>
-              <path d="M5 4h6v1H5V4zm0 2h6v1H5V6zm0 2h6v1H5V8zm0 2h4v1H5v-1z"/>
-            </svg>
-            <span>Log Summary</span>
-          </div>
-          <div class="font-size-controls">
-            <button class="font-size-btn" onclick="adjustFontSize('summary', -1)" title="Decrease font size">A-</button>
-            <button class="font-size-btn" onclick="adjustFontSize('summary', 1)" title="Increase font size">A+</button>
-          </div>
-        </div>
-        
-        <div class="summary-grid">
-          <div class="summary-card">
-            <div class="summary-card-title">Task Name</div>
-            <div class="summary-card-value highlight">${data.task_name || 'N/A'}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Version</div>
-            <div class="summary-card-value">${data.version || 'N/A'}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Server</div>
-            <div class="summary-card-value">${data.server || 'N/A'}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Duration</div>
-            <div class="summary-card-value">${data.duration || 'N/A'}</div>
-          </div>
-        </div>
-        
-        <div class="summary-grid">
-          <div class="summary-card">
-            <div class="summary-card-title">Running Mode</div>
-            <div class="summary-card-value">${data.running_mode || 'N/A'}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Start Mode</div>
-            <div class="summary-card-value ${data.start_mode?.toLowerCase().includes('resume') ? 'warning' : ''}">${data.start_mode || 'N/A'}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Source Endpoint</div>
-            <div class="summary-card-value">${data.source_endpoint || 'N/A'}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Target Endpoint</div>
-            <div class="summary-card-value">${data.target_endpoint || 'N/A'}</div>
-          </div>
-        </div>
-        
-        <div class="summary-grid">
-          <div class="summary-card">
-            <div class="summary-card-title">Tables Count</div>
-            <div class="summary-card-value highlight">${data.tables_count}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Errors</div>
-            <div class="summary-card-value ${data.error_count > 0 ? 'error' : 'success'}">${data.error_count}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Warnings</div>
-            <div class="summary-card-value ${data.warning_count > 0 ? 'warning' : 'success'}">${data.warning_count}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-card-title">Bulk Operations</div>
-            <div class="summary-card-value">${data.bulk_operations}</div>
-          </div>
-        </div>
-    `;
+    const smWarn = data.start_mode?.toLowerCase().includes('resume') ? ' warning' : '';
+    const errCls = data.error_count > 0 ? ' error' : ' success';
+    const warnCls = data.warning_count > 0 ? ' warning' : ' success';
+    const flBg = data.full_load_completed ? '#064e3b' : '#1f2937';
+    const flC = data.full_load_completed ? '#10b981' : '#6b7280';
+    const cdcBg = data.cdc_started ? '#064e3b' : '#1f2937';
+    const cdcC = data.cdc_started ? '#10b981' : '#6b7280';
+    const checkSvg = '<path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-3.97-3.03a.75.75 0 00-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 00-1.06 1.06L6.97 11.03a.75.75 0 001.079-.02l3.992-4.99a.75.75 0 00-.01-1.05z"/>';
+    const circleSvg = '<path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/>';
+    
+    // Build release notes link URL
+    const releaseNotesUrl = 'https://community.qlik.com/t5/Release-Notes/tkb-p/ReleaseNotes';
+    const versionLink = data.version ? `<a href="${releaseNotesUrl}" target="_blank" style="color:#60a5fa;text-decoration:none;" title="View Release Notes">${data.version} 🔗</a>` : 'N/A';
+    
+    const parts = [];
+    
+    // Header + first grid
+    parts.push(`<div class="log-summary-section" id="logSummarySection"><div class="summary-header-row"><div class="summary-title"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="color:#8b5cf6;"><path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V2zm2-1a1 1 0 00-1 1v12a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H4z"/><path d="M5 4h6v1H5V4zm0 2h6v1H5V6zm0 2h6v1H5V8zm0 2h4v1H5v-1z"/></svg><span>Log Summary</span></div><div class="font-size-controls"><button class="font-size-btn" onclick="adjustFontSize('summary',-1)" title="Decrease font size">A-</button><button class="font-size-btn" onclick="adjustFontSize('summary',1)" title="Increase font size">A+</button></div></div>`);
+    
+    // Log rollover warning
+    if (data.is_rollover) {
+      parts.push(`<div style="padding:6px;background:#451a03;border:1px solid #f59e0b;border-radius:3px;margin:6px 0 10px 0;"><div style="display:flex;align-items:center;gap:6px;"><span style="font-size:1.1rem;">🔄</span><div><div style="color:#fbbf24;font-weight:bold;font-size:0.7rem;">Log Rollover</div><div style="color:#d1d5db;font-size:0.6rem;">This log was created from a rollover. Run mode information may not be available.</div></div></div></div>`);
+    }
+    
+    // Grid 1 - Task & Environment
+    parts.push(`<div class="summary-grid"><div class="summary-card"><div class="summary-card-title">Task Name</div><div class="summary-card-value highlight">${data.task_name||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Version</div><div class="summary-card-value">${versionLink}</div></div><div class="summary-card"><div class="summary-card-title">Host</div><div class="summary-card-value">${data.host||data.server||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Duration</div><div class="summary-card-value">${data.duration||'N/A'}</div></div></div>`);
+    
+    // Grid 2 - Environment Details
+    if (data.os_info || data.pid || data.license_info) {
+      let envCards = '';
+      if (data.os_info) envCards += `<div class="summary-card"><div class="summary-card-title">Operating System</div><div class="summary-card-value" style="font-size:0.7rem;">${data.os_info}</div></div>`;
+      if (data.pid) envCards += `<div class="summary-card"><div class="summary-card-title">Process ID</div><div class="summary-card-value">${data.pid}</div></div>`;
+      if (data.license_info) envCards += `<div class="summary-card"><div class="summary-card-title">License</div><div class="summary-card-value" style="font-size:0.7rem;">${data.license_info}</div></div>`;
+      if (data.start_time) envCards += `<div class="summary-card"><div class="summary-card-title">Start Time</div><div class="summary-card-value" style="font-size:0.65rem;">${data.start_time}</div></div>`;
+      if (envCards) {
+        parts.push(`<div class="summary-grid">${envCards}</div>`);
+      }
+    }
+    
+    // Grid 3 - Run Mode & Endpoints
+    parts.push(`<div class="summary-grid"><div class="summary-card"><div class="summary-card-title">Running Mode</div><div class="summary-card-value">${data.running_mode||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Start Mode</div><div class="summary-card-value${smWarn}">${data.start_mode||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Source Endpoint</div><div class="summary-card-value">${data.source_endpoint||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Target Endpoint</div><div class="summary-card-value">${data.target_endpoint||'N/A'}</div></div></div>`);
+    
+    // Grid 4 - Statistics
+    parts.push(`<div class="summary-grid"><div class="summary-card"><div class="summary-card-title">Tables Count</div><div class="summary-card-value highlight">${data.tables_count}</div></div><div class="summary-card"><div class="summary-card-title">Errors</div><div class="summary-card-value${errCls}">${data.error_count}</div></div><div class="summary-card"><div class="summary-card-title">Warnings</div><div class="summary-card-value${warnCls}">${data.warning_count}</div></div><div class="summary-card"><div class="summary-card-title">Bulk Operations</div><div class="summary-card-value">${data.bulk_operations}</div></div></div>`);
     
     // Status indicators
-    html += `
-      <div style="margin: 8px 0; display: flex; gap: 8px; flex-wrap: wrap;">
-        <div style="display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: ${data.full_load_completed ? '#064e3b' : '#1f2937'}; border-radius: 3px;">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="${data.full_load_completed ? '#10b981' : '#6b7280'}">
-            ${data.full_load_completed ? '<path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-3.97-3.03a.75.75 0 00-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 00-1.06 1.06L6.97 11.03a.75.75 0 001.079-.02l3.992-4.99a.75.75 0 00-.01-1.05z"/>' : '<path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/>'}
-          </svg>
-          <span style="font-size: 0.65rem; color: ${data.full_load_completed ? '#10b981' : '#6b7280'};">Full Load ${data.full_load_completed ? 'Completed' : 'Not Completed'}</span>
-        </div>
-        <div style="display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: ${data.cdc_started ? '#064e3b' : '#1f2937'}; border-radius: 3px;">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="${data.cdc_started ? '#10b981' : '#6b7280'}">
-            ${data.cdc_started ? '<path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-3.97-3.03a.75.75 0 00-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 00-1.06 1.06L6.97 11.03a.75.75 0 001.079-.02l3.992-4.99a.75.75 0 00-.01-1.05z"/>' : '<path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/>'}
-          </svg>
-          <span style="font-size: 0.65rem; color: ${data.cdc_started ? '#10b981' : '#6b7280'};">CDC ${data.cdc_started ? 'Started' : 'Not Started'}</span>
-        </div>
-      </div>
-    `;
+    parts.push(`<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap;"><div style="display:flex;align-items:center;gap:4px;padding:3px 6px;background:${flBg};border-radius:3px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="${flC}">${data.full_load_completed?checkSvg:circleSvg}</svg><span style="font-size:0.6rem;color:${flC};">Full Load ${data.full_load_completed?'Completed':'Not Completed'}</span></div><div style="display:flex;align-items:center;gap:4px;padding:3px 6px;background:${cdcBg};border-radius:3px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="${cdcC}">${data.cdc_started?checkSvg:circleSvg}</svg><span style="font-size:0.6rem;color:${cdcC};">CDC ${data.cdc_started?'Started':'Not Started'}</span></div></div>`);
     
-    // Incomplete log warning (no "Closing log file" found)
+    // Incomplete log warning
     if (data.incomplete_log_warning) {
-      html += `
-        <div style="padding: 8px; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; border-radius: 4px; margin: 8px 0;">
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="#f59e0b">
-              <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-            </svg>
-            <span style="font-weight: bold; font-size: 0.7rem; color: #fcd34d;">⚠ Incomplete Log</span>
-          </div>
-          <div style="font-size: 0.65rem; color: #fcd34d; margin-top: 4px;">${data.incomplete_log_warning}</div>
-        </div>
-      `;
+      parts.push(`<div style="padding:6px;background:rgba(245,158,11,0.2);border:1px solid #f59e0b;border-radius:3px;margin:6px 0;"><div style="display:flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="#f59e0b"><path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg><span style="font-weight:bold;font-size:0.65rem;color:#fcd34d;">⚠ Incomplete Log</span></div><div style="font-size:0.6rem;color:#fcd34d;margin-top:3px;">${data.incomplete_log_warning}</div></div>`);
     }
     
     // Fatal error
     if (data.fatal_error) {
-      html += `
-        <div style="padding: 8px; background: rgba(220, 38, 38, 0.2); border: 1px solid #dc2626; border-radius: 4px; margin: 8px 0;">
-          <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="#dc2626">
-              <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-            </svg>
-            <span style="font-weight: bold; font-size: 0.7rem; color: #fca5a5;">Fatal Error Detected</span>
-          </div>
-          <div style="font-family: monospace; font-size: 0.6rem; color: #fca5a5; word-break: break-all;">${escapeHtml(data.fatal_error)}</div>
-        </div>
-      `;
+      parts.push(`<div style="padding:6px;background:rgba(220,38,38,0.2);border:1px solid #dc2626;border-radius:3px;margin:6px 0;"><div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="#dc2626"><path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg><span style="font-weight:bold;font-size:0.65rem;color:#fca5a5;">Fatal Error</span></div><div style="font-family:monospace;font-size:0.55rem;color:#fca5a5;word-break:break-all;">${escapeHtml(data.fatal_error)}</div></div>`);
     }
     
     // Key Events
     if (data.key_events && data.key_events.length > 0) {
-      html += `
-        <div class="key-events-list">
-          <h4 style="margin: 0 0 6px 0; font-size: 0.7rem; color: #9ca3af;">Key Events</h4>
-      `;
-      
-      data.key_events.forEach(event => {
-        html += `
-          <div class="key-event">
-            <span class="key-event-line">Line ${event.line + 1}</span>
-            <span class="key-event-name">${event.event}</span>
-          </div>
-        `;
+      let evHtml = '<div class="key-events-list"><h4 style="margin:0 0 4px 0;font-size:0.65rem;color:#9ca3af;">Key Events</h4>';
+      data.key_events.forEach(e => {
+        evHtml += `<div class="key-event"><span class="key-event-line">L${e.line+1}</span><span class="key-event-name">${e.event}</span></div>`;
       });
-      
-      html += `</div>`;
+      evHtml += '</div>';
+      parts.push(evHtml);
     }
     
     // Log Levels Changed
     if (data.log_levels_changed && data.log_levels_changed.length > 0) {
-      html += `
-        <div style="margin-top: 8px;">
-          <h4 style="margin: 0 0 6px 0; font-size: 0.7rem; color: #9ca3af;">Log Levels Changed</h4>
-          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-      `;
-      
-      data.log_levels_changed.forEach(level => {
-        html += `
-          <span style="padding: 2px 6px; background: #1f2937; border-radius: 3px; font-size: 0.6rem;">
-            <span style="color: #60a5fa;">${level.component}</span>: 
-            <span style="color: #6b7280;">${level.from}</span> → 
-            <span style="color: #fbbf24;">${level.to}</span>
-          </span>
-        `;
+      let lvlHtml = '<div style="margin-top:6px;"><h4 style="margin:0 0 4px 0;font-size:0.65rem;color:#9ca3af;">Log Levels Changed</h4><div style="display:flex;flex-wrap:wrap;gap:3px;">';
+      data.log_levels_changed.forEach(l => {
+        lvlHtml += `<span style="padding:2px 5px;background:#1f2937;border-radius:2px;font-size:0.55rem;"><span style="color:#60a5fa;">${l.component}</span>:<span style="color:#6b7280;">${l.from}</span>→<span style="color:#fbbf24;">${l.to}</span></span>`;
       });
-      
-      html += `</div></div>`;
+      lvlHtml += '</div></div>';
+      parts.push(lvlHtml);
     }
     
-    html += `</div>`;
-    summaryContent.innerHTML = html;
+    parts.push('</div>');
+    summaryContent.innerHTML = parts.join('');
   }
   
   // Initialize floating export button
   const floatingExportBtn = document.getElementById('floatingExportBtn');
   if (floatingExportBtn) {
     floatingExportBtn.addEventListener('click', exportSearchResults);
+  }
+
+  // ============================================================
+  // PERFORMANCE COCKPIT
+  // ============================================================
+  
+  window.performanceCockpitData = null;
+  
+  window.showPerformanceCockpitInMain = function() {
+    // Hide all analysis views
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
+    
+    // Hide thread activity controls
+    document.getElementById('threadActivityControls').style.display = 'none';
+    
+    // Show performance cockpit view
+    const view = document.getElementById('performanceCockpitMainView');
+    if (view) {
+      view.style.display = 'block';
+    }
+    
+    // Set active report link
+    setActiveReportLink('performanceCockpitLink');
+    
+    // Fetch and render
+    if (!window.performanceCockpitData && currentFileId) {
+      fetchPerformanceCockpit();
+    } else if (window.performanceCockpitData) {
+      renderPerformanceCockpit(window.performanceCockpitData);
+    }
+  };
+  
+  // Check if performance cockpit has meaningful data before showing the link
+  function fetchPerformanceCockpitCheck() {
+    if (!currentFileId) return;
+    
+    const performanceCockpitLink = document.getElementById('performanceCockpitLink');
+    
+    fetch(`/api/files/${currentFileId}/performance-cockpit`)
+      .then(res => res.json())
+      .then(data => {
+        // Check if there's meaningful data to show
+        const hasLatencyData = data.latency_profile?.data_points > 0;
+        const hasBatchData = data.batch_profile?.total_batches > 0;
+        const hasPainTables = data.pain_tables?.length > 0;
+        const hasFileOps = data.file_operations?.count > 0;
+        const hasConfig = data.config && Object.keys(data.config).length > 0;
+        
+        const hasMeaningfulData = hasLatencyData || hasBatchData || hasPainTables || hasFileOps || hasConfig;
+        
+        if (hasMeaningfulData) {
+          window.performanceCockpitData = data;
+          if (performanceCockpitLink) performanceCockpitLink.style.display = 'flex';
+        } else {
+          window.performanceCockpitData = null;
+          if (performanceCockpitLink) performanceCockpitLink.style.display = 'none';
+        }
+      })
+      .catch(err => {
+        console.error('Failed to check performance cockpit:', err);
+        if (performanceCockpitLink) performanceCockpitLink.style.display = 'none';
+      });
+  }
+
+  function fetchPerformanceCockpit() {
+    if (!currentFileId) return;
+    
+    const content = document.getElementById('performanceCockpitMainContent');
+    if (content) {
+      content.innerHTML = `
+        <div style="text-align: center; padding: 40px;">
+          <div class="loading-spinner"></div>
+          <p style="margin-top: 16px; color: #9ca3af;">Analyzing performance metrics...</p>
+        </div>
+      `;
+    }
+    
+    // If we already have the data from the check, use it
+    if (window.performanceCockpitData) {
+      renderPerformanceCockpit(window.performanceCockpitData);
+      return;
+    }
+    
+    fetch(`/api/files/${currentFileId}/performance-cockpit`)
+      .then(res => res.json())
+      .then(data => {
+        window.performanceCockpitData = data;
+        renderPerformanceCockpit(data);
+      })
+      .catch(err => {
+        console.error('Failed to load performance cockpit:', err);
+        if (content) {
+          content.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 20px;">Failed to load performance cockpit: ${err.message}</p>`;
+        }
+      });
+  }
+  
+  function renderPerformanceCockpit(data) {
+    const content = document.getElementById('performanceCockpitMainContent');
+    if (!content) return;
+    
+    // Build HTML parts - no whitespace between sections
+    const parts = [];
+    
+    // Header
+    parts.push(`<div class="cockpit-container"><div class="cockpit-header"><h2 style="margin:0;display:flex;align-items:center;gap:6px;"><svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>Performance Cockpit</h2><span style="color:#9ca3af;font-size:0.7rem;">${data.latency_profile?.data_points || 0} data points</span></div>`);
+    
+    // Task Configuration (moved to top)
+    if (data.config && Object.keys(data.config).length > 0) {
+      parts.push(`<div class="cockpit-section config-section"><h3>Task Configuration</h3>${renderConfig(data.config)}</div>`);
+    }
+    
+    // Bottleneck
+    parts.push(`<div class="cockpit-section bottleneck-section"><h3>Latency Bottleneck Analysis</h3>${renderBottleneckIndicator(data.bottleneck, data.latency_profile)}</div>`);
+    
+    // Latency Profile
+    parts.push(`<div class="cockpit-section"><h3>Latency Profile</h3><div class="latency-profile-grid">${renderLatencyProfile(data.latency_profile)}</div></div>`);
+    
+    // Spikes & Plateaus
+    parts.push(`<div class="cockpit-row"><div class="cockpit-section half"><h3>Latency Spikes <span class="badge">${data.spikes?.count || 0}</span></h3>${renderSpikes(data.spikes)}</div><div class="cockpit-section half"><h3>Latency Plateaus <span class="badge">${data.plateaus?.count || 0}</span></h3>${renderPlateaus(data.plateaus)}</div></div>`);
+    
+    // Batch Analysis
+    const batchIssuesHtml = renderBatchIssues(data.batch_issues);
+    parts.push(`<div class="cockpit-section"><h3>Batch Behavior Analysis</h3><div class="batch-analysis-grid">${renderBatchAnalysis(data.batch_profile)}</div>${batchIssuesHtml}</div>`);
+    
+    // Pain Tables
+    parts.push(`<div class="cockpit-section"><h3>Pain Tables (by performance impact)</h3>${renderPainTables(data.pain_tables)}</div>`);
+    
+    // File Operations (conditional)
+    if (data.file_operations?.count > 0) {
+      parts.push(`<div class="cockpit-section"><h3>File Operations Summary</h3>${renderFileOperationsSummary(data.file_operations)}</div>`);
+    }
+    
+    // Recommendations
+    parts.push(`<div class="cockpit-section recommendations-section"><h3>Recommendations</h3>${renderRecommendations(data.recommendations)}</div>`);
+    
+    // Error Correlation (conditional)
+    if (data.error_correlation && data.error_correlation.total_correlated_errors > 0) {
+      parts.push(`<div class="cockpit-section"><h3>Error Correlation Analysis</h3>${renderErrorCorrelation(data.error_correlation)}</div>`);
+    }
+    
+    // MERGE Analysis (conditional)
+    if (data.merge_analysis && data.merge_analysis.merge_enabled) {
+      parts.push(`<div class="cockpit-section"><h3>MERGE vs Standard Bulk Analysis</h3>${renderMergeAnalysis(data.merge_analysis)}</div>`);
+    }
+    
+    // CDC Pipeline Analysis (conditional)
+    if (data.cdc_pipeline && data.cdc_pipeline.has_issues) {
+      parts.push(`<div class="cockpit-section"><h3>CDC Pipeline Health</h3>${renderCDCPipeline(data.cdc_pipeline)}</div>`);
+    }
+    
+    // Source Analysis (conditional)
+    if (data.source_analysis && (data.source_analysis.total_source_errors > 0 || data.source_analysis.total_reconnects > 0)) {
+      parts.push(`<div class="cockpit-section"><h3>Source-Side Analysis</h3>${renderSourceAnalysis(data.source_analysis)}</div>`);
+    }
+    
+    parts.push(`</div>`); // Close cockpit-container
+    
+    content.innerHTML = parts.join('');
+    
+    // Render charts if Plotly is available
+    if (data.batch_profile?.closure_reasons && Object.keys(data.batch_profile.closure_reasons).length > 0) {
+      renderClosureReasonChart(data.batch_profile.closure_reasons);
+    }
+  }
+  
+  function renderBottleneckIndicator(bottleneck, latencyProfile) {
+    if (!latencyProfile) return '<p style="color:#9ca3af;font-size:0.7rem;">No bottleneck data</p>';
+    
+    // Latency breakdown:
+    // - Source Latency = time to capture data from source database
+    // - Target Latency = total end-to-end time (this is what matters most)
+    // - Handling Latency = Target - Source = time spent processing/applying at target
+    const sourceAvg = latencyProfile.source?.avg || 0;
+    const targetAvg = latencyProfile.target?.avg || 0;
+    const handlingAvg = latencyProfile.handling?.avg || 0;
+    
+    // Calculate what portion of total target latency is source vs target-side processing
+    // Since Target = Source + Handling, we show both contributions
+    const srcPct = targetAvg > 0 ? (sourceAvg / targetAvg) * 100 : 50;
+    const tgtProcessingPct = targetAvg > 0 ? (handlingAvg / targetAvg) * 100 : 50;
+    
+    // Determine dominant factor
+    let label, labelColor;
+    if (srcPct > 60) {
+      label = 'Source Capture Dominant';
+      labelColor = '#f59e0b';  // Orange (source color)
+    } else if (tgtProcessingPct > 60) {
+      label = 'Target Apply Dominant';
+      labelColor = '#3b82f6';  // Blue (target color)
+    } else {
+      label = 'Balanced';
+      labelColor = '#10b981';  // Green
+    }
+    
+    // Build info text
+    let infoHtml = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;text-align:center;font-size:0.65rem;color:#9ca3af">';
+    infoHtml += `<div><div style="color:#f59e0b;font-weight:600">${sourceAvg.toFixed(2)}s</div><div>Source Capture</div></div>`;
+    infoHtml += `<div><div style="color:#10b981;font-weight:600">${handlingAvg.toFixed(2)}s</div><div>Target Apply</div></div>`;
+    infoHtml += `<div><div style="color:#3b82f6;font-weight:600">${targetAvg.toFixed(2)}s</div><div>Total (Target)</div></div>`;
+    infoHtml += '</div>';
+    
+    return `<div class="bottleneck-gauge"><div class="bottleneck-label" style="color:${labelColor};font-weight:600">${label}</div><div class="bottleneck-bar"><div style="width:${srcPct.toFixed(1)}%;background:#f59e0b;padding:4px 0;text-align:center;font-size:0.65rem;color:#111"><span>Source ${srcPct.toFixed(0)}%</span></div><div style="width:${tgtProcessingPct.toFixed(1)}%;background:#10b981;padding:4px 0;text-align:center;font-size:0.65rem;color:#111"><span>Target ${tgtProcessingPct.toFixed(0)}%</span></div></div>${infoHtml}<p style="color:#6b7280;font-size:0.6rem;margin:8px 0 0;text-align:center;font-style:italic">Target Latency = Source Capture + Target Apply (Handling)</p></div>`;
+  }
+  
+  function renderLatencyProfile(profile) {
+    if (!profile) return '<p style="color:#9ca3af;font-size:0.7rem;">No latency data</p>';
+    
+    const f = (val) => val?.toFixed(2) || '0.00';
+    
+    // Use consistent colors: Source=Orange, Target=Blue, Handling=Green
+    return `<div class="latency-card" style="border-left:3px solid #f59e0b"><div class="latency-card-header" style="color:#f59e0b">Source Capture</div><div class="latency-card-value">${f(profile.source?.avg)}s <span>avg</span></div><div class="latency-card-stats"><span>p50:${f(profile.source?.p50)}s</span><span>p95:${f(profile.source?.p95)}s</span><span>max:${f(profile.source?.max)}s</span></div></div><div class="latency-card" style="border-left:3px solid #10b981"><div class="latency-card-header" style="color:#10b981">Target Apply</div><div class="latency-card-value">${f(profile.handling?.avg)}s <span>avg</span></div><div class="latency-card-stats"><span>p50:${f(profile.handling?.p50)}s</span><span>p95:${f(profile.handling?.p95)}s</span><span>max:${f(profile.handling?.max)}s</span></div></div><div class="latency-card" style="border-left:3px solid #3b82f6"><div class="latency-card-header" style="color:#3b82f6">Total (End-to-End)</div><div class="latency-card-value">${f(profile.target?.avg)}s <span>avg</span></div><div class="latency-card-stats"><span>p50:${f(profile.target?.p50)}s</span><span>p95:${f(profile.target?.p95)}s</span><span>max:${f(profile.target?.max)}s</span></div></div>`;
+  }
+  
+  function renderSpikes(spikes) {
+    if (!spikes || spikes.count === 0) {
+      return '<p style="color:#10b981;font-size:0.7rem;">✓ No significant spikes</p>';
+    }
+    
+    let html = '<div class="spikes-list">';
+    spikes.items.slice(0, 5).forEach(spike => {
+      // Map driver to consistent colors: source=orange, handling=green (target apply)
+      const isSource = spike.driver === 'source';
+      const color = isSource ? '#f59e0b' : '#10b981';
+      const driverLabel = isSource ? 'Source' : 'Target';
+      html += `<div class="spike-item" onclick="jumpToLineAndHighlight(${spike.line_number},'')"><div class="spike-value">${spike.value}s</div><div class="spike-details"><span class="spike-multiplier">${spike.multiplier}x</span><span class="spike-driver" style="color:${color}">${driverLabel}</span><span class="spike-time">${spike.timestamp?.substring(11,19)||''}</span></div></div>`;
+    });
+    if (spikes.count > 5) {
+      html += `<p style="color:#6b7280;font-size:0.6rem;margin:4px 0 0;">+${spikes.count - 5} more</p>`;
+    }
+    html += '</div>';
+    return html;
+  }
+  
+  function renderPlateaus(plateaus) {
+    if (!plateaus || plateaus.count === 0) {
+      return '<p style="color:#10b981;font-size:0.7rem;">✓ No sustained high-latency periods</p>';
+    }
+    
+    let html = '<div class="plateaus-list">';
+    plateaus.items.slice(0, 3).forEach(plateau => {
+      html += `<div class="plateau-item" onclick="jumpToLineAndHighlight(${plateau.start_line},'')"><div class="plateau-value">${plateau.avg_latency}s avg</div><div class="plateau-details"><span>${plateau.duration_points} pts</span><span>L${plateau.start_line}-${plateau.end_line}</span></div></div>`;
+    });
+    html += '</div>';
+    return html;
+  }
+  
+  function renderBatchAnalysis(batchProfile) {
+    if (!batchProfile || batchProfile.total_batches === 0) {
+      return '<p style="color:#9ca3af;font-size:0.7rem;">No batch data</p>';
+    }
+    
+    const sz = batchProfile.size_stats || {};
+    const dur = batchProfile.duration_stats || {};
+    const warn = sz.single_record_pct > 20 ? ' warning' : '';
+    
+    return `<div class="batch-stat-card"><div class="batch-stat-value">${batchProfile.total_batches}</div><div class="batch-stat-label">Total Batches</div></div><div class="batch-stat-card"><div class="batch-stat-value">${sz.avg?.toFixed(1)||0}</div><div class="batch-stat-label">Avg Size</div></div><div class="batch-stat-card"><div class="batch-stat-value">${dur.avg?.toFixed(1)||0}s</div><div class="batch-stat-label">Avg Duration</div></div><div class="batch-stat-card${warn}"><div class="batch-stat-value">${sz.single_record_pct?.toFixed(1)||0}%</div><div class="batch-stat-label">Single-Record</div></div><div id="closureReasonChart" class="closure-reason-chart"></div>`;
+  }
+  
+  function renderClosureReasonChart(closureReasons) {
+    const chartDiv = document.getElementById('closureReasonChart');
+    if (!chartDiv || !window.Plotly) return;
+    
+    const labels = Object.keys(closureReasons);
+    const values = Object.values(closureReasons);
+    
+    const closureColors = {
+      'PKi': '#ef4444',
+      'PKu': '#f97316',
+      'PKd': '#f59e0b',
+      'MEM': '#8b5cf6',
+      'TIM': '#3b82f6',
+      'TMO': '#06b6d4',
+      'SNG': '#10b981',
+      'RES': '#84cc16',
+      'LOAD': '#6b7280',
+      'Normal': '#22c55e'
+    };
+    
+    const colors = labels.map(l => closureColors[l] || '#6b7280');
+    
+    const data = [{
+      type: 'pie',
+      values: values,
+      labels: labels,
+      marker: { colors: colors },
+      textinfo: 'label+percent',
+      textposition: 'inside',
+      hole: 0.4,
+      hoverinfo: 'label+value+percent'
+    }];
+    
+    const layout = {
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: 'transparent',
+      font: { color: '#9ca3af', size: 9 },
+      margin: { t: 5, b: 5, l: 5, r: 5 },
+      showlegend: false,
+      height: 100
+    };
+    
+    Plotly.newPlot(chartDiv, data, layout, { displayModeBar: false });
+  }
+  
+  function renderBatchIssues(issues) {
+    if (!issues || issues.length === 0) return '';
+    
+    let html = '<div class="batch-issues">';
+    issues.forEach(issue => {
+      const c = issue.severity === 'warning' ? '#f59e0b' : '#3b82f6';
+      html += `<div class="batch-issue" style="border-left-color:${c}"><div class="batch-issue-title">${issue.title}</div><div class="batch-issue-message">${issue.message}</div><div class="batch-issue-recommendation">${issue.recommendation}</div></div>`;
+    });
+    html += '</div>';
+    return html;
+  }
+  
+  function renderPainTables(tables) {
+    if (!tables || tables.length === 0) {
+      return '<p style="color:#10b981;font-size:0.7rem;">✓ No problematic tables detected</p>';
+    }
+    
+    let html = '<div class="pain-tables-table"><table><thead><tr><th>Table</th><th>Pain</th><th>Apply Time</th><th>Ops</th><th>1-by-1</th><th>Errors</th><th>PK</th></tr></thead><tbody>';
+    
+    tables.forEach(t => {
+      const pk = t.has_pk === null ? '?' : (t.has_pk ? '✓' : '✗');
+      const pkC = t.has_pk === false ? '#ef4444' : '#10b981';
+      const oboC = t.one_by_one_count > 0 ? ' warning' : '';
+      const errC = t.error_count > 0 ? ' error' : '';
+      html += `<tr><td class="table-name" title="${t.table_name}">${t.table_name}</td><td class="pain-score">${t.pain_score}</td><td>${t.total_apply_time}s</td><td>${t.total_operations}</td><td class="${oboC}">${t.one_by_one_count}</td><td class="${errC}">${t.error_count}</td><td style="color:${pkC}">${pk}</td></tr>`;
+    });
+    
+    html += '</tbody></table></div>';
+    return html;
+  }
+  
+  function renderFileOperationsSummary(fileOps) {
+    if (!fileOps || fileOps.count === 0) return '';
+    
+    const fmtSz = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b/1024).toFixed(1)} KB` : `${(b/1048576).toFixed(2)} MB`;
+    
+    return `<div class="file-ops-summary"><div class="file-ops-stat"><span class="file-ops-value">${fileOps.count}</span><span class="file-ops-label">Files</span></div><div class="file-ops-stat"><span class="file-ops-value">${fmtSz(fileOps.total_size_bytes)}</span><span class="file-ops-label">Total</span></div><div class="file-ops-stat"><span class="file-ops-value">${fileOps.avg_upload_time?.toFixed(2)}s</span><span class="file-ops-label">Avg Upload</span></div><div class="file-ops-stat"><span class="file-ops-value">${fileOps.avg_throughput_kbps?.toFixed(0)} KB/s</span><span class="file-ops-label">Throughput</span></div></div>`;
+  }
+  
+  function renderRecommendations(recommendations) {
+    if (!recommendations || recommendations.length === 0) {
+      return '<p style="color:#10b981;font-size:0.7rem;">✓ No specific recommendations</p>';
+    }
+    
+    let html = '<div class="recommendations-list">';
+    recommendations.forEach(rec => {
+      const c = rec.priority === 'high' ? '#ef4444' : rec.priority === 'medium' ? '#f59e0b' : '#3b82f6';
+      const actions = rec.actions?.length ? `<ul class="recommendation-actions">${rec.actions.map(a => `<li>${a}</li>`).join('')}</ul>` : '';
+      html += `<div class="recommendation-card" style="--priority-color:${c}"><div class="recommendation-header"><span class="recommendation-priority ${rec.priority}">${rec.priority}</span><span class="recommendation-area">${rec.area}</span><span class="recommendation-title">${rec.title}</span></div><div class="recommendation-description">${rec.description}</div>${actions}</div>`;
+    });
+    html += '</div>';
+    return html;
+  }
+  
+  function renderConfig(config) {
+    if (!config || Object.keys(config).length === 0) return '';
+    
+    const configLabels = {
+      'bulk_timeout_ms': 'Bulk Timeout',
+      'bulk_timeout_min_ms': 'Bulk Timeout Min',
+      'bulk_max_file_size_kb': 'Max File Size',
+      'parallel_apply_threads': 'Parallel Threads',
+      'source_type': 'Source Type',
+      'target_type': 'Target Type',
+      'apply_mode': 'Apply Mode',
+      'merge_enabled': 'MERGE Mode'
+    };
+    
+    // Check if MERGE is enabled or detected
+    const mergeEnabled = config.merge_enabled || config.apply_mode === 'merge';
+    
+    let html = '';
+    
+    // Show MERGE badge prominently if enabled
+    if (mergeEnabled) {
+      html += `<div class="config-merge-banner" style="margin-bottom:12px;padding:8px 12px;background:linear-gradient(135deg,rgba(168,85,247,0.2),rgba(168,85,247,0.1));border:1px solid #a855f7;border-radius:6px;display:flex;align-items:center;gap:8px;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#a855f7"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 7.5a.5.5 0 010 1H5.707l2.147 2.146a.5.5 0 01-.708.708l-3-3a.5.5 0 010-.708l3-3a.5.5 0 11.708.708L5.707 7.5H11.5z"/></svg>
+        <span style="color:#a855f7;font-weight:600;font-size:0.8rem;">MERGE Mode Active</span>
+        <span style="color:#9ca3af;font-size:0.7rem;">Using MERGE statements for CDC apply</span>
+      </div>`;
+    }
+    
+    html += '<div class="config-grid">';
+    Object.entries(config).forEach(([key, value]) => {
+      // Skip merge_enabled as we show it as a banner
+      if (key === 'merge_enabled' && mergeEnabled) return;
+      
+      const label = configLabels[key] || key.replace(/_/g, ' ');
+      let displayValue = value;
+      
+      if (key.includes('timeout') && typeof value === 'number') {
+        displayValue = `${(value / 1000).toFixed(0)}s`;
+      } else if (key.includes('size') && typeof value === 'number') {
+        displayValue = `${(value / 1024).toFixed(0)} MB`;
+      } else if (key === 'apply_mode') {
+        displayValue = `<span style="color:${value === 'merge' ? '#a855f7' : '#3b82f6'};font-weight:600;text-transform:uppercase;">${value}</span>`;
+      }
+      
+      html += `
+        <div class="config-item">
+          <span class="config-label">${label}</span>
+          <span class="config-value">${displayValue}</span>
+        </div>
+      `;
+    });
+    html += '</div>';
+    return html;
+  }
+  
+  function renderErrorCorrelation(correlation) {
+    if (!correlation) return '';
+    
+    let html = `
+      <div class="error-correlation-summary">
+        <div class="correlation-stat">
+          <span class="correlation-value">${correlation.total_correlated_errors}</span>
+          <span class="correlation-label">Errors During High Latency</span>
+        </div>
+        <div class="correlation-stat">
+          <span class="correlation-value">${correlation.high_latency_windows}</span>
+          <span class="correlation-label">High Latency Windows</span>
+        </div>
+        <div class="correlation-stat">
+          <span class="correlation-value">${correlation.high_latency_threshold}s</span>
+          <span class="correlation-label">High Latency Threshold (p75)</span>
+        </div>
+      </div>
+    `;
+    
+    // Errors by type
+    if (correlation.errors_by_type && Object.keys(correlation.errors_by_type).length > 0) {
+      html += '<div class="correlation-breakdown"><h4>Error Types During High Latency</h4><div class="error-type-grid">';
+      Object.entries(correlation.errors_by_type).forEach(([type, count]) => {
+        const typeColors = {
+          'connection': '#ef4444',
+          'timeout': '#f59e0b',
+          'memory': '#8b5cf6',
+          'sql': '#3b82f6',
+          'other': '#6b7280'
+        };
+        html += `
+          <div class="error-type-item" style="border-left-color: ${typeColors[type] || '#6b7280'}">
+            <span class="error-type-count">${count}</span>
+            <span class="error-type-name">${type}</span>
+          </div>
+        `;
+      });
+      html += '</div></div>';
+    }
+    
+    // Errors by component
+    if (correlation.errors_by_component && Object.keys(correlation.errors_by_component).length > 0) {
+      html += '<div class="correlation-breakdown"><h4>Errors by Component</h4><div class="error-component-list">';
+      Object.entries(correlation.errors_by_component)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .forEach(([comp, count]) => {
+          html += `<div class="error-component-item"><span class="comp-name">${comp}</span><span class="comp-count">${count}</span></div>`;
+        });
+      html += '</div></div>';
+    }
+    
+    // Sample errors
+    if (correlation.sample_errors && correlation.sample_errors.length > 0) {
+      html += '<div class="correlation-samples"><h4>Sample Errors (click to navigate)</h4>';
+      correlation.sample_errors.slice(0, 5).forEach(err => {
+        html += `
+          <div class="sample-error" onclick="jumpToLineAndHighlight(${err.line_number}, '')">
+            <span class="sample-time">${err.timestamp?.substring(11, 19) || ''}</span>
+            <span class="sample-comp">[${err.component}]</span>
+            <span class="sample-text">${escapeHtml(err.text?.substring(0, 100) || '')}...</span>
+          </div>
+        `;
+      });
+      html += '</div>';
+    }
+    
+    return html;
+  }
+  
+  function renderMergeAnalysis(mergeData) {
+    if (!mergeData || !mergeData.summary) return '';
+    
+    const summary = mergeData.summary;
+    
+    let html = `
+      <div class="merge-summary">
+        <div class="merge-stat highlight">
+          <span class="merge-value">${summary.merge_percent}%</span>
+          <span class="merge-label">MERGE Operations</span>
+        </div>
+        <div class="merge-stat">
+          <span class="merge-value">${summary.total_merge_operations.toLocaleString()}</span>
+          <span class="merge-label">Total MERGE</span>
+        </div>
+        <div class="merge-stat">
+          <span class="merge-value">${summary.total_standard_operations.toLocaleString()}</span>
+          <span class="merge-label">Standard Bulk</span>
+        </div>
+        <div class="merge-stat">
+          <span class="merge-value">${summary.tables_using_merge}</span>
+          <span class="merge-label">Tables Using MERGE</span>
+        </div>
+      </div>
+    `;
+    
+    // Tables with MERGE
+    if (mergeData.tables_with_merge && mergeData.tables_with_merge.length > 0) {
+      html += '<div class="merge-tables"><h4>Tables Using MERGE</h4><table class="merge-table">';
+      html += '<thead><tr><th>Table</th><th>MERGE</th><th>Standard</th><th>MERGE %</th></tr></thead><tbody>';
+      mergeData.tables_with_merge.slice(0, 10).forEach(t => {
+        html += `
+          <tr>
+            <td class="table-name" title="${t.table_name}">${t.table_name}</td>
+            <td class="merge-count">${t.merge_count.toLocaleString()}</td>
+            <td>${t.standard_count.toLocaleString()}</td>
+            <td class="merge-pct">${t.merge_percent}%</td>
+          </tr>
+        `;
+      });
+      html += '</tbody></table></div>';
+    }
+    
+    return html;
+  }
+  
+  function renderCDCPipeline(pipeline) {
+    if (!pipeline) return '';
+    
+    const healthColors = { 'healthy': '#10b981', 'warning': '#f59e0b', 'critical': '#ef4444' };
+    const hc = healthColors[pipeline.health_status] || '#6b7280';
+    const healthLabel = pipeline.health_status === 'healthy' ? '✓ Healthy' : pipeline.health_status === 'warning' ? '⚠ Warning' : '✗ Critical';
+    
+    let html = `<div class="pipeline-status" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="padding:3px 8px;background:${hc}22;color:${hc};border-radius:3px;font-size:0.7rem;font-weight:bold;">${healthLabel}</span></div>`;
+    
+    html += '<div class="pipeline-metrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">';
+    html += `<div class="pipeline-metric"><span class="metric-value" style="color:#f59e0b;">${pipeline.memory_warnings || 0}</span><span class="metric-label">Memory Warnings</span></div>`;
+    html += `<div class="pipeline-metric"><span class="metric-value" style="color:#ef4444;">${pipeline.overflow_events || 0}</span><span class="metric-label">Overflow Events</span></div>`;
+    html += `<div class="pipeline-metric"><span class="metric-value" style="color:#ef4444;">${pipeline.disconnections || 0}</span><span class="metric-label">Disconnections</span></div>`;
+    html += `<div class="pipeline-metric"><span class="metric-value" style="color:#10b981;">${pipeline.reconnections || 0}</span><span class="metric-label">Reconnections</span></div>`;
+    html += '</div>';
+    
+    if (pipeline.health_status !== 'healthy') {
+      html += '<div class="pipeline-hint" style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;font-size:0.65rem;color:#9ca3af;">';
+      if (pipeline.memory_warnings > 0) {
+        html += '<p style="margin:0 0 4px;"><span style="color:#f59e0b;">●</span> Memory warnings indicate sorter buffer pressure. Consider increasing stream_buffer_size.</p>';
+      }
+      if (pipeline.disconnections > 0) {
+        html += '<p style="margin:0;"><span style="color:#ef4444;">●</span> Target disconnections affect apply performance. Check target database connectivity.</p>';
+      }
+      html += '</div>';
+    }
+    
+    return html;
+  }
+  
+  function renderSourceAnalysis(source) {
+    if (!source) return '';
+    
+    const healthColors = { 'healthy': '#10b981', 'warning': '#f59e0b', 'critical': '#ef4444' };
+    const hc = healthColors[source.health_status] || '#6b7280';
+    const healthLabel = source.health_status === 'healthy' ? '✓ Healthy' : source.health_status === 'warning' ? '⚠ Warning' : '✗ Critical';
+    
+    let html = `<div class="source-status" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="padding:3px 8px;background:${hc}22;color:${hc};border-radius:3px;font-size:0.7rem;font-weight:bold;">${healthLabel}</span></div>`;
+    
+    html += '<div class="source-metrics" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">';
+    html += `<div class="source-metric"><span class="metric-value" style="color:#3b82f6;">${source.total_reconnects || 0}</span><span class="metric-label">Reconnects</span></div>`;
+    html += `<div class="source-metric"><span class="metric-value" style="color:#ef4444;">${source.network_issues || 0}</span><span class="metric-label">Network Issues</span></div>`;
+    html += `<div class="source-metric"><span class="metric-value" style="color:#f59e0b;">${source.contention_issues || 0}</span><span class="metric-label">Contention</span></div>`;
+    html += `<div class="source-metric"><span class="metric-value" style="color:#8b5cf6;">${source.resource_issues || 0}</span><span class="metric-label">Resource Issues</span></div>`;
+    html += `<div class="source-metric"><span class="metric-value" style="color:#6b7280;">${source.total_source_errors || 0}</span><span class="metric-label">Total Errors</span></div>`;
+    html += '</div>';
+    
+    // Investigation hints
+    if (source.investigation_hints && source.investigation_hints.length > 0) {
+      html += '<div class="source-hints" style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;">';
+      html += '<h4 style="margin:0 0 4px;font-size:0.7rem;color:#9ca3af;">Investigation Hints</h4>';
+      html += '<ul style="margin:0;padding-left:16px;font-size:0.65rem;color:#d1d5db;">';
+      source.investigation_hints.forEach(hint => {
+        html += `<li style="margin:2px 0;">${hint}</li>`;
+      });
+      html += '</ul></div>';
+    }
+    
+    return html;
+  }
+
+  // ============================================================
+  // RELEASE NOTES INTEGRATION
+  // ============================================================
+  
+  window.showReleaseNotesInMain = function() {
+    // Hide ALL other views
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
+    document.getElementById('threadActivityControls').style.display = 'none';
+    
+    // Show release notes view
+    const view = document.getElementById('releaseNotesMainView');
+    if (view) {
+      view.style.display = 'block';
+    }
+    
+    // Set active report link
+    setActiveReportLink('releaseNotesLink');
+    
+    // Render the release notes interface
+    renderReleaseNotesInterface();
+  };
+  
+  // Parse Qlik Replicate version to get release month
+  // Format: YYYY.M.X.XXX where M maps to month (5 = November based on Qlik's release cycle)
+  function parseReplicateVersion(version) {
+    if (!version) return { version: 'Unknown', releaseDate: null, releaseMonth: null };
+    
+    const match = version.match(/^(\d{4})\.(\d+)/);
+    if (!match) return { version, releaseDate: null, releaseMonth: null };
+    
+    const year = parseInt(match[1]);
+    const releaseNum = parseInt(match[2]);
+    
+    // Qlik Replicate release mapping: release number to month
+    // Based on user info: 5 = November, so working backwards:
+    // 1 = July, 2 = August, 3 = September, 4 = October, 5 = November, 6 = December
+    // Then wrapping: 7 = January (next year), etc.
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    
+    // Map release number to month (1=May, 2=June, 3=July, 4=Aug, 5=Sep, 6=Oct, 7=Nov)
+    // Actually based on "2025.5 = November 2025", let's use: releaseNum + 6 = month
+    // 5 + 6 = 11 (November) ✓
+    const monthIndex = ((releaseNum + 5) % 12); // 0-indexed
+    const releaseYear = releaseNum > 6 ? year : year; // Adjust if needed
+    
+    return {
+      version,
+      releaseMonth: monthNames[monthIndex],
+      releaseYear: releaseYear,
+      releaseDate: `${monthNames[monthIndex]} ${releaseYear}`
+    };
+  }
+  
+  function renderReleaseNotesInterface() {
+    const content = document.getElementById('releaseNotesMainContent');
+    if (!content) return;
+    
+    const version = window.taskVersion || 'Unknown';
+    const versionInfo = parseReplicateVersion(version);
+    const sourceEndpoint = window.sourceEndpoint || 'Unknown';
+    const targetEndpoint = window.targetEndpoint || 'Unknown';
+    const releaseNotesUrl = 'https://community.qlik.com/t5/Release-Notes/tkb-p/ReleaseNotes';
+    
+    const releaseLabel = versionInfo.releaseDate ? 
+      '<span style="color:#10b981;font-size:0.7rem;margin-left:8px;">(' + versionInfo.releaseDate + ' Release)</span>' : '';
+    
+    // Build HTML without newlines to avoid whitespace gaps
+    let h = '<div style="max-width:900px;margin:0 auto;padding:16px">';
+    h += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">';
+    h += '<svg width="28" height="28" viewBox="0 0 16 16" fill="#06b6d4"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>';
+    h += '<div><h2 style="margin:0;font-size:1.1rem">Qlik Replicate Release Notes</h2>';
+    h += '<p style="margin:2px 0 0;font-size:0.75rem;color:#9ca3af">Find relevant fixes and enhancements for your configuration</p></div></div>';
+    h += '<div style="background:#1f2937;border-radius:8px;padding:16px;margin-bottom:20px">';
+    h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">Your Configuration</h3>';
+    h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+    h += '<div style="background:#111827;padding:10px;border-radius:6px">';
+    h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Replicate Version</div>';
+    h += '<div style="font-size:0.9rem;color:#3b82f6;font-weight:bold">' + version + releaseLabel + '</div></div>';
+    h += '<div style="background:#111827;padding:10px;border-radius:6px">';
+    h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Source Endpoint</div>';
+    h += '<div style="font-size:0.85rem;color:#10b981">' + sourceEndpoint + '</div></div>';
+    h += '<div style="background:#111827;padding:10px;border-radius:6px">';
+    h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Target Endpoint</div>';
+    h += '<div style="font-size:0.85rem;color:#f59e0b">' + targetEndpoint + '</div></div></div></div>';
+
+    h += '<div style="background:linear-gradient(135deg,#1e3a5f,#1e1b4b);border:1px solid #3b82f6;border-radius:8px;padding:16px;margin-bottom:20px">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">';
+    h += '<div><h3 style="margin:0 0 6px;font-size:0.9rem;color:#e5e7eb">📚 Official Release Notes</h3>';
+    h += '<p style="margin:0;font-size:0.75rem;color:#9ca3af">Access the Qlik Community Release Notes knowledge base</p></div>';
+    h += '<a href="' + releaseNotesUrl + '" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;background:#3b82f6;color:white;text-decoration:none;border-radius:6px;font-size:0.85rem;font-weight:600">Open Release Notes <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path fill-rule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg></a></div></div>';
+    h += '<div style="background:#1f2937;border-radius:8px;padding:16px;margin-bottom:20px">';
+    h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">🔍 Search for Relevant Fixes</h3>';
+    h += '<p style="margin:0 0 12px;font-size:0.75rem;color:#9ca3af">Select your source and target components to find potentially relevant release notes:</p>';
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">';
+    h += '<div><label style="display:block;font-size:0.7rem;color:#9ca3af;margin-bottom:4px">Source Component</label>';
+    h += '<select id="releaseNotesSource" style="width:100%;padding:8px 10px;background:#111827;border:1px solid #374151;border-radius:4px;color:#e5e7eb;font-size:0.8rem">';
+    h += '<option value="">Auto-detected: ' + sourceEndpoint + '</option>';
+    h += '<option value="Oracle">Oracle</option><option value="SQL Server">Microsoft SQL Server</option><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option>';
+    h += '<option value="IBM DB2">IBM DB2</option><option value="IBM DB2 for i">IBM DB2 for i</option><option value="SAP HANA">SAP HANA</option><option value="SAP">SAP Applications</option>';
+    h += '<option value="MongoDB">MongoDB</option><option value="Salesforce">Salesforce</option><option value="File">File Sources</option></select></div>';
+    h += '<div><label style="display:block;font-size:0.7rem;color:#9ca3af;margin-bottom:4px">Target Component</label>';
+    h += '<select id="releaseNotesTarget" style="width:100%;padding:8px 10px;background:#111827;border:1px solid #374151;border-radius:4px;color:#e5e7eb;font-size:0.8rem">';
+    h += '<option value="">Auto-detected: ' + targetEndpoint + '</option>';
+    h += '<option value="Databricks">Databricks Lakehouse</option><option value="Snowflake">Snowflake</option><option value="BigQuery">Google Cloud BigQuery</option>';
+    h += '<option value="Redshift">Amazon Redshift</option><option value="Azure Synapse">Azure Synapse Analytics</option><option value="S3">Amazon S3</option>';
+    h += '<option value="Azure Data Lake">Azure Data Lake</option><option value="Google Cloud Storage">Google Cloud Storage</option><option value="Kafka">Apache Kafka</option>';
+    h += '<option value="Oracle">Oracle</option><option value="SQL Server">Microsoft SQL Server</option><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option></select></div></div>';
+    h += '<button id="searchReleaseNotesBtn" style="width:100%;padding:10px;background:#10b981;color:#111827;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer">Search Release Notes on Qlik Community</button></div>';
+    h += '<div style="background:#111827;border-radius:8px;padding:16px">';
+    h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">💡 Example Relevant Fix</h3>';
+    h += '<div style="background:#1f2937;border-radius:6px;padding:12px;border-left:3px solid #06b6d4">';
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+    h += '<span style="padding:2px 8px;background:#06b6d4;color:#111827;border-radius:3px;font-size:0.65rem;font-weight:bold">RECOB-9349</span>';
+    h += '<span style="padding:2px 8px;background:#374151;color:#9ca3af;border-radius:3px;font-size:0.65rem">Enhancement</span></div>';
+    h += '<p style="margin:0 0 6px;font-size:0.8rem;color:#e5e7eb;font-weight:500">Added support for the JSON data type (subtype) during CDC</p>';
+    h += '<p style="margin:0 0 8px;font-size:0.7rem;color:#9ca3af">Component/Process: <span style="color:#f59e0b">Google Cloud BigQuery Target</span></p>';
+    h += '<p style="margin:0;font-size:0.65rem;color:#6b7280">This enhancement requires a feature flag to be turned on in Replicate.</p></div>';
+    h += '<p style="margin:12px 0 0;font-size:0.7rem;color:#6b7280"><strong>Note:</strong> This is an example of how release notes can help identify relevant fixes. Browse the Qlik Community Release Notes for the complete list.</p></div></div>';
+    
+    content.innerHTML = h;
+    
+    // Add event listener for the search button
+    const searchBtn = document.getElementById('searchReleaseNotesBtn');
+    if (searchBtn) {
+      searchBtn.addEventListener('click', () => {
+        const sourceSelect = document.getElementById('releaseNotesSource');
+        const targetSelect = document.getElementById('releaseNotesTarget');
+        const source = sourceSelect.value || sourceEndpoint;
+        const target = targetSelect.value || targetEndpoint;
+        const searchQuery = encodeURIComponent(`Qlik Replicate ${source} ${target}`);
+        const searchUrl = `https://community.qlik.com/t5/forums/searchpage/tab/message?advanced=false&allow_hierarchical_checkbox_filter=false&filter=labels&q=${searchQuery}`;
+        window.open(searchUrl, '_blank');
+      });
+    }
   }
 
 });
