@@ -200,8 +200,106 @@ class UserSettings(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class LLMConfig(Base):
+    """Store LLM configuration (API keys and preferences)."""
+    __tablename__ = "llm_config"
+    
+    id = Column(Integer, primary_key=True)
+    # Provider selection: "gemini" (default) or "openrouter"
+    provider = Column(String, default="gemini")
+    # Gemini API key (AI Studio)
+    gemini_api_key_encrypted = Column(String, nullable=True)
+    # OpenRouter API key (legacy field renamed for clarity)
+    api_key_encrypted = Column(String, nullable=True)  # OpenRouter key
+    # Default model (provider-specific)
+    default_model = Column(String, default="gemini-2.5-flash")
+    # Web search enabled for report generation
+    web_search_enabled = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LLMReport(Base):
+    """Store generated LLM analysis reports."""
+    __tablename__ = "llm_reports"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    model_used = Column(String)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    cost_usd = Column(Float, default=0.0)
+    report_content = Column(Text)  # Markdown formatted report
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    
+    file = relationship("LogFile", backref="llm_reports")
+
+
+class KBArticle(Base):
+    """Track indexed KB articles from Qlik Community and custom markdown files."""
+    __tablename__ = "kb_articles"
+    
+    id = Column(Integer, primary_key=True)
+    url = Column(String, unique=True, index=True)  # URL or file path
+    article_id = Column(String, nullable=True, index=True)  # Qlik article ID (e.g., "1714978")
+    title = Column(String)
+    source = Column(String, default="kb_article")  # "kb_article" or "markdown"
+    content_hash = Column(String, index=True)  # For detecting content changes
+    content_length = Column(Integer, default=0)
+    chunks_count = Column(Integer, default=0)  # Number of chunks in ChromaDB
+    indexed_at = Column(DateTime, default=datetime.utcnow)
+    last_modified = Column(DateTime, nullable=True)  # From sitemap lastmod
+    status = Column(String, default="indexed")  # indexed, failed, outdated
+
+
 def init_db():
+    """Initialize the database and run migrations."""
     Base.metadata.create_all(bind=engine)
+    
+    # Run migrations for LLMConfig table
+    _migrate_llm_config()
+
+
+def _migrate_llm_config():
+    """Add new columns to llm_config table if they don't exist."""
+    import sqlite3
+    
+    # Get the database path from the engine
+    db_path = str(engine.url).replace('sqlite:///', '')
+    if not db_path or db_path == ':memory:':
+        return
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Check if llm_config table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_config'")
+        if not cursor.fetchone():
+            conn.close()
+            return
+        
+        # Get existing columns
+        cursor.execute("PRAGMA table_info(llm_config)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        # Add missing columns
+        if 'provider' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN provider TEXT DEFAULT 'gemini'")
+            print("Migration: Added 'provider' column to llm_config")
+        
+        if 'gemini_api_key_encrypted' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN gemini_api_key_encrypted TEXT")
+            print("Migration: Added 'gemini_api_key_encrypted' column to llm_config")
+        
+        if 'web_search_enabled' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN web_search_enabled INTEGER DEFAULT 0")
+            print("Migration: Added 'web_search_enabled' column to llm_config")
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Migration warning: {e}")
+
 
 def get_db():
     db = SessionLocal()

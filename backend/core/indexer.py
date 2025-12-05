@@ -4,11 +4,12 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from backend.database import LogFile, LogIndex, LogPerformance, LogStats, LogError
 from backend.core.patterns import LINE_FULL_RE, LINE_START_RE, PERF_RE, ERR_RE
+from backend.core.reader import clear_file_cache
 
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 5000  # Commit to DB every N lines
-INDEX_INTERVAL = 1000  # Create sparse index every N lines
+INDEX_INTERVAL = 500  # Create sparse index every N lines (reduced for better seeking)
 
 def process_log_file(db: Session, file_id: int):
     """
@@ -19,6 +20,9 @@ def process_log_file(db: Session, file_id: int):
     if not log_file:
         logger.error(f"File ID {file_id} not found.")
         return
+
+    # Clear any cached lines for this file when reindexing
+    clear_file_cache(file_id)
 
     try:
         file_path = log_file.file_path

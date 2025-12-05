@@ -111,7 +111,22 @@ async def upload_log(
 
 @router.get("/files")
 def list_files(db: Session = Depends(get_db)):
-    return db.query(LogFile).order_by(LogFile.upload_time.desc()).limit(10).all()
+    files = db.query(LogFile).order_by(LogFile.upload_time.desc()).limit(20).all()
+    return [
+        {
+            "id": f.id,
+            "filename": f.filename,
+            "file_path": f.file_path,
+            "status": f.status,
+            "line_count": f.line_count,
+            "size_bytes": f.size_bytes,
+            "upload_time": f.upload_time.isoformat() if f.upload_time else None,
+            "indexed_at": f.upload_time.isoformat() if f.upload_time else None,
+            "vectorized": f.vectorized if hasattr(f, 'vectorized') else False,
+            "error": f.error_message
+        }
+        for f in files
+    ]
 
 @router.get("/files/{file_id}")
 def get_file_status(file_id: int, db: Session = Depends(get_db)):
@@ -157,6 +172,8 @@ def get_file_summary(file_id: int, db: Session = Depends(get_db)):
 
     return {
         "filename": f.filename,
+        "file_size": f.size_bytes,
+        "line_count": f.line_count,
         "components": [
             {
                 "name": s.component,
@@ -174,10 +191,20 @@ def get_lines(
     file_id: int, 
     start: int = 0, 
     limit: int = 100, 
+    center: Optional[int] = None,
+    before: int = 50,
+    after: int = 50,
     db: Session = Depends(get_db)
 ):
+    """
+    Get log lines. Two modes:
+    1. Sequential: start + limit (default)
+    2. Centered: center + before + after (for jumping to a specific line)
+    """
     try:
         reader = LogReader(db, file_id)
+        if center is not None:
+            return reader.read_lines_centered(center, before, after)
         return reader.read_lines(start, limit)
     except ValueError:
         raise HTTPException(status_code=404, detail="File not found")

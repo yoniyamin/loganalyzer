@@ -11,6 +11,13 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentView = 'all'; // 'all' or 'search' - tracks which view is active
   let lastSearchMatches = []; // Store last search matches for highlighting in All Lines view
   
+  // Track loaded line range for bidirectional scrolling
+  let loadedLinesStart = 0;
+  let loadedLinesEnd = 0;
+  
+  // Store highlighted lines by line index (persists across reloads)
+  let highlightedLines = {}; // { lineIndex: colorName }
+  
   // Multiple search tabs state
   let searchTabs = []; // Array of { id, query, matches }
   let searchTabIdCounter = 0;
@@ -47,6 +54,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const threadListDiv = document.getElementById("threadList");
   const threadLogView = document.getElementById("threadLogView");
   const componentInfo = document.getElementById("componentInfo");
+  
+  // Log View Threads Panel elements
+  const logViewThreadList = document.getElementById("logViewThreadList");
+  const logViewComponentInfo = document.getElementById("logViewComponentInfo");
+  const logViewComponentInfoContent = document.getElementById("logViewComponentInfoContent");
+  const logViewComponentSearch = document.getElementById("logViewComponentSearch");
   const componentThreadSearch = document.getElementById("componentThreadSearch");
   const activityQuickSearch = document.getElementById("activityQuickSearch");
   const activitySearchPrev = document.getElementById("activitySearchPrev");
@@ -197,6 +210,36 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  // Left Panel Tabs (Files/Search)
+  const leftPanelTabs = document.querySelectorAll('.left-panel-tab');
+  const leftPanelContents = document.querySelectorAll('.left-panel-content');
+  
+  leftPanelTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const panelId = tab.dataset.panel;
+      
+      // Update tab active states
+      leftPanelTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      
+      // Update panel visibility
+      leftPanelContents.forEach(content => {
+        content.classList.remove('active');
+        if (content.id === panelId) {
+          content.classList.add('active');
+        }
+      });
+    });
+  });
+  
+  // Function to switch to search panel
+  function switchToSearchPanel() {
+    const searchTab = document.querySelector('.left-panel-tab[data-panel="search-panel"]');
+    if (searchTab) {
+      searchTab.click();
+    }
+  }
+
   // Search
   if (searchBtn) searchBtn.addEventListener("click", performSearch);
   if (searchInput) {
@@ -205,15 +248,39 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Infinite Scroll - only active when viewing "All Lines"
+  // Track last fetch to prevent duplicate requests (declared at module scope for access in jumpToLineAndHighlight)
+  let lastFetchStart = -1;
+  let lastFetchDirection = null;
+  
+  // Infinite Scroll - bidirectional, only active when viewing "All Lines"
   if (logPreview) {
     logPreview.addEventListener("scroll", () => {
       // Don't load more lines when viewing search results
       if (currentView !== 'all') return;
+      if (isFetchingLog) return;
       
+      // Load more lines when scrolling DOWN (near bottom)
       if (logPreview.scrollTop + logPreview.clientHeight >= logPreview.scrollHeight - 50) {
-        if (currentLogStart + 100 < totalLogLines && !isFetchingLog) {
-           fetchLogLines(currentLogStart + 100, 100, true);
+        // Only fetch if we have more lines to load AND we haven't just fetched this range
+        if (loadedLinesEnd < totalLogLines) {
+          if (lastFetchStart !== loadedLinesEnd || lastFetchDirection !== 'down') {
+            lastFetchStart = loadedLinesEnd;
+            lastFetchDirection = 'down';
+            fetchLogLines(loadedLinesEnd, 100, true, 'down');
+          }
+        }
+      }
+      
+      // Load more lines when scrolling UP (near top)
+      if (logPreview.scrollTop <= 50) {
+        if (loadedLinesStart > 0) {
+          const newStart = Math.max(0, loadedLinesStart - 100);
+          const count = loadedLinesStart - newStart;
+          if (count > 0 && (lastFetchStart !== newStart || lastFetchDirection !== 'up')) {
+            lastFetchStart = newStart;
+            lastFetchDirection = 'up';
+            fetchLogLines(newStart, count, true, 'up');
+          }
         }
       }
     });
@@ -597,6 +664,215 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   
+  // Filter for Log View threads panel
+  function filterLogViewThreadList() {
+    if (!logViewComponentSearch || !logViewThreadList) return;
+    
+    const query = logViewComponentSearch.value.toLowerCase().trim();
+    const groups = logViewThreadList.querySelectorAll('.component-group-container');
+    
+    groups.forEach(group => {
+      const componentName = group.dataset.componentName.toLowerCase();
+      const threads = group.querySelectorAll('.thread-item');
+      let groupHasMatch = false;
+      
+      if (query === '') {
+        group.style.display = '';
+        threads.forEach(t => t.style.display = '');
+        groupHasMatch = true;
+      } else {
+        const componentMatches = componentName.includes(query);
+        
+        threads.forEach(thread => {
+          const threadId = thread.dataset.threadId;
+          const threadMatches = threadId.includes(query);
+          
+          if (componentMatches || threadMatches) {
+            thread.style.display = '';
+            groupHasMatch = true;
+          } else {
+            thread.style.display = 'none';
+          }
+        });
+        
+        group.style.display = groupHasMatch ? '' : 'none';
+        
+        if (groupHasMatch && query !== '') {
+          const threadList = group.querySelector('.thread-list-inner');
+          const icon = group.querySelector('.expand-icon');
+          if (threadList && icon) {
+            threadList.classList.remove('hidden');
+            icon.textContent = '▼';
+          }
+        }
+      }
+    });
+  }
+  
+  // Add event listener for log view component search
+  if (logViewComponentSearch) {
+    logViewComponentSearch.addEventListener('input', filterLogViewThreadList);
+  }
+  
+  // Render threads in Log View panel
+  function renderLogViewThreads(data) {
+    if (!logViewThreadList) return;
+    
+    logViewThreadList.innerHTML = "";
+    
+    if (!data.components || data.components.length === 0) {
+      logViewThreadList.innerHTML = '<p class="placeholder-text-small">No components found</p>';
+      return;
+    }
+    
+    // First, classify threads by their dominant component
+    const threadToComponentMap = {};
+    const threadCounts = {};
+    
+    data.components.forEach(c => {
+      if (!threadCounts[c.thread]) {
+        threadCounts[c.thread] = {};
+      }
+      threadCounts[c.thread][c.name] = c.count;
+    });
+    
+    // Assign each thread to its dominant component
+    Object.keys(threadCounts).forEach(thread => {
+      const components = threadCounts[thread];
+      let maxCount = 0;
+      let dominantComponent = null;
+      
+      Object.entries(components).forEach(([component, count]) => {
+        if (count > maxCount) {
+          maxCount = count;
+          dominantComponent = component;
+        }
+      });
+      
+      threadToComponentMap[thread] = dominantComponent;
+    });
+    
+    // Group by dominant component
+    const componentMap = {};
+    data.components.forEach(c => {
+      const dominantComp = threadToComponentMap[c.thread];
+      
+      if (!componentMap[dominantComp]) {
+        componentMap[dominantComp] = {
+          name: dominantComp,
+          totalCount: 0,
+          threads: {}
+        };
+      }
+      
+      if (!componentMap[dominantComp].threads[c.thread]) {
+        componentMap[dominantComp].threads[c.thread] = {
+          thread: c.thread,
+          count: 0,
+          first_ts: c.first_ts,
+          last_ts: c.last_ts
+        };
+      }
+      
+      componentMap[dominantComp].threads[c.thread].count += c.count;
+      componentMap[dominantComp].totalCount += c.count;
+    });
+    
+    // Sort components by message count (descending)
+    const sortedComponents = Object.values(componentMap).sort((a, b) => b.totalCount - a.totalCount);
+    
+    // Render each component group
+    sortedComponents.forEach(comp => {
+      const groupDiv = document.createElement("div");
+      groupDiv.className = "component-group-container";
+      groupDiv.dataset.componentName = comp.name;
+      
+      // Component header
+      const headerDiv = document.createElement("div");
+      headerDiv.className = "group-header";
+      const threadCount = Object.keys(comp.threads).length;
+      headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color: #9ca3af;">(${comp.totalCount} msgs, ${threadCount} threads)</span>`;
+      headerDiv.onclick = () => {
+        const threadList = groupDiv.querySelector('.thread-list-inner');
+        const icon = headerDiv.querySelector('.expand-icon');
+        const isHidden = threadList.classList.toggle('hidden');
+        icon.textContent = isHidden ? '▶' : '▼';
+      };
+      
+      groupDiv.appendChild(headerDiv);
+      
+      // Thread list (collapsed by default)
+      const threadListInner = document.createElement("div");
+      threadListInner.className = "thread-list-inner hidden";
+      
+      // Sort threads by count
+      const sortedThreads = Object.values(comp.threads).sort((a, b) => b.count - a.count);
+      
+      sortedThreads.forEach(t => {
+        const threadDiv = document.createElement("div");
+        threadDiv.className = "thread-item";
+        threadDiv.dataset.threadId = t.thread;
+        threadDiv.innerHTML = `Thread ${t.thread}: ${t.count} msgs`;
+        threadDiv.onclick = (e) => {
+          e.stopPropagation();
+          // Load component activity and show component info in log view panel
+          loadComponentActivityForLogView(comp.name, t.thread, t.count);
+        };
+        threadListInner.appendChild(threadDiv);
+      });
+      
+      groupDiv.appendChild(threadListInner);
+      logViewThreadList.appendChild(groupDiv);
+    });
+  }
+  
+  // Load component activity from log view (shows info in left panel)
+  function loadComponentActivityForLogView(component, thread, messageCount) {
+    // Update component info in log view panel
+    updateLogViewComponentInfo(component, thread, messageCount);
+    
+    // Perform search and create a search tab with results (but don't switch left panel)
+    if (!currentFileId) return;
+    
+    const escapedComponent = component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchQuery = `^${thread}:.*\\[${escapedComponent}`;
+    
+    // Update the search input but DON'T switch to search panel - user stays on threads panel
+    if (searchInput) {
+      searchInput.value = searchQuery;
+      // Trigger search without switching panel
+      performSearch();
+    }
+  }
+  
+  // Update component info in Log View left panel
+  function updateLogViewComponentInfo(component, thread, messageCount) {
+    if (!logViewComponentInfo || !logViewComponentInfoContent) return;
+    
+    const description = componentDescriptions[component] || 'No description available for this component.';
+    
+    logViewComponentInfo.style.display = 'block';
+    
+    logViewComponentInfoContent.innerHTML = `
+      <div class="component-detail-card">
+        <h5>${component}</h5>
+        ${thread ? `<p><strong>Thread:</strong> ${thread}</p>` : ''}
+        <p><strong>Messages:</strong> ${messageCount}</p>
+      </div>
+      <div class="component-description">
+        <h5>Description</h5>
+        <p>${description}</p>
+        <p style="margin-top: 8px; font-size: 0.7rem;">
+          <a href="https://help.qlik.com/en-US/replicate/November2025/Content/Replicate/Main/Replicate%20Loggers/Loggers.htm" 
+             target="_blank" 
+             style="color: #60a5fa; text-decoration: none;">
+             📖 Qlik Documentation
+          </a>
+        </p>
+      </div>
+    `;
+  }
+  
   function performActivityQuickSearch() {
     const query = activityQuickSearch.value.trim();
     const logLines = threadLogView.querySelectorAll('.log-line');
@@ -887,16 +1163,26 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
   
+  // Track selected file (before loading)
+  let selectedFileId = null;
+  let filesCache = []; // Cache file list for metadata lookup
+  
   function renderFileList(files) {
+    filesCache = files; // Cache for metadata lookup
     fileList.innerHTML = "";
     if (files.length === 0) {
       fileList.innerHTML = '<li class="placeholder-text-small">No files loaded</li>';
+      hideFileMetadataPanel();
       return;
     }
     
     files.forEach(f => {
       const li = document.createElement("li");
-      li.className = "recent-file-item" + (f.id === currentFileId ? " active" : "");
+      // Active = currently loaded, Selected = clicked but not loaded
+      let className = "recent-file-item";
+      if (f.id === currentFileId) className += " active";
+      if (f.id === selectedFileId && f.id !== currentFileId) className += " selected";
+      li.className = className;
       li.dataset.fileId = f.id;
       
       // File icon SVG
@@ -907,11 +1193,8 @@ document.addEventListener("DOMContentLoaded", () => {
       
       const filenameSpan = document.createElement("span");
       filenameSpan.className = "recent-file-name";
-      // Shorten very long filenames for display
-      const displayName = f.filename.length > 25 
-        ? f.filename.substring(0, 22) + '...' 
-        : f.filename;
-      filenameSpan.textContent = displayName;
+      // Let CSS handle truncation with ellipsis - show full name, tooltip for very long names
+      filenameSpan.textContent = f.filename;
       filenameSpan.title = f.filename;
       
       // Line count badge
@@ -948,13 +1231,36 @@ document.addEventListener("DOMContentLoaded", () => {
       removeBtn.onclick = () => {
         removeFromRecentFiles(f.id);
         li.remove();
+        if (selectedFileId === f.id) {
+          selectedFileId = null;
+          hideFileMetadataPanel();
+        }
       };
       
       actionsDiv.appendChild(reindexBtn);
       actionsDiv.appendChild(removeBtn);
       
-      // Click to load file
-      li.onclick = () => loadFile(f.id);
+      // Single click to select, double-click or click selected to open
+      li.onclick = () => {
+        if (f.id === currentFileId) {
+          // Already loaded, do nothing
+          return;
+        }
+        if (f.id === selectedFileId) {
+          // Already selected, load the file
+          loadFile(f.id);
+        } else {
+          // Select this file
+          selectFile(f.id);
+        }
+      };
+      
+      // Double-click to load directly
+      li.ondblclick = () => {
+        if (f.id !== currentFileId) {
+          loadFile(f.id);
+        }
+      };
       
       li.appendChild(iconSvg);
       li.appendChild(filenameSpan);
@@ -962,6 +1268,86 @@ document.addEventListener("DOMContentLoaded", () => {
       li.appendChild(actionsDiv);
       fileList.appendChild(li);
     });
+  }
+  
+  // Select a file (show metadata) without loading it
+  function selectFile(fileId) {
+    selectedFileId = fileId;
+    
+    // Update visual state
+    document.querySelectorAll('.recent-file-item').forEach(item => {
+      item.classList.remove('selected');
+      if (item.dataset.fileId == fileId && fileId !== currentFileId) {
+        item.classList.add('selected');
+      }
+    });
+    
+    // Find file in cache
+    const file = filesCache.find(f => f.id === fileId);
+    if (file) {
+      showFileMetadataPanel(file);
+    }
+  }
+  
+  // Show file metadata panel
+  function showFileMetadataPanel(file) {
+    const panel = document.getElementById('fileMetadataPanel');
+    if (!panel) return;
+    
+    panel.classList.remove('hidden');
+    
+    // Update metadata fields
+    document.getElementById('metadataFileName').textContent = file.filename;
+    document.getElementById('metadataFileName').title = file.filename;
+    
+    // Status
+    const statusEl = document.getElementById('metadataStatus');
+    statusEl.textContent = file.status || 'ready';
+    statusEl.className = 'file-metadata-value';
+    if (file.status === 'ready') statusEl.classList.add('status-ready');
+    else if (file.status === 'indexing') statusEl.classList.add('status-indexing');
+    else if (file.status === 'error') statusEl.classList.add('status-error');
+    
+    // Lines
+    const lines = file.line_count || 0;
+    document.getElementById('metadataLines').textContent = lines.toLocaleString();
+    
+    // Size
+    const size = file.size_bytes || 0;
+    let sizeText = '';
+    if (size < 1024) sizeText = `${size} B`;
+    else if (size < 1024 * 1024) sizeText = `${(size / 1024).toFixed(1)} KB`;
+    else sizeText = `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    document.getElementById('metadataSize').textContent = sizeText;
+    
+    // Indexed date
+    const indexed = file.indexed_at || file.created_at;
+    document.getElementById('metadataIndexed').textContent = indexed 
+      ? new Date(indexed).toLocaleDateString() 
+      : '-';
+    
+    // Vectorized
+    const vecEl = document.getElementById('metadataVectorized');
+    vecEl.textContent = file.vectorized ? 'Yes' : 'No';
+    vecEl.className = 'file-metadata-value' + (file.vectorized ? ' vectorized' : '');
+    
+    // Path
+    const pathEl = document.getElementById('metadataPath');
+    const path = file.file_path || file.local_path || '-';
+    pathEl.textContent = path.length > 25 ? '...' + path.slice(-22) : path;
+    pathEl.title = path;
+    
+    // Open button
+    const openBtn = document.getElementById('metadataOpenBtn');
+    openBtn.onclick = () => loadFile(file.id);
+  }
+  
+  // Hide file metadata panel
+  function hideFileMetadataPanel() {
+    const panel = document.getElementById('fileMetadataPanel');
+    if (panel) {
+      panel.classList.add('hidden');
+    }
   }
   
   // Recent files localStorage management
@@ -1144,6 +1530,8 @@ document.addEventListener("DOMContentLoaded", () => {
     clearAllFileData();
     
     currentFileId = id;
+    selectedFileId = null; // Clear selection since file is now loaded
+    hideFileMetadataPanel();
     
     // Add to recent files
     addToRecentFiles(id);
@@ -1159,12 +1547,51 @@ document.addEventListener("DOMContentLoaded", () => {
         if (data.filename) {
           currentFileName = data.filename.replace(/\.[^.]+$/, ''); // Remove extension
         }
+        
+        // Update file info bar
+        updateFileInfoBar(data.filename, data.file_size, data.line_count);
+        
         updateStats(data);
         renderAnalysis(data);
+        
+        // Auto-switch to search panel after file is loaded
+        switchToSearchPanel();
       });
 
     // 2. Get Initial Lines
     fetchLogLines(0, 150, false);
+  }
+  
+  // Update file info bar at top of app
+  function updateFileInfoBar(filename, fileSize, lineCount) {
+    const fileInfoBar = document.getElementById('fileInfoBar');
+    const fileInfoName = document.getElementById('fileInfoName');
+    const fileInfoSize = document.getElementById('fileInfoSize');
+    const fileInfoLines = document.getElementById('fileInfoLines');
+    
+    if (fileInfoBar && fileInfoName) {
+      fileInfoBar.style.display = 'flex';
+      fileInfoName.textContent = filename || 'Unknown file';
+      
+      if (fileInfoSize && fileSize) {
+        // Format file size
+        let sizeText = '';
+        if (fileSize < 1024) {
+          sizeText = `${fileSize} B`;
+        } else if (fileSize < 1024 * 1024) {
+          sizeText = `${(fileSize / 1024).toFixed(1)} KB`;
+        } else if (fileSize < 1024 * 1024 * 1024) {
+          sizeText = `${(fileSize / (1024 * 1024)).toFixed(1)} MB`;
+        } else {
+          sizeText = `${(fileSize / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+        }
+        fileInfoSize.textContent = sizeText;
+      }
+      
+      if (fileInfoLines && lineCount) {
+        fileInfoLines.textContent = `${lineCount.toLocaleString()} lines`;
+      }
+    }
   }
   
   // Clear all data when loading a new file
@@ -1174,10 +1601,15 @@ document.addEventListener("DOMContentLoaded", () => {
       logPreview.innerHTML = '<div class="log-line">Loading...</div>';
     }
     
-    // Clear stats panel
-    if (statsPanel) {
-      statsPanel.innerHTML = '<p class="placeholder-text">Loading file statistics...</p>';
-    }
+    // Clear compact stats panel
+    const statSamples = document.getElementById('statSamples');
+    const statSource = document.getElementById('statSource');
+    const statTarget = document.getElementById('statTarget');
+    const statHandling = document.getElementById('statHandling');
+    if (statSamples) statSamples.style.display = 'none';
+    if (statSource) statSource.style.display = 'none';
+    if (statTarget) statTarget.style.display = 'none';
+    if (statHandling) statHandling.style.display = 'none';
     
     // Clear search results
     const searchResults = document.getElementById('searchResults');
@@ -1302,6 +1734,11 @@ document.addEventListener("DOMContentLoaded", () => {
     currentView = 'all';
     currentLogStart = 0;
     totalLogLines = 0;
+    loadedLinesStart = 0;
+    loadedLinesEnd = 0;
+    highlightedLines = {};
+    lastFetchStart = -1;
+    lastFetchDirection = null;
     
     // Clear global data stores
     window.bulkMapData = null;
@@ -1321,21 +1758,146 @@ document.addEventListener("DOMContentLoaded", () => {
     reportLinks.forEach(link => link.classList.remove('active'));
   }
 
-  function fetchLogLines(start, limit, append) {
+  function fetchLogLines(start, limit, append, direction = 'down') {
     if (!currentFileId || isFetchingLog) return;
     isFetchingLog = true;
+
+    console.log(`[fetchLogLines] start=${start}, limit=${limit}, append=${append}, direction=${direction}`);
 
     fetch(`/api/files/${currentFileId}/lines?start=${start}&limit=${limit}`)
       .then(res => res.json())
       .then(data => {
+        console.log(`[fetchLogLines] Response: start=${data.start}, end=${data.end}, lines=${data.lines.length}, total=${data.total}`);
+        
         currentLogStart = data.start;
         totalLogLines = data.total;
         loadedCountSpan.textContent = totalLogLines;
         
-        renderLines(data.lines, append, data.start);
+        if (!append) {
+          // Fresh load - reset the loaded range
+          loadedLinesStart = data.start;
+          loadedLinesEnd = data.start + data.lines.length;
+          renderLines(data.lines, false, data.start);
+        } else if (direction === 'up') {
+          // Prepend lines when scrolling up - only if we got lines
+          if (data.lines.length > 0) {
+            loadedLinesStart = data.start;
+            prependLines(data.lines, data.start);
+          }
+        } else {
+          // Append lines when scrolling down - only if we got new lines
+          if (data.lines.length > 0) {
+            loadedLinesEnd = data.start + data.lines.length;
+            renderLines(data.lines, true, data.start);
+          } else {
+            // No more lines - mark as fully loaded
+            loadedLinesEnd = totalLogLines;
+          }
+        }
+        
+        console.log(`[fetchLogLines] After: loadedLinesStart=${loadedLinesStart}, loadedLinesEnd=${loadedLinesEnd}, totalLogLines=${totalLogLines}`);
         isFetchingLog = false;
       })
-      .catch(err => isFetchingLog = false);
+      .catch(err => {
+        console.error('[fetchLogLines] Error:', err);
+        isFetchingLog = false;
+      });
+  }
+  
+  // Prepend lines to the log view (for upward scrolling)
+  function prependLines(lines, startIdx) {
+    if (lines.length === 0) return;
+    
+    // Save current scroll position
+    const scrollHeightBefore = logPreview.scrollHeight;
+    
+    // Extract timestamps from first existing line if present
+    let lastTimestamp = null;
+    
+    // Create a document fragment for better performance
+    const fragment = document.createDocumentFragment();
+    
+    lines.forEach((line, idx) => {
+      const div = document.createElement("div");
+      div.className = "log-line";
+      const lineNumber = startIdx + idx + 1;
+      const lineIndex = startIdx + idx;
+      div.dataset.idx = lineIndex;
+      div.dataset.lineNumber = lineNumber;
+      div.dataset.originalText = line;
+      
+      // Create line number span
+      const lineNumSpan = document.createElement("span");
+      lineNumSpan.className = "line-number";
+      lineNumSpan.textContent = lineNumber;
+      div.appendChild(lineNumSpan);
+      
+      // Check if this line has a stored highlight
+      if (highlightedLines[lineIndex]) {
+        div.classList.add(`highlight-${highlightedLines[lineIndex]}`);
+        // Add highlight dot
+        const dot = document.createElement("span");
+        dot.className = `highlight-dot highlight-dot-${highlightedLines[lineIndex]}`;
+        dot.title = `Click to remove ${highlightedLines[lineIndex]} highlight`;
+        dot.onclick = (e) => {
+          e.stopPropagation();
+          removeHighlightFromLine(div, lineIndex);
+        };
+        div.insertBefore(dot, lineNumSpan);
+      }
+      
+      // Apply syntax highlighting if available
+      if (window.LogColors && window.LogColors.isEnabled()) {
+        const contentSpan = document.createElement("span");
+        contentSpan.innerHTML = window.LogColors.highlightLine(line);
+        div.appendChild(contentSpan);
+      } else {
+        div.appendChild(document.createTextNode(line));
+      }
+      
+      // Add warning/error class for background highlighting
+      if (line.includes(']W:')) {
+        div.classList.add('warning-line');
+      } else if (line.includes(']E:')) {
+        div.classList.add('error-line');
+      }
+      
+      // Calculate time gap
+      const tsMatch = line.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+      if (tsMatch && lastTimestamp) {
+        const currentTimestamp = new Date(tsMatch[1]);
+        const timeDiff = (currentTimestamp - lastTimestamp) / 1000;
+        div.dataset.timeGap = timeDiff;
+        
+        if (timeDiff < 1) {
+          div.dataset.gapSize = 'small';
+        } else if (timeDiff < 10) {
+          div.dataset.gapSize = 'medium';
+        } else {
+          div.dataset.gapSize = 'large';
+        }
+      }
+      
+      if (tsMatch) {
+        lastTimestamp = new Date(tsMatch[1]);
+      }
+      
+      div.addEventListener("contextmenu", (e) => showContextMenu(e, line));
+      fragment.appendChild(div);
+    });
+    
+    // Insert at the beginning
+    logPreview.insertBefore(fragment, logPreview.firstChild);
+    
+    // Restore scroll position so user doesn't jump
+    const scrollHeightAfter = logPreview.scrollHeight;
+    logPreview.scrollTop += (scrollHeightAfter - scrollHeightBefore);
+    
+    // Apply time gaps if checkbox is checked
+    applyTimeGapsDisplay();
+    
+    // Apply search highlights if there are any active search matches
+    applySearchHighlightsToAllLines();
   }
   
   // Load log lines within a specific range (for latency graph time selection)
@@ -1359,6 +1921,8 @@ document.addEventListener("DOMContentLoaded", () => {
       .then(data => {
         currentLogStart = data.start;
         totalLogLines = data.total;
+        loadedLinesStart = data.start;
+        loadedLinesEnd = data.start + data.lines.length;
         
         // Update the count display to show the range
         loadedCountSpan.textContent = `${data.lines.length} of ${data.total}`;
@@ -1401,7 +1965,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!q) return;
 
     const searchResultsDiv = document.getElementById('searchResults');
+    const searchResultsHeader = document.getElementById('searchResultsHeader');
+    const searchResultsCount = document.getElementById('searchResultsCount');
+    
     searchResultsDiv.innerHTML = "Searching...";
+    if (searchResultsHeader) searchResultsHeader.style.display = 'none';
     
     fetch(`/api/files/${currentFileId}/search?q=${encodeURIComponent(q)}&limit=50`)
       .then(res => res.json())
@@ -1411,11 +1979,18 @@ document.addEventListener("DOMContentLoaded", () => {
           searchResultsDiv.innerHTML = '<p class="placeholder-text-small">No matches found.</p>';
           lastSearchMatches = [];
           document.getElementById('exportSearchBtn').style.display = 'none';
+          if (searchResultsHeader) searchResultsHeader.style.display = 'none';
           return;
         }
         
         // Store matches globally for highlighting in All Lines view
         lastSearchMatches = matches;
+        
+        // Show search results header with count
+        if (searchResultsHeader) {
+          searchResultsHeader.style.display = 'flex';
+          searchResultsCount.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'}`;
+        }
         
         // Show export button
         document.getElementById('exportSearchBtn').style.display = 'flex';
@@ -1444,6 +2019,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .catch(err => {
         console.error('Search error:', err);
         searchResultsDiv.innerHTML = '<p class="placeholder-text-small">Search failed.</p>';
+        if (searchResultsHeader) searchResultsHeader.style.display = 'none';
       });
   }
   
@@ -1489,6 +2065,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   function jumpToLineAndHighlight(lineNum, text) {
+    console.log(`[jumpToLineAndHighlight] lineNum=${lineNum}, totalLogLines=${totalLogLines}`);
+    
     // Switch to "All Lines" tab first
     const logViewTabs = document.getElementById('logViewTabs');
     const allLinesTab = logViewTabs.querySelector('.log-view-tab[data-view="all"]');
@@ -1496,22 +2074,48 @@ document.addEventListener("DOMContentLoaded", () => {
       logViewTabs.querySelectorAll('.log-view-tab').forEach(t => t.classList.remove('active'));
       allLinesTab.classList.add('active');
     }
+    currentView = 'all';
     
-    // Fetch lines around the target (centered)
-    const centerStart = Math.max(0, lineNum - 50);
-    fetchLogLines(centerStart, 100, false);
+    // Use the centered read API for efficient jumping
+    if (!currentFileId || isFetchingLog) return;
+    isFetchingLog = true;
     
-    // Wait a bit for the lines to render, then highlight
-    setTimeout(() => {
-      const logLines = logPreview.querySelectorAll('.log-line');
-      logLines.forEach(line => {
-        line.classList.remove('selected-line');
-        if (line.dataset.idx == lineNum) {
-          line.classList.add('selected-line');
-          line.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+    // Reset last fetch tracker
+    lastFetchStart = -1;
+    lastFetchDirection = null;
+    
+    fetch(`/api/files/${currentFileId}/lines?center=${lineNum}&before=50&after=50`)
+      .then(res => res.json())
+      .then(data => {
+        console.log(`[jumpToLineAndHighlight] Response: start=${data.start}, end=${data.end}, lines=${data.lines.length}, total=${data.total}`);
+        
+        currentLogStart = data.start;
+        totalLogLines = data.total;
+        loadedLinesStart = data.start;
+        loadedLinesEnd = data.end || (data.start + data.lines.length);
+        loadedCountSpan.textContent = totalLogLines;
+        
+        console.log(`[jumpToLineAndHighlight] After: loadedLinesStart=${loadedLinesStart}, loadedLinesEnd=${loadedLinesEnd}`);
+        
+        renderLines(data.lines, false, data.start);
+        isFetchingLog = false;
+        
+        // Highlight the target line after rendering
+        setTimeout(() => {
+          const logLines = logPreview.querySelectorAll('.log-line');
+          logLines.forEach(line => {
+            line.classList.remove('selected-line');
+            if (line.dataset.idx == lineNum) {
+              line.classList.add('selected-line');
+              line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          });
+        }, 100);
+      })
+      .catch(err => {
+        console.error('[jumpToLineAndHighlight] Failed:', err);
+        isFetchingLog = false;
       });
-    }, 500);
   }
   
   function createSearchResultsTab(matches, query) {
@@ -1744,6 +2348,34 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // --- Rendering Functions ---
+  
+  // Helper to remove highlight from a specific line
+  function removeHighlightFromLine(lineElement, lineIndex) {
+    lineElement.classList.remove('highlight-yellow', 'highlight-green', 'highlight-blue', 
+                                 'highlight-red', 'highlight-purple', 'highlight-orange');
+    // Remove the dot
+    const dot = lineElement.querySelector('.highlight-dot');
+    if (dot) dot.remove();
+    // Remove from stored highlights
+    delete highlightedLines[lineIndex];
+  }
+  
+  // Helper to add highlight dot to a line
+  function addHighlightDot(lineElement, lineIndex, color) {
+    // Remove existing dot if any
+    const existingDot = lineElement.querySelector('.highlight-dot');
+    if (existingDot) existingDot.remove();
+    
+    const lineNumSpan = lineElement.querySelector('.line-number');
+    const dot = document.createElement("span");
+    dot.className = `highlight-dot highlight-dot-${color}`;
+    dot.title = `Click to remove ${color} highlight`;
+    dot.onclick = (e) => {
+      e.stopPropagation();
+      removeHighlightFromLine(lineElement, lineIndex);
+    };
+    lineElement.insertBefore(dot, lineNumSpan);
+  }
 
   function renderLines(lines, append, startIdx) {
     if (!append) logPreview.innerHTML = "";
@@ -1762,7 +2394,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const div = document.createElement("div");
       div.className = "log-line";
       const lineNumber = startIdx + idx + 1; // Line numbers start from 1
-      div.dataset.idx = startIdx + idx;
+      const lineIndex = startIdx + idx;
+      div.dataset.idx = lineIndex;
       div.dataset.lineNumber = lineNumber;
       div.dataset.originalText = line;
       
@@ -1771,6 +2404,12 @@ document.addEventListener("DOMContentLoaded", () => {
       lineNumSpan.className = "line-number";
       lineNumSpan.textContent = lineNumber;
       div.appendChild(lineNumSpan);
+      
+      // Check if this line has a stored highlight and add dot
+      if (highlightedLines[lineIndex]) {
+        div.classList.add(`highlight-${highlightedLines[lineIndex]}`);
+        addHighlightDot(div, lineIndex, highlightedLines[lineIndex]);
+      }
       
       // Apply syntax highlighting if available
       if (window.LogColors && window.LogColors.isEnabled()) {
@@ -1878,18 +2517,38 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   function updateStats(data) {
-    let html = `<h3>${data.filename}</h3>`;
+    // Update compact stats panel in graph header
+    const statSamples = document.getElementById('statSamples');
+    const statSource = document.getElementById('statSource');
+    const statTarget = document.getElementById('statTarget');
+    const statHandling = document.getElementById('statHandling');
     
     if (data.performance && data.performance.count > 0) {
        const p = data.performance;
-       html += `<p>Performance Samples: ${p.count}</p>`;
-       html += `<h4>Source Latency</h4><p>Avg: ${p.source.avg.toFixed(3)}s</p>`;
-       html += `<h4>Target Latency</h4><p>Avg: ${p.target.avg.toFixed(3)}s</p>`;
-       html += `<h4>Handling Latency</h4><p>Avg: ${p.handling.avg.toFixed(3)}s</p>`;
+       
+       if (statSamples) {
+         statSamples.style.display = 'flex';
+         document.getElementById('statSamplesValue').textContent = p.count;
+       }
+       if (statSource) {
+         statSource.style.display = 'flex';
+         document.getElementById('statSourceValue').textContent = `${p.source.avg.toFixed(3)}s`;
+       }
+       if (statTarget) {
+         statTarget.style.display = 'flex';
+         document.getElementById('statTargetValue').textContent = `${p.target.avg.toFixed(3)}s`;
+       }
+       if (statHandling) {
+         statHandling.style.display = 'flex';
+         document.getElementById('statHandlingValue').textContent = `${p.handling.avg.toFixed(3)}s`;
+       }
     } else {
-        html += "<p>No performance data.</p>";
+       // Hide stats if no performance data
+       if (statSamples) statSamples.style.display = 'none';
+       if (statSource) statSource.style.display = 'none';
+       if (statTarget) statTarget.style.display = 'none';
+       if (statHandling) statHandling.style.display = 'none';
     }
-    statsPanel.innerHTML = html;
     
     // Render latency graph
     renderLatencyGraph(data);
@@ -1914,7 +2573,11 @@ document.addEventListener("DOMContentLoaded", () => {
       // Fetch Performance Cockpit data to check if there's anything to show
       fetchPerformanceCockpitCheck();
       
-      // Group components by name and show threads
+      // Render threads in Log View panel
+      renderLogViewThreads(data);
+      
+      // Group components by name and show threads (for Analysis tab - now removed, but keep for backward compatibility)
+      if (!threadListDiv) return;
       threadListDiv.innerHTML = "";
       
       if (!data.components || data.components.length === 0) {
@@ -2427,27 +3090,31 @@ document.addEventListener("DOMContentLoaded", () => {
       // Highlight with color picker
       const colorDots = contextMenu.querySelectorAll('.color-dot');
       
-      // Color dot click - highlight with that color
+      // Color dot click - highlight ONLY the clicked line (not all matching text)
       colorDots.forEach(dot => {
           dot.onclick = (e) => {
               e.stopPropagation();
               const color = dot.getAttribute('data-color');
               currentHighlightColor = color;
               
-              // Apply to both main log view and analysis thread view
-              [logPreview, threadLogView].forEach(container => {
-                  if (!container) return;
-                  const logLines = container.querySelectorAll('.log-line');
-                  logLines.forEach(line => {
-                      if (line.textContent.includes(text.trim()) || (line.dataset.originalText && line.dataset.originalText.includes(text.trim()))) {
-                          // Remove old color classes
-                          line.classList.remove('highlight-yellow', 'highlight-green', 'highlight-blue', 
-                                               'highlight-red', 'highlight-purple', 'highlight-orange');
-                          // Add new color class
-                          line.classList.add(`highlight-${color}`);
-                      }
-                  });
-              });
+              // Only highlight the specific clicked line
+              if (contextMenuTargetElement) {
+                  const lineIndex = parseInt(contextMenuTargetElement.dataset.idx);
+                  
+                  // Remove old color classes
+                  contextMenuTargetElement.classList.remove('highlight-yellow', 'highlight-green', 'highlight-blue', 
+                                       'highlight-red', 'highlight-purple', 'highlight-orange');
+                  // Add new color class
+                  contextMenuTargetElement.classList.add(`highlight-${color}`);
+                  
+                  // Add highlight dot
+                  addHighlightDot(contextMenuTargetElement, lineIndex, color);
+                  
+                  // Store in highlightedLines for persistence across scroll
+                  if (!isNaN(lineIndex)) {
+                      highlightedLines[lineIndex] = color;
+                  }
+              }
               contextMenu.style.display = "none";
           };
       });
@@ -2456,9 +3123,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const clearLineHighlightBtn = document.getElementById("ctx-clear-line-highlight");
       clearLineHighlightBtn.onclick = () => {
           if (contextMenuTargetElement) {
-              contextMenuTargetElement.classList.remove('selected-line', 'highlight-yellow', 'highlight-green', 
-                                    'highlight-blue', 'highlight-red', 'highlight-purple', 'highlight-orange',
-                                    'search-highlight-line');
+              const lineIndex = parseInt(contextMenuTargetElement.dataset.idx);
+              removeHighlightFromLine(contextMenuTargetElement, lineIndex);
+              contextMenuTargetElement.classList.remove('selected-line', 'search-highlight-line');
           }
           contextMenu.style.display = "none";
       };
@@ -2466,6 +3133,9 @@ document.addEventListener("DOMContentLoaded", () => {
       // Clear All Highlights
       const clearHighlightBtn = document.getElementById("ctx-clear-highlight");
       clearHighlightBtn.onclick = () => {
+          // Clear stored highlights
+          highlightedLines = {};
+          
           // Clear from both main log view and analysis thread view
           [logPreview, threadLogView].forEach(container => {
               if (!container) return;
@@ -2474,6 +3144,9 @@ document.addEventListener("DOMContentLoaded", () => {
                   line.classList.remove('selected-line', 'highlight-yellow', 'highlight-green', 
                                         'highlight-blue', 'highlight-red', 'highlight-purple', 'highlight-orange',
                                         'search-highlight-line');
+                  // Remove dots
+                  const dot = line.querySelector('.highlight-dot');
+                  if (dot) dot.remove();
               });
           });
           contextMenu.style.display = "none";
@@ -2501,6 +3174,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function renderFindings() {
       findingsList.innerHTML = "";
+      
+      // Update findings count badge
+      const countBadge = document.getElementById('findingsCountBadge');
+      if (countBadge) {
+          countBadge.textContent = findings.length > 0 ? findings.length : '';
+      }
+      
       if (findings.length === 0) {
           findingsList.innerHTML = '<p class="placeholder-text">No findings yet. Right-click on log lines to add them.</p>';
           return;
@@ -2606,6 +3286,108 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
     }
     
+    // Tiles section - show key info from log summary
+    const summaryData = window.logSummaryData;
+    if (summaryData) {
+      const errClass = summaryData.error_count > 0 ? 'error' : 'success';
+      const warnClass = summaryData.warning_count > 0 ? 'warning' : 'success';
+      
+      html += `<div class="task-props-tiles">`;
+      
+      // Task Name tile (full width)
+      if (summaryData.task_name) {
+        html += `
+          <div class="task-props-tile full-width">
+            <span class="task-props-tile-label">Task Name</span>
+            <span class="task-props-tile-value highlight">${summaryData.task_name}</span>
+          </div>
+        `;
+      }
+      
+      // Source & Target (full width each)
+      if (summaryData.source_endpoint) {
+        html += `
+          <div class="task-props-tile full-width source-tile">
+            <span class="task-props-tile-label">Source</span>
+            <span class="task-props-tile-value">${summaryData.source_endpoint}</span>
+          </div>
+        `;
+      }
+      if (summaryData.target_endpoint) {
+        html += `
+          <div class="task-props-tile full-width target-tile">
+            <span class="task-props-tile-label">Target</span>
+            <span class="task-props-tile-value">${summaryData.target_endpoint}</span>
+          </div>
+        `;
+      }
+      
+      // Version & Duration
+      if (summaryData.version) {
+        html += `
+          <div class="task-props-tile">
+            <span class="task-props-tile-label">Version</span>
+            <span class="task-props-tile-value">${summaryData.version}</span>
+          </div>
+        `;
+      }
+      if (summaryData.duration) {
+        html += `
+          <div class="task-props-tile">
+            <span class="task-props-tile-label">Duration</span>
+            <span class="task-props-tile-value">${summaryData.duration}</span>
+          </div>
+        `;
+      }
+      
+      // Tables & Bulk Operations
+      html += `
+        <div class="task-props-tile">
+          <span class="task-props-tile-label">Tables</span>
+          <span class="task-props-tile-value highlight">${summaryData.tables_count || 0}</span>
+        </div>
+        <div class="task-props-tile">
+          <span class="task-props-tile-label">Bulk Operations</span>
+          <span class="task-props-tile-value">${summaryData.bulk_operations || 0}</span>
+        </div>
+      `;
+      
+      // Errors & Warnings
+      html += `
+        <div class="task-props-tile">
+          <span class="task-props-tile-label">Errors</span>
+          <span class="task-props-tile-value ${errClass}">${summaryData.error_count || 0}</span>
+        </div>
+        <div class="task-props-tile">
+          <span class="task-props-tile-label">Warnings</span>
+          <span class="task-props-tile-value ${warnClass}">${summaryData.warning_count || 0}</span>
+        </div>
+      `;
+      
+      html += `</div>`;
+      
+      // Status badges row
+      html += `<div class="task-props-status-row">`;
+      
+      const flClass = summaryData.full_load_completed ? 'success' : 'pending';
+      const flIcon = summaryData.full_load_completed ? '✓' : '○';
+      html += `
+        <div class="task-props-status-badge ${flClass}">
+          ${flIcon} Full Load ${summaryData.full_load_completed ? 'Completed' : 'Not Completed'}
+        </div>
+      `;
+      
+      const cdcClass = summaryData.cdc_started ? 'success' : 'pending';
+      const cdcIcon = summaryData.cdc_started ? '✓' : '○';
+      html += `
+        <div class="task-props-status-badge ${cdcClass}">
+          ${cdcIcon} CDC ${summaryData.cdc_started ? 'Started' : 'Not Started'}
+        </div>
+      `;
+      
+      html += `</div>`;
+    }
+    
     // Run Mode - This is the key operational info for the panel
     if (props.run_mode) {
       const mode = props.run_mode;
@@ -2614,7 +3396,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const modeColor = isFreshStart ? '#10b981' : isResume ? '#f59e0b' : '#3b82f6';
       
       html += `
-        <div class="property-section">
+        <div class="property-section" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #374151;">
           <div class="property-label">Run Mode</div>
           <div class="property-value">${mode.running_mode}</div>
         </div>
@@ -2625,7 +3407,7 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
     } else if (props.is_rollover) {
       html += `
-        <div class="property-section">
+        <div class="property-section" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #374151;">
           <div class="property-label">Run Mode</div>
           <div class="property-value" style="color: #6b7280; font-style: italic; font-size: 0.7rem;">Not available (rollover)</div>
         </div>
@@ -2653,12 +3435,34 @@ document.addEventListener("DOMContentLoaded", () => {
       html += `</div>`;
     }
     
-    // Quick tip
-    html += `
-      <div style="margin-top: 10px; padding: 6px; background: rgba(59, 130, 246, 0.1); border-radius: 4px; font-size: 0.65rem; color: #9ca3af;">
-        💡 <strong>Tip:</strong> Click "Log Summary" in Available Reports for full task details.
-      </div>
-    `;
+    // Incomplete log warning
+    if (summaryData && summaryData.incomplete_log_warning) {
+      html += `
+        <div style="margin-top: 10px; padding: 6px; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; border-radius: 4px;">
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <span style="color: #fcd34d; font-weight: bold; font-size: 0.7rem;">⚠ Incomplete Log</span>
+          </div>
+          <div style="font-size: 0.65rem; color: #fcd34d; margin-top: 3px;">${summaryData.incomplete_log_warning}</div>
+        </div>
+      `;
+    }
+    
+    // Key Events section
+    if (summaryData && summaryData.key_events && summaryData.key_events.length > 0) {
+      html += `
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #374151;">
+          <div class="property-label" style="margin-bottom: 6px;">Key Events</div>
+      `;
+      summaryData.key_events.forEach(e => {
+        html += `
+          <div class="key-event" style="font-size: 0.75rem;">
+            <span class="key-event-line">L${e.line + 1}</span>
+            <span class="key-event-name">${e.event}</span>
+          </div>
+        `;
+      });
+      html += `</div>`;
+    }
     
     taskPropertiesContent.innerHTML = html;
   }
@@ -4054,6 +4858,9 @@ document.addEventListener("DOMContentLoaded", () => {
           window.targetEndpoint = data.target_endpoint;
         }
         
+        // Re-render task properties now that we have summary data for tiles
+        fetchTaskProperties();
+        
         // Auto-show log summary as default view when data loads
         // This ensures summary is the first thing users see in Analysis tab
         setTimeout(() => {
@@ -4094,7 +4901,292 @@ document.addEventListener("DOMContentLoaded", () => {
     const summaryContent = document.getElementById('logSummaryMainContent');
     if (!summaryContent) return;
     
-    const smWarn = data.start_mode?.toLowerCase().includes('resume') ? ' warning' : '';
+    // Store data for fallback
+    window.logSummaryData = data;
+    
+    // Show loading state first
+    summaryContent.innerHTML = `
+      <div class="log-summary-section" id="logSummarySection">
+        <div class="summary-header-row">
+          <div class="summary-title">
+            <svg width="16" height="16" viewBox="0 0 512 512" fill="currentColor" style="color:#8b5cf6;">
+              <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/>
+            </svg>
+            <span>Log Summary</span>
+          </div>
+        </div>
+        <div class="ai-generating-notice">
+          <div class="generating-spinner"></div>
+          <div class="generating-text">Loading AI insights...</div>
+        </div>
+      </div>
+    `;
+    
+    // Load AI insights
+    loadAiInsightsForLogSummary(data);
+  }
+  
+  // Load AI insights for the new Log Summary view
+  function loadAiInsightsForLogSummary(summaryData) {
+    const summaryContent = document.getElementById('logSummaryMainContent');
+    if (!summaryContent || !currentFileId) {
+      renderFallbackSummary(summaryContent, summaryData, 'No file loaded');
+      return;
+    }
+    
+    // Check AI config first
+    fetch('/api/llm/config')
+      .then(res => res.json())
+      .then(config => {
+        if (!config.is_configured) {
+          renderFallbackSummary(summaryContent, summaryData, 'AI service not configured. Configure your API key in AI Settings to enable AI insights.');
+          return;
+        }
+        
+        // Try to fetch existing report
+        return fetch(`/api/llm/report/${currentFileId}`)
+          .then(res => res.json())
+          .then(report => {
+            if (report && report.report_content && report.exists !== false) {
+              renderAiInsightsSummary(summaryContent, summaryData, report.report_content);
+            } else if (window.aiReportManager && window.aiReportManager.isGenerating) {
+              renderGeneratingSummary(summaryContent, summaryData);
+            } else {
+              renderFallbackSummary(summaryContent, summaryData, 'No AI report generated yet. The report will be generated automatically, or you can generate it from the Findings tab.');
+            }
+          });
+      })
+      .catch(err => {
+        console.error('Failed to load AI config or report:', err);
+        renderFallbackSummary(summaryContent, summaryData, 'Failed to load AI insights. Please try again.');
+      });
+  }
+  
+  // Render AI insights with collapsible sections
+  function renderAiInsightsSummary(container, summaryData, reportContent) {
+    const sections = parseMarkdownIntoSections(reportContent);
+    
+    // Filter out empty sections more aggressively
+    const validSections = sections.filter(s => {
+      if (!s.content) return false;
+      const cleaned = s.content.trim();
+      if (!cleaned) return false;
+      if (isEmptyHtmlContent(cleaned)) return false;
+      return true;
+    });
+    
+    if (validSections.length === 0) {
+      renderFallbackSummary(container, summaryData, 'AI report has no content. Please regenerate the report.');
+      return;
+    }
+    
+    let html = `<div class="log-summary-section" id="logSummarySection"><div class="summary-header-row"><div class="summary-title"><svg width="16" height="16" viewBox="0 0 512 512" fill="currentColor" style="color:#8b5cf6;"><path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/></svg><span>Log Summary</span></div><button class="view-full-report-btn" onclick="goToFullReport()" title="View full AI report in Findings tab"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 00-.5-.5H1.5A1.5 1.5 0 000 4.5v10A1.5 1.5 0 001.5 16h10a1.5 1.5 0 001.5-1.5V7.864a.5.5 0 00-1 0V14.5a.5.5 0 01-.5.5h-10a.5.5 0 01-.5-.5v-10a.5.5 0 01.5-.5h6.636a.5.5 0 00.5-.5z"/><path d="M16 .5a.5.5 0 00-.5-.5h-5a.5.5 0 000 1h3.793L6.146 9.146a.5.5 0 10.708.708L15 1.707V5.5a.5.5 0 001 0v-5z"/></svg>Full Report</button></div><div class="ai-disclaimer"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/><path d="M5.255 5.786a.237.237 0 00.241.247h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 00.25.246h.811a.25.25 0 00.25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286zm1.557 5.763c0 .533.425.927 1.01.927.609 0 1.028-.394 1.028-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94z"/></svg>AI-generated content may contain inaccuracies. Always verify important findings.</div>`;
+    
+    // Render only sections with actual content
+    validSections.forEach((section, idx) => {
+      const isFirst = idx === 0;
+      const titleLower = section.title.toLowerCase();
+      
+      // Determine highlight class based on section title
+      let highlightClass = '';
+      if (titleLower.includes('health') || titleLower.includes('score')) {
+        highlightClass = 'highlight-health';
+      } else if (titleLower.includes('finding') || titleLower.includes('key')) {
+        highlightClass = 'highlight-findings';
+      } else if (titleLower.includes('summary') || titleLower.includes('solution') || 
+                 titleLower.includes('bottom line') || titleLower.includes('conclusion') || 
+                 titleLower.includes('recommendation') || titleLower.includes('action') || 
+                 titleLower.includes('issue')) {
+        highlightClass = 'highlight-section';
+      }
+      
+      let classes = 'ai-insight-section';
+      if (isFirst) classes += ' expanded';
+      if (highlightClass) classes += ' ' + highlightClass;
+      
+      html += `<div class="${classes}" data-section-idx="${idx}"><div class="ai-insight-section-header" onclick="toggleInsightSection(this)"><span class="ai-insight-section-toggle">▶</span><h3>${escapeHtml(section.title)}</h3></div><div class="ai-insight-section-content">${section.content}</div></div>`;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+  }
+  
+  // Check if HTML content is effectively empty
+  function isEmptyHtmlContent(html) {
+    if (!html) return true;
+    // Remove HTML tags, whitespace, newlines, and check if anything meaningful remains
+    const textOnly = html
+      .replace(/<[^>]*>/g, '')  // Remove HTML tags
+      .replace(/&nbsp;/g, ' ')   // Replace nbsp
+      .replace(/\s+/g, ' ')      // Normalize whitespace
+      .trim();
+    // Consider empty if less than 10 characters (very short text)
+    return textOnly.length < 10;
+  }
+  
+  // Parse markdown into sections based on headers
+  function parseMarkdownIntoSections(markdown) {
+    if (!markdown) return [{ title: 'Summary', content: '<p>No content available</p>' }];
+    
+    // Clean up markdown - normalize line endings and remove excessive whitespace
+    markdown = markdown.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+    
+    const lines = markdown.split('\n');
+    const sections = [];
+    let currentSection = null;
+    let currentContent = [];
+    let preHeaderContent = [];
+    
+    lines.forEach(line => {
+      // Check for headers (## or ### or # for main title)
+      const h1Match = line.match(/^#\s+(.+)$/);
+      const h2Match = line.match(/^##\s+(.+)$/);
+      const h3Match = line.match(/^###\s+(.+)$/);
+      
+      if (h1Match || h2Match || h3Match) {
+        // Save previous section if it has content
+        if (currentSection) {
+          const content = currentContent.filter(l => l.trim()).join('\n');
+          if (content.trim()) {
+            sections.push({
+              title: currentSection,
+              content: convertMarkdownToHtml(content)
+            });
+          }
+        }
+        currentSection = h1Match ? h1Match[1] : (h2Match ? h2Match[1] : h3Match[1]);
+        currentContent = [];
+      } else if (currentSection) {
+        // Only add non-empty lines or preserve single blank lines for paragraph breaks
+        if (line.trim() || (currentContent.length > 0 && currentContent[currentContent.length - 1].trim())) {
+          currentContent.push(line);
+        }
+      } else {
+        // Content before first header
+        if (line.trim()) {
+          preHeaderContent.push(line);
+        }
+      }
+    });
+    
+    // Don't forget the last section
+    if (currentSection) {
+      const content = currentContent.filter(l => l.trim()).join('\n');
+      if (content.trim()) {
+        sections.push({
+          title: currentSection,
+          content: convertMarkdownToHtml(content)
+        });
+      }
+    }
+    
+    // If no sections found, create one from all content
+    if (sections.length === 0 && markdown.trim()) {
+      sections.push({
+        title: 'Analysis',
+        content: convertMarkdownToHtml(markdown)
+      });
+    }
+    
+    // Add overview section if there was meaningful content before first header
+    if (preHeaderContent.length > 0) {
+      const overviewContent = preHeaderContent.join('\n').trim();
+      if (overviewContent) {
+        sections.unshift({
+          title: 'Overview',
+          content: convertMarkdownToHtml(overviewContent)
+        });
+      }
+    }
+    
+    return sections;
+  }
+  
+  // Convert markdown to HTML (simplified version)
+  function convertMarkdownToHtml(md) {
+    if (!md) return '';
+    
+    // Clean up input - remove excessive whitespace and empty lines
+    let html = md.trim()
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{2,}/g, '\n')  // Multiple newlines to single
+      .replace(/^\s*\n/gm, '');   // Remove empty lines
+    
+    if (!html.trim()) return '';
+    
+    // Escape HTML first
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    
+    // Code blocks
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    
+    // Bold and italic
+    html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    
+    // Headers (h4 and lower since h2/h3 are section headers)
+    html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+    
+    // Lists - handle bullet points
+    html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+    
+    // Numbered lists
+    html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
+    
+    // Convert remaining lines to paragraphs, but skip empty lines
+    const lines = html.split('\n').filter(line => line.trim());
+    html = lines.map(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return '';
+      if (trimmed.startsWith('<')) return trimmed;
+      return `<p>${trimmed}</p>`;
+    }).filter(line => line).join('');
+    
+    // Status highlights - expanded list
+    html = html.replace(/\b(Healthy|OK|Good|Success|Successful|Complete|Completed|Normal|Stable)\b/gi, '<span class="status-healthy">$1</span>');
+    html = html.replace(/\b(Warning|Caution|Moderate|Attention|Watch|Note)\b/gi, '<span class="status-warning">$1</span>');
+    html = html.replace(/\b(Critical|Error|Errors|Failed|Failure|Severe|Fatal|Issue|Issues|Problem|Problems)\b/gi, '<span class="status-critical">$1</span>');
+    html = html.replace(/\b(Info|Information|CDC|Full Load|Replication)\b/gi, '<span class="status-info">$1</span>');
+    
+    return html;
+  }
+  
+  // Toggle insight section expansion
+  window.toggleInsightSection = function(header) {
+    const section = header.closest('.ai-insight-section');
+    section.classList.toggle('expanded');
+  };
+  
+  // Go to full AI report in Findings tab
+  window.goToFullReport = function() {
+    // Click on Findings tab
+    const findingsTab = document.querySelector('[data-tab="findings-tab"]');
+    if (findingsTab) {
+      findingsTab.click();
+    }
+  };
+  
+  // Listen for AI report completion to refresh Log Summary
+  window.addEventListener('aiReportReady', (event) => {
+    const { fileId } = event.detail;
+    // Only refresh if we're viewing the same file and Log Summary is visible
+    if (fileId === currentFileId) {
+      const logSummaryView = document.getElementById('logSummaryMainView');
+      if (logSummaryView && logSummaryView.style.display !== 'none') {
+        // Refresh the Log Summary with new AI insights
+        loadAiInsightsForLogSummary(window.logSummaryData);
+      }
+    }
+  });
+  
+  // Render fallback summary when AI is not available
+  function renderFallbackSummary(container, summaryData, reason) {
+    if (!container) return;
+    
+    const data = summaryData || window.logSummaryData || {};
     const errCls = data.error_count > 0 ? ' error' : ' success';
     const warnCls = data.warning_count > 0 ? ' warning' : ' success';
     const flBg = data.full_load_completed ? '#064e3b' : '#1f2937';
@@ -4104,76 +5196,136 @@ document.addEventListener("DOMContentLoaded", () => {
     const checkSvg = '<path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-3.97-3.03a.75.75 0 00-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 00-1.06 1.06L6.97 11.03a.75.75 0 001.079-.02l3.992-4.99a.75.75 0 00-.01-1.05z"/>';
     const circleSvg = '<path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/>';
     
-    // Build release notes link URL
-    const releaseNotesUrl = 'https://community.qlik.com/t5/Release-Notes/tkb-p/ReleaseNotes';
-    const versionLink = data.version ? `<a href="${releaseNotesUrl}" target="_blank" style="color:#60a5fa;text-decoration:none;" title="View Release Notes">${data.version} 🔗</a>` : 'N/A';
-    
-    const parts = [];
-    
-    // Header + first grid
-    parts.push(`<div class="log-summary-section" id="logSummarySection"><div class="summary-header-row"><div class="summary-title"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="color:#8b5cf6;"><path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V2zm2-1a1 1 0 00-1 1v12a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H4z"/><path d="M5 4h6v1H5V4zm0 2h6v1H5V6zm0 2h6v1H5V8zm0 2h4v1H5v-1z"/></svg><span>Log Summary</span></div><div class="font-size-controls"><button class="font-size-btn" onclick="adjustFontSize('summary',-1)" title="Decrease font size">A-</button><button class="font-size-btn" onclick="adjustFontSize('summary',1)" title="Increase font size">A+</button></div></div>`);
-    
-    // Log rollover warning
-    if (data.is_rollover) {
-      parts.push(`<div style="padding:6px;background:#451a03;border:1px solid #f59e0b;border-radius:3px;margin:6px 0 10px 0;"><div style="display:flex;align-items:center;gap:6px;"><span style="font-size:1.1rem;">🔄</span><div><div style="color:#fbbf24;font-weight:bold;font-size:0.7rem;">Log Rollover</div><div style="color:#d1d5db;font-size:0.6rem;">This log was created from a rollover. Run mode information may not be available.</div></div></div></div>`);
-    }
-    
-    // Grid 1 - Task & Environment
-    parts.push(`<div class="summary-grid"><div class="summary-card"><div class="summary-card-title">Task Name</div><div class="summary-card-value highlight">${data.task_name||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Version</div><div class="summary-card-value">${versionLink}</div></div><div class="summary-card"><div class="summary-card-title">Host</div><div class="summary-card-value">${data.host||data.server||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Duration</div><div class="summary-card-value">${data.duration||'N/A'}</div></div></div>`);
-    
-    // Grid 2 - Environment Details
-    if (data.os_info || data.pid || data.license_info) {
-      let envCards = '';
-      if (data.os_info) envCards += `<div class="summary-card"><div class="summary-card-title">Operating System</div><div class="summary-card-value" style="font-size:0.7rem;">${data.os_info}</div></div>`;
-      if (data.pid) envCards += `<div class="summary-card"><div class="summary-card-title">Process ID</div><div class="summary-card-value">${data.pid}</div></div>`;
-      if (data.license_info) envCards += `<div class="summary-card"><div class="summary-card-title">License</div><div class="summary-card-value" style="font-size:0.7rem;">${data.license_info}</div></div>`;
-      if (data.start_time) envCards += `<div class="summary-card"><div class="summary-card-title">Start Time</div><div class="summary-card-value" style="font-size:0.65rem;">${data.start_time}</div></div>`;
-      if (envCards) {
-        parts.push(`<div class="summary-grid">${envCards}</div>`);
-      }
-    }
-    
-    // Grid 3 - Run Mode & Endpoints
-    parts.push(`<div class="summary-grid"><div class="summary-card"><div class="summary-card-title">Running Mode</div><div class="summary-card-value">${data.running_mode||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Start Mode</div><div class="summary-card-value${smWarn}">${data.start_mode||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Source Endpoint</div><div class="summary-card-value">${data.source_endpoint||'N/A'}</div></div><div class="summary-card"><div class="summary-card-title">Target Endpoint</div><div class="summary-card-value">${data.target_endpoint||'N/A'}</div></div></div>`);
-    
-    // Grid 4 - Statistics
-    parts.push(`<div class="summary-grid"><div class="summary-card"><div class="summary-card-title">Tables Count</div><div class="summary-card-value highlight">${data.tables_count}</div></div><div class="summary-card"><div class="summary-card-title">Errors</div><div class="summary-card-value${errCls}">${data.error_count}</div></div><div class="summary-card"><div class="summary-card-title">Warnings</div><div class="summary-card-value${warnCls}">${data.warning_count}</div></div><div class="summary-card"><div class="summary-card-title">Bulk Operations</div><div class="summary-card-value">${data.bulk_operations}</div></div></div>`);
-    
-    // Status indicators
-    parts.push(`<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap;"><div style="display:flex;align-items:center;gap:4px;padding:3px 6px;background:${flBg};border-radius:3px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="${flC}">${data.full_load_completed?checkSvg:circleSvg}</svg><span style="font-size:0.6rem;color:${flC};">Full Load ${data.full_load_completed?'Completed':'Not Completed'}</span></div><div style="display:flex;align-items:center;gap:4px;padding:3px 6px;background:${cdcBg};border-radius:3px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="${cdcC}">${data.cdc_started?checkSvg:circleSvg}</svg><span style="font-size:0.6rem;color:${cdcC};">CDC ${data.cdc_started?'Started':'Not Started'}</span></div></div>`);
-    
-    // Incomplete log warning
-    if (data.incomplete_log_warning) {
-      parts.push(`<div style="padding:6px;background:rgba(245,158,11,0.2);border:1px solid #f59e0b;border-radius:3px;margin:6px 0;"><div style="display:flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="#f59e0b"><path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg><span style="font-weight:bold;font-size:0.65rem;color:#fcd34d;">⚠ Incomplete Log</span></div><div style="font-size:0.6rem;color:#fcd34d;margin-top:3px;">${data.incomplete_log_warning}</div></div>`);
-    }
-    
-    // Fatal error
-    if (data.fatal_error) {
-      parts.push(`<div style="padding:6px;background:rgba(220,38,38,0.2);border:1px solid #dc2626;border-radius:3px;margin:6px 0;"><div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="#dc2626"><path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg><span style="font-weight:bold;font-size:0.65rem;color:#fca5a5;">Fatal Error</span></div><div style="font-family:monospace;font-size:0.55rem;color:#fca5a5;word-break:break-all;">${escapeHtml(data.fatal_error)}</div></div>`);
-    }
+    let html = `
+      <div class="log-summary-section" id="logSummarySection">
+        <div class="summary-header-row">
+          <div class="summary-title">
+            <svg width="16" height="16" viewBox="0 0 512 512" fill="currentColor" style="color:#8b5cf6;">
+              <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/>
+            </svg>
+            <span>Log Summary</span>
+          </div>
+        </div>
+        
+        <div class="ai-not-available-notice">
+          <div class="notice-header">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
+            </svg>
+            <span class="notice-title">AI Insights Not Available</span>
+          </div>
+          <div class="notice-message">${reason}</div>
+          <div class="notice-action">
+            <button onclick="document.getElementById('aiSettingsBtn').click();">Configure AI Settings</button>
+          </div>
+        </div>
+        
+        <div style="margin-top: 16px;">
+          <h4 style="margin: 0 0 12px 0; font-size: 0.85rem; color: #9ca3af;">Task Overview</h4>
+          
+          <div class="summary-grid">
+            <div class="summary-card">
+              <div class="summary-card-title">Task Name</div>
+              <div class="summary-card-value highlight">${data.task_name || 'N/A'}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">Version</div>
+              <div class="summary-card-value">${data.version || 'N/A'}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">Duration</div>
+              <div class="summary-card-value">${data.duration || 'N/A'}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">Tables</div>
+              <div class="summary-card-value highlight">${data.tables_count || 0}</div>
+            </div>
+          </div>
+          
+          <div class="summary-grid" style="margin-top: 8px;">
+            <div class="summary-card">
+              <div class="summary-card-title">Errors</div>
+              <div class="summary-card-value${errCls}">${data.error_count || 0}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">Warnings</div>
+              <div class="summary-card-value${warnCls}">${data.warning_count || 0}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">Running Mode</div>
+              <div class="summary-card-value">${data.running_mode || 'N/A'}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">Start Mode</div>
+              <div class="summary-card-value">${data.start_mode || 'N/A'}</div>
+            </div>
+          </div>
+          
+          <div style="margin:12px 0;display:flex;gap:6px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:${flBg};border-radius:4px;">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="${flC}">${data.full_load_completed ? checkSvg : circleSvg}</svg>
+              <span style="font-size:0.7rem;color:${flC};">Full Load ${data.full_load_completed ? 'Completed' : 'Not Completed'}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:${cdcBg};border-radius:4px;">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="${cdcC}">${data.cdc_started ? checkSvg : circleSvg}</svg>
+              <span style="font-size:0.7rem;color:${cdcC};">CDC ${data.cdc_started ? 'Started' : 'Not Started'}</span>
+            </div>
+          </div>
+    `;
     
     // Key Events
     if (data.key_events && data.key_events.length > 0) {
-      let evHtml = '<div class="key-events-list"><h4 style="margin:0 0 4px 0;font-size:0.65rem;color:#9ca3af;">Key Events</h4>';
+      html += '<div style="margin-top: 12px;"><h4 style="margin: 0 0 8px 0; font-size: 0.8rem; color: #9ca3af;">Key Events</h4>';
       data.key_events.forEach(e => {
-        evHtml += `<div class="key-event"><span class="key-event-line">L${e.line+1}</span><span class="key-event-name">${e.event}</span></div>`;
+        html += `<div class="key-event"><span class="key-event-line">L${e.line + 1}</span><span class="key-event-name">${e.event}</span></div>`;
       });
-      evHtml += '</div>';
-      parts.push(evHtml);
+      html += '</div>';
     }
     
-    // Log Levels Changed
-    if (data.log_levels_changed && data.log_levels_changed.length > 0) {
-      let lvlHtml = '<div style="margin-top:6px;"><h4 style="margin:0 0 4px 0;font-size:0.65rem;color:#9ca3af;">Log Levels Changed</h4><div style="display:flex;flex-wrap:wrap;gap:3px;">';
-      data.log_levels_changed.forEach(l => {
-        lvlHtml += `<span style="padding:2px 5px;background:#1f2937;border-radius:2px;font-size:0.55rem;"><span style="color:#60a5fa;">${l.component}</span>:<span style="color:#6b7280;">${l.from}</span>→<span style="color:#fbbf24;">${l.to}</span></span>`;
-      });
-      lvlHtml += '</div></div>';
-      parts.push(lvlHtml);
+    html += '</div></div>';
+    container.innerHTML = html;
+  }
+  
+  // Render generating state
+  function renderGeneratingSummary(container, summaryData) {
+    if (!container) return;
+    
+    container.innerHTML = `
+      <div class="log-summary-section" id="logSummarySection">
+        <div class="summary-header-row">
+          <div class="summary-title">
+            <svg width="16" height="16" viewBox="0 0 512 512" fill="currentColor" style="color:#8b5cf6;">
+              <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/>
+            </svg>
+            <span>Log Summary</span>
+          </div>
+        </div>
+        <div class="ai-generating-notice">
+          <div class="generating-spinner"></div>
+          <div class="generating-text">Generating AI insights... This may take a moment.</div>
+        </div>
+      </div>
+    `;
+    
+    // Don't poll - we'll rely on the aiReportReady event instead
+    // The event will be dispatched when the report is ready
+  }
+  
+  // Initialize Reports Panel Toggle
+  const toggleReportsBtn = document.getElementById('toggleReportsPanel');
+  const reportsPanel = document.getElementById('reportsPanel');
+  
+  if (toggleReportsBtn && reportsPanel) {
+    // Load saved state
+    const panelCollapsed = localStorage.getItem('reportsPanelCollapsed') === 'true';
+    if (panelCollapsed) {
+      reportsPanel.classList.add('collapsed');
     }
     
-    parts.push('</div>');
-    summaryContent.innerHTML = parts.join('');
+    toggleReportsBtn.addEventListener('click', () => {
+      reportsPanel.classList.toggle('collapsed');
+      localStorage.setItem('reportsPanelCollapsed', reportsPanel.classList.contains('collapsed'));
+    });
   }
   
   // Initialize floating export button
@@ -4907,5 +6059,77 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
   }
+
+  // ============================================================
+  // AI INTEGRATION
+  // ============================================================
+  
+  // AI Settings button handler
+  const aiSettingsBtn = document.getElementById('aiSettingsBtn');
+  if (aiSettingsBtn) {
+    aiSettingsBtn.addEventListener('click', () => {
+      if (window.aiConfigModal) {
+        window.aiConfigModal.open();
+      }
+    });
+  }
+  
+  // Update AI settings indicator based on configuration status
+  function updateAISettingsIndicator() {
+    const indicator = document.getElementById('aiSettingsIndicator');
+    if (!indicator) return;
+    
+    fetch('/api/llm/config')
+      .then(res => res.json())
+      .then(config => {
+        if (config.is_configured) {
+          indicator.classList.add('configured');
+          indicator.title = 'AI Configured';
+        } else {
+          indicator.classList.remove('configured');
+          indicator.title = 'AI Not Configured';
+        }
+      })
+      .catch(() => {
+        indicator.classList.remove('configured');
+      });
+  }
+  
+  // Initial check
+  updateAISettingsIndicator();
+  
+  // Render AI report section in its container
+  function renderAIReportSection() {
+    if (!currentFileId) return;
+    
+    const container = document.getElementById('aiReportContainer');
+    if (container && window.aiReportManager) {
+      window.aiReportManager.render(container, currentFileId);
+    }
+  }
+  
+  // Hook into tab switching for findings tab
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.tab === 'findings-tab') {
+        // Render AI report section when findings tab is clicked
+        setTimeout(renderAIReportSection, 50);
+      }
+    });
+  });
+  
+  // Also render AI report when a file is loaded
+  const originalLoadFile = loadFile;
+  loadFile = function(id) {
+    originalLoadFile(id);
+    
+    // Always render the AI report container
+    setTimeout(renderAIReportSection, 100);
+    
+    // Update AI report manager's file ID - this triggers auto-generation
+    if (window.aiReportManager) {
+      window.aiReportManager.setFileId(id);
+    }
+  };
 
 });

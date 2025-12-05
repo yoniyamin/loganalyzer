@@ -84,7 +84,7 @@ class LatencyAnalyzer:
     def get_bottleneck_analysis(self) -> Dict[str, Any]:
         """Detailed bottleneck analysis with time periods."""
         if len(self.data) < 2:
-            return {"bottleneck": "unknown", "periods": []}
+            return {"overall_bottleneck": "unknown", "periods": []}
         
         bottleneck = self.identify_bottleneck()
         
