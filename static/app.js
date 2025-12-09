@@ -55,6 +55,23 @@ document.addEventListener("DOMContentLoaded", () => {
   const threadLogView = document.getElementById("threadLogView");
   const componentInfo = document.getElementById("componentInfo");
   
+  // Placeholder handling for log area (show image until a file loads)
+  function showLogPlaceholder() {
+    if (logPreview) {
+      logPreview.classList.add('log-placeholder');
+      logPreview.innerHTML = '';
+    }
+  }
+
+  function hideLogPlaceholder() {
+    if (logPreview) {
+      logPreview.classList.remove('log-placeholder');
+    }
+  }
+
+  // Default to placeholder state before any log is loaded
+  showLogPlaceholder();
+
   // Log View Threads Panel elements
   const logViewThreadList = document.getElementById("logViewThreadList");
   const logViewComponentInfo = document.getElementById("logViewComponentInfo");
@@ -1116,9 +1133,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // Add remove functionality on right-click
     newTag.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      if (confirm(`Remove preset "${label}"?`)) {
-        newTag.remove();
-      }
+      showModal(
+        'Remove Preset',
+        `<p>Remove preset "<strong>${label}</strong>"?</p>`,
+        () => newTag.remove(),
+        { confirmText: 'Remove', danger: true }
+      );
     });
     
     presetTagsContainer.appendChild(newTag);
@@ -1387,13 +1407,27 @@ document.addEventListener("DOMContentLoaded", () => {
          <li>Re-parse the log file</li>
          <li>Update line numbers for plot navigation</li>
          <li>Take a moment to complete</li>
-       </ul>`,
+       </ul>
+       <div style="margin-top: 15px; padding: 12px; background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 6px;">
+         <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+           <input type="checkbox" id="reembed-checkbox" style="margin-top: 3px; accent-color: #8b5cf6;">
+           <div>
+             <span style="color: #e2e8f0; font-weight: 500;">Re-embed for AI analysis</span>
+             <p style="font-size: 0.8em; color: #9ca3af; margin-top: 4px;">
+               Updates embeddings with improved PII sanitization. Recommended after sanitizer updates.
+             </p>
+           </div>
+         </label>
+       </div>`,
       () => {
+        const reembed = document.getElementById('reembed-checkbox')?.checked || false;
         fileStatusDiv.textContent = `Re-indexing ${filename}...`;
-        console.log('Re-indexing file:', fileId);
+        console.log('Re-indexing file:', fileId, 'reembed:', reembed);
     
     fetch(`/api/files/${fileId}/reindex`, {
-      method: "POST"
+      method: "POST",
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reembed: reembed })
     })
     .then(res => {
       if (!res.ok) {
@@ -1417,10 +1451,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   // Modal Dialog Functions
-  function showModal(title, bodyHTML, onConfirm) {
+  function showModal(title, bodyHTML, onConfirm, options = {}) {
     modalTitle.textContent = title;
     modalBody.innerHTML = bodyHTML;
     modalOverlay.style.display = 'flex';
+    
+    // Options: confirmText, cancelText, danger (red confirm button)
+    const { confirmText = 'Confirm', cancelText = 'Cancel', danger = false } = options;
     
     // If no confirm callback, it's just an info dialog
     if (!onConfirm) {
@@ -1428,7 +1465,15 @@ document.addEventListener("DOMContentLoaded", () => {
       modalCancel.textContent = 'OK';
     } else {
       modalConfirm.style.display = 'block';
-      modalCancel.textContent = 'Cancel';
+      modalCancel.textContent = cancelText;
+      modalConfirm.textContent = confirmText;
+      
+      // Style danger buttons differently
+      if (danger) {
+        modalConfirm.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+      } else {
+        modalConfirm.style.background = 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)';
+      }
     }
     
     // Remove old listeners by cloning and replacing
@@ -1458,6 +1503,28 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
+  
+  // Make showModal globally accessible for other scripts
+  window.showModal = showModal;
+  
+  // Global alert replacement
+  window.showAlert = function(title, message) {
+    showModal(title, `<p>${message}</p>`, null);
+  };
+  
+  // Global confirm replacement (returns a Promise)
+  window.showConfirm = function(title, message, options = {}) {
+    return new Promise((resolve) => {
+      showModal(title, `<p>${message}</p>`, () => resolve(true), options);
+      // Handle cancel case - we need to detect modal close
+      const checkClosed = setInterval(() => {
+        if (modalOverlay.style.display === 'none') {
+          clearInterval(checkClosed);
+          // Only resolve false if not already resolved via confirm
+        }
+      }, 100);
+    });
+  };
 
   function registerLocalFile(path) {
       fileStatusDiv.textContent = "Registering file...";
@@ -1477,7 +1544,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .catch(err => {
           console.error(err);
           fileStatusDiv.textContent = `Error: ${err.message}`;
-          alert(`Error: ${err.message}`);
+          showModal('Error', `<p style="color: #ef4444;">${err.message}</p>`, null);
       });
   }
 
@@ -1532,6 +1599,22 @@ document.addEventListener("DOMContentLoaded", () => {
     currentFileId = id;
     selectedFileId = null; // Clear selection since file is now loaded
     hideFileMetadataPanel();
+    
+    // Dispatch fileLoaded event for components that need to know
+    document.dispatchEvent(new CustomEvent('fileLoaded', { 
+      detail: { fileId: id } 
+    }));
+    
+    // Update AI Assistant with new file
+    if (window.aiAssistant) {
+      window.aiAssistant.setFileId(id);
+    }
+    
+    // Update Saved Findings Manager with new file
+    if (window.savedFindingsManager) {
+      window.savedFindingsManager.currentFileId = id;
+      window.savedFindingsManager.loadFindings();
+    }
     
     // Add to recent files
     addToRecentFiles(id);
@@ -1598,6 +1681,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function clearAllFileData() {
     // Clear log preview
     if (logPreview) {
+      hideLogPlaceholder();
       logPreview.innerHTML = '<div class="log-line">Loading...</div>';
     }
     
@@ -2215,6 +2299,7 @@ document.addEventListener("DOMContentLoaded", () => {
     lastSearchMatches = tabData.matches;
     
     // Display only search results - CLEAR FIRST!
+    hideLogPlaceholder();
     logPreview.innerHTML = "";
     
     tabData.matches.forEach(m => {
@@ -2378,6 +2463,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderLines(lines, append, startIdx) {
+    hideLogPlaceholder();
     if (!append) logPreview.innerHTML = "";
     
     // Extract timestamps from existing lines if appending
@@ -6072,6 +6158,13 @@ document.addEventListener("DOMContentLoaded", () => {
         window.aiConfigModal.open();
       }
     });
+  }
+  
+  // Connect AI config changes to AI assistant
+  if (window.aiConfigModal && window.aiAssistant) {
+    window.aiConfigModal.onConfigSaved = (config) => {
+      window.aiAssistant.onConfigChanged(config);
+    };
   }
   
   // Update AI settings indicator based on configuration status

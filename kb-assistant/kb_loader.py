@@ -5,6 +5,12 @@ Qlik Replicate KB Loader CLI
 Main entrypoint for scraping KB articles and loading markdown files
 into the ChromaDB knowledge base.
 
+Features:
+- Threaded scraping (producer) and embedding (consumer) for better performance
+- Detailed logging to file and console
+- Per-article status tracking in SQLite
+- Real-time progress indicators
+
 Usage:
     python kb_loader.py                     # Interactive mode
     python kb_loader.py --mode scrape       # Scrape KB articles from sitemaps
@@ -15,15 +21,19 @@ Usage:
 import argparse
 import sys
 import time
+import logging
+import threading
+import queue
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.logging import RichHandler
 
 # Add current directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -43,7 +53,201 @@ from db_client import (
     clear_all_articles,
 )
 
+# Setup logging
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / f"kb_loader_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Configure file logging
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(message)s'
+))
+
+# Configure root logger
+logger = logging.getLogger('kb_loader')
+logger.setLevel(logging.DEBUG)
+logger.addHandler(file_handler)
+
+# Also log to console (INFO level)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)
+console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+logger.addHandler(console_handler)
+
 console = Console()
+
+
+# Threading configuration
+QUEUE_SIZE = 50  # Max articles in queue
+NUM_EMBED_WORKERS = 1  # Number of embedding workers (1 is usually enough)
+
+
+class ScraperStats:
+    """Thread-safe statistics tracker."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fetched = 0
+        self.fetch_failed = 0
+        self.embedded = 0
+        self.embed_failed = 0
+        self.total_chunks = 0
+    
+    def add_fetch_success(self):
+        with self.lock:
+            self.fetched += 1
+    
+    def add_fetch_failure(self):
+        with self.lock:
+            self.fetch_failed += 1
+    
+    def add_embed_success(self, chunks: int):
+        with self.lock:
+            self.embedded += 1
+            self.total_chunks += chunks
+    
+    def add_embed_failure(self):
+        with self.lock:
+            self.embed_failed += 1
+    
+    def get_stats(self):
+        with self.lock:
+            return {
+                'fetched': self.fetched,
+                'fetch_failed': self.fetch_failed,
+                'embedded': self.embedded,
+                'embed_failed': self.embed_failed,
+                'total_chunks': self.total_chunks
+            }
+
+
+def fetch_worker(
+    articles: list,
+    article_queue: queue.Queue,
+    stats: ScraperStats,
+    stop_event: threading.Event
+):
+    """
+    Worker thread that fetches articles and puts them in a queue.
+    
+    Args:
+        articles: List of article info dicts (url, title, article_id)
+        article_queue: Queue to put fetched articles
+        stats: Shared statistics object
+        stop_event: Event to signal stop
+    """
+    for i, article_info in enumerate(articles):
+        if stop_event.is_set():
+            logger.info("Fetch worker stopped by signal")
+            break
+        
+        url = article_info["url"]
+        discovered_title = article_info.get("title", "")
+        discovered_id = article_info.get("article_id")
+        
+        logger.info(f"[{i+1}/{len(articles)}] Fetching: {url}")
+        
+        try:
+            article = fetch_and_parse_article(url)
+            
+            if article:
+                # Add discovered metadata as fallback
+                article['discovered_title'] = discovered_title
+                article['discovered_id'] = discovered_id
+                article['url'] = url  # Ensure URL is set
+                
+                article_queue.put(article)
+                stats.add_fetch_success()
+                logger.info(f"[{i+1}/{len(articles)}] Fetched OK: {article.get('title', discovered_title)[:60]}")
+            else:
+                # Log failure and mark in DB immediately
+                stats.add_fetch_failure()
+                mark_article_failed(url, "fetch_failed")
+                logger.warning(f"[{i+1}/{len(articles)}] FETCH FAILED: {url}")
+        
+        except Exception as e:
+            stats.add_fetch_failure()
+            mark_article_failed(url, f"fetch_error: {str(e)[:100]}")
+            logger.error(f"[{i+1}/{len(articles)}] FETCH ERROR: {url} - {e}")
+        
+        # Polite delay between requests
+        if i < len(articles) - 1 and not stop_event.is_set():
+            time.sleep(CRAWL_DELAY_SECONDS)
+    
+    # Signal end of fetching
+    article_queue.put(None)
+    logger.info("Fetch worker completed")
+
+
+def embed_worker(
+    article_queue: queue.Queue,
+    stats: ScraperStats,
+    stop_event: threading.Event,
+    total_articles: int
+):
+    """
+    Worker thread that embeds articles from the queue.
+    
+    Args:
+        article_queue: Queue to get articles from
+        stats: Shared statistics object
+        stop_event: Event to signal stop
+        total_articles: Total number of articles (for logging)
+    """
+    processed = 0
+    
+    while not stop_event.is_set():
+        try:
+            article = article_queue.get(timeout=1.0)
+            
+            if article is None:
+                # End signal from fetch worker
+                logger.info("Embed worker received stop signal")
+                break
+            
+            processed += 1
+            url = article.get("url", "")
+            title = article.get("title") or article.get("discovered_title") or "Untitled"
+            article_id = article.get("article_id") or article.get("discovered_id")
+            
+            logger.info(f"[Embed {processed}] Processing: {title[:60]}")
+            
+            try:
+                # Embed article
+                chunks = embed_article(article)
+                
+                if chunks > 0:
+                    # Save to database immediately
+                    add_or_update_article(
+                        url=url,
+                        title=title,
+                        source="kb_article",
+                        article_id=article_id,
+                        content_hash=article.get("content_hash"),
+                        content_length=article.get("content_length", 0),
+                        chunks_count=chunks,
+                        last_modified=None,
+                        status="indexed"
+                    )
+                    stats.add_embed_success(chunks)
+                    logger.info(f"[Embed {processed}] SUCCESS: {title[:50]} ({chunks} chunks)")
+                else:
+                    mark_article_failed(url, "embed_no_chunks")
+                    stats.add_embed_failure()
+                    logger.warning(f"[Embed {processed}] FAILED (no chunks): {title[:50]}")
+            
+            except Exception as e:
+                mark_article_failed(url, f"embed_error: {str(e)[:100]}")
+                stats.add_embed_failure()
+                logger.error(f"[Embed {processed}] ERROR: {title[:50]} - {e}")
+            
+            article_queue.task_done()
+        
+        except queue.Empty:
+            continue
+    
+    logger.info(f"Embed worker completed. Processed {processed} articles.")
 
 
 def show_stats():
@@ -73,9 +277,7 @@ def show_stats():
 
 def run_scrape_mode(skip_existing: bool = True):
     """
-    Run the KB scraping workflow.
-    
-    Parses articles from saved HTML file (kb_page.html) and fetches/embeds them.
+    Run the KB scraping workflow with threaded fetching and embedding.
     
     Args:
         skip_existing: If True, skip already indexed articles
@@ -85,20 +287,27 @@ def run_scrape_mode(skip_existing: bool = True):
     
     console.print(Panel.fit(
         "[bold blue]Qlik Replicate KB Scraper[/bold blue]\n"
-        "This will scrape KB articles from Qlik Community.",
+        "This will scrape KB articles from Qlik Community.\n"
+        f"Log file: {LOG_FILE}",
         title="Scrape Mode"
     ))
     
+    logger.info("="*60)
+    logger.info("Starting KB scrape session")
+    logger.info("="*60)
+    
     # Step 1: Discover articles
     console.print("\n[bold]Step 1: Discovering articles from KB listing...[/bold]")
+    logger.info("Discovering articles from KB listing...")
     
-    # Discover articles from saved HTML file
-    # Both functions now work the same way (parse saved HTML)
     articles = discover_kb_articles()
     
     if not articles:
         console.print("[yellow]No articles found. Exiting.[/yellow]")
+        logger.warning("No articles found")
         return
+    
+    logger.info(f"Discovered {len(articles)} articles")
     
     # Filter out already indexed
     if skip_existing:
@@ -108,28 +317,62 @@ def run_scrape_mode(skip_existing: bool = True):
         skipped = original_count - len(articles)
         if skipped > 0:
             console.print(f"[dim]Skipping {skipped} already indexed articles[/dim]")
+            logger.info(f"Skipping {skipped} already indexed articles")
     
     if not articles:
         console.print("[green]All articles already indexed. Nothing to do.[/green]")
+        logger.info("All articles already indexed")
         return
     
-    # Estimate time
-    est_seconds = len(articles) * (CRAWL_DELAY_SECONDS + 2)  # fetch + process + delay
+    # Estimate time (crawl delay + ~2-3 seconds for fetch/parse/embed per article)
+    avg_per_article = CRAWL_DELAY_SECONDS + 3  # delay + fetch/parse/embed overhead
+    est_seconds = len(articles) * avg_per_article
     est_minutes = est_seconds / 60
     
     console.print(f"\n[bold]Found {len(articles)} articles to process[/bold]")
-    console.print(f"[dim]Estimated time: {est_minutes:.1f} minutes[/dim]")
+    console.print(f"[dim]Crawl delay: {CRAWL_DELAY_SECONDS}s per article[/dim]")
+    console.print(f"[dim]Estimated time: ~{est_minutes:.1f} minutes ({avg_per_article:.1f}s per article)[/dim]")
+    console.print(f"[dim]Log file: {LOG_FILE}[/dim]")
+    
+    logger.info(f"Articles to process: {len(articles)}")
+    logger.info(f"Estimated time: {est_minutes:.1f} minutes")
     
     # Confirmation
     if not Confirm.ask("\n[yellow]Proceed with scraping?[/yellow]"):
         console.print("[dim]Cancelled by user[/dim]")
+        logger.info("Cancelled by user")
         return
     
-    # Step 2: Fetch and embed articles
+    # Step 2: Fetch and embed articles using threads
     console.print("\n[bold]Step 2: Fetching and embedding articles...[/bold]")
+    console.print("[dim]Check the log file for detailed per-article status[/dim]")
+    logger.info("Starting threaded fetch and embed process")
     
-    successful_count = 0
-    failed_list = []
+    # Create shared objects
+    article_queue = queue.Queue(maxsize=QUEUE_SIZE)
+    stats = ScraperStats()
+    stop_event = threading.Event()
+    
+    # Start fetch worker thread
+    fetch_thread = threading.Thread(
+        target=fetch_worker,
+        args=(articles, article_queue, stats, stop_event),
+        name="FetchWorker"
+    )
+    fetch_thread.start()
+    logger.info("Fetch worker thread started")
+    
+    # Start embed worker thread
+    embed_thread = threading.Thread(
+        target=embed_worker,
+        args=(article_queue, stats, stop_event, len(articles)),
+        name="EmbedWorker"
+    )
+    embed_thread.start()
+    logger.info("Embed worker thread started")
+    
+    # Progress display
+    start_time = time.time()
     
     with Progress(
         SpinnerColumn(),
@@ -140,63 +383,58 @@ def run_scrape_mode(skip_existing: bool = True):
         TimeRemainingColumn(),
         console=console
     ) as progress:
-        task = progress.add_task("Processing articles...", total=len(articles))
+        task = progress.add_task("Processing...", total=len(articles))
         
-        for i, article_info in enumerate(articles):
-            url = article_info["url"]
-            discovered_title = article_info.get("title", "")
-            discovered_id = article_info.get("article_id")
-            progress.update(task, description=f"[{i+1}/{len(articles)}] Fetching...")
-            
-            # Fetch article content
-            article = fetch_and_parse_article(url)
-            
-            if article:
-                # Use discovered title/id as fallback
-                title = article.get("title") or discovered_title or "Untitled"
-                article_id = article.get("article_id") or discovered_id
+        try:
+            while fetch_thread.is_alive() or embed_thread.is_alive():
+                current_stats = stats.get_stats()
+                total_processed = current_stats['embedded'] + current_stats['embed_failed']
                 
-                # Embed article
-                chunks = embed_article(article)
+                progress.update(
+                    task,
+                    completed=total_processed,
+                    description=f"Fetched: {current_stats['fetched']} | Embedded: {current_stats['embedded']} | Failed: {current_stats['fetch_failed'] + current_stats['embed_failed']}"
+                )
                 
-                if chunks > 0:
-                    # Save to database
-                    add_or_update_article(
-                        url=url,
-                        title=title,
-                        source="kb_article",
-                        article_id=article_id,
-                        content_hash=article.get("content_hash"),
-                        content_length=article.get("content_length", 0),
-                        chunks_count=chunks,
-                        last_modified=None,
-                        status="indexed"
-                    )
-                    successful_count += 1
-                    progress.update(task, description=f"[{i+1}/{len(articles)}] Added {chunks} chunks")
-                else:
-                    mark_article_failed(url, "embedding_failed")
-                    failed_list.append({"url": url, "reason": "embedding failed"})
-            else:
-                mark_article_failed(url, "fetch_failed")
-                failed_list.append({"url": url, "reason": "fetch/parse failed"})
+                time.sleep(0.5)
             
-            progress.advance(task)
-            
-            # Polite delay
-            if i < len(articles) - 1:
-                time.sleep(CRAWL_DELAY_SECONDS)
+            # Final update
+            final_stats = stats.get_stats()
+            progress.update(task, completed=len(articles))
+        
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrupted! Stopping workers...[/yellow]")
+            logger.warning("Process interrupted by user")
+            stop_event.set()
+            fetch_thread.join(timeout=5)
+            embed_thread.join(timeout=5)
+    
+    # Wait for threads to complete
+    fetch_thread.join()
+    embed_thread.join()
+    
+    elapsed = time.time() - start_time
+    final_stats = stats.get_stats()
     
     # Summary
+    logger.info("="*60)
+    logger.info("Scrape session completed")
+    logger.info(f"  Time elapsed: {elapsed/60:.1f} minutes")
+    logger.info(f"  Fetched: {final_stats['fetched']}")
+    logger.info(f"  Fetch failed: {final_stats['fetch_failed']}")
+    logger.info(f"  Embedded: {final_stats['embedded']}")
+    logger.info(f"  Embed failed: {final_stats['embed_failed']}")
+    logger.info(f"  Total chunks: {final_stats['total_chunks']}")
+    logger.info("="*60)
+    
     console.print("\n" + "="*50)
     console.print(f"[bold green]Completed![/bold green]")
-    console.print(f"  Successful: {successful_count}")
-    console.print(f"  Failed: {len(failed_list)}")
-    
-    if failed_list and len(failed_list) <= 10:
-        console.print("\n[yellow]Failed articles:[/yellow]")
-        for f in failed_list:
-            console.print(f"  - {f['url']}: {f['reason']}")
+    console.print(f"  Time elapsed: {elapsed/60:.1f} minutes")
+    console.print(f"  Successfully embedded: {final_stats['embedded']}")
+    console.print(f"  Total chunks created: {final_stats['total_chunks']}")
+    console.print(f"  Failed (fetch): {final_stats['fetch_failed']}")
+    console.print(f"  Failed (embed): {final_stats['embed_failed']}")
+    console.print(f"\n[dim]Log file: {LOG_FILE}[/dim]")
     
     show_stats()
 
@@ -278,14 +516,13 @@ def run_query_mode(query: str, n_results: int = 5):
     for i, result in enumerate(results, 1):
         meta = result.get("metadata", {})
         distance = result.get("distance", 0)
-        similarity = max(0, 1 - distance) * 100  # Convert distance to similarity %
+        similarity = max(0, 1 - distance) * 100
         
         console.print(f"[bold cyan]Result {i}[/bold cyan] (similarity: {similarity:.1f}%)")
         console.print(f"  [bold]Title:[/bold] {meta.get('title', 'Unknown')}")
         console.print(f"  [bold]Source:[/bold] {meta.get('source', 'Unknown')}")
         console.print(f"  [bold]URL:[/bold] {meta.get('url', 'N/A')}")
         
-        # Show content preview
         content = result.get("content", "")[:300]
         if len(result.get("content", "")) > 300:
             content += "..."
@@ -311,9 +548,10 @@ def run_interactive_mode():
         console.print("  4. Show statistics")
         console.print("  5. List indexed articles")
         console.print("  6. Clear KB (delete all)")
+        console.print("  7. View recent logs")
         console.print("  q. Quit")
         
-        choice = Prompt.ask("\nSelect option", choices=["1", "2", "3", "4", "5", "6", "q"], default="q")
+        choice = Prompt.ask("\nSelect option", choices=["1", "2", "3", "4", "5", "6", "7", "q"], default="q")
         
         if choice == "1":
             run_scrape_mode()
@@ -344,7 +582,7 @@ def run_interactive_mode():
                 table.add_column("Chunks", justify="right")
                 table.add_column("Indexed At", style="dim")
                 
-                for article in articles[:50]:  # Show first 50
+                for article in articles[:50]:
                     table.add_row(
                         article.article_id or "-",
                         article.title[:50] + "..." if len(article.title) > 50 else article.title,
@@ -367,6 +605,23 @@ def run_interactive_mode():
                 # Clear database
                 db_deleted = clear_all_articles()
                 console.print(f"[green]Deleted {db_deleted} articles from database[/green]")
+        
+        elif choice == "7":
+            # View recent logs
+            log_files = sorted(LOG_DIR.glob("kb_loader_*.log"), reverse=True)[:5]
+            if not log_files:
+                console.print("[yellow]No log files found[/yellow]")
+            else:
+                console.print("\n[bold]Recent log files:[/bold]")
+                for lf in log_files:
+                    size = lf.stat().st_size
+                    console.print(f"  {lf.name} ({size/1024:.1f} KB)")
+                
+                if Confirm.ask("\nView latest log?"):
+                    with open(log_files[0], 'r', encoding='utf-8') as f:
+                        lines = f.readlines()[-100:]  # Last 100 lines
+                        for line in lines:
+                            console.print(f"[dim]{line.rstrip()}[/dim]")
         
         elif choice == "q":
             console.print("[dim]Goodbye![/dim]")

@@ -5,6 +5,7 @@ Fetches, parses, and cleans HTML content from KB article URLs.
 import hashlib
 import re
 import time
+import logging
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
@@ -18,6 +19,9 @@ from config import (
     MAX_RETRIES,
     CRAWL_DELAY_SECONDS,
 )
+
+# Setup logging
+logger = logging.getLogger('kb_loader.article_fetcher')
 
 console = Console()
 
@@ -58,6 +62,7 @@ def fetch_article_html(url: str, retries: int = MAX_RETRIES) -> Optional[str]:
     """
     for attempt in range(retries):
         try:
+            logger.debug(f"Fetching URL (attempt {attempt+1}/{retries}): {url}")
             response = requests.get(
                 url,
                 headers={
@@ -68,13 +73,38 @@ def fetch_article_html(url: str, retries: int = MAX_RETRIES) -> Optional[str]:
                 timeout=REQUEST_TIMEOUT
             )
             response.raise_for_status()
+            logger.debug(f"Fetch OK: {len(response.text)} bytes, status {response.status_code}")
             return response.text
-        except requests.RequestException as e:
+        except requests.Timeout as e:
+            logger.warning(f"Timeout fetching {url} (attempt {attempt+1}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
+                wait_time = 2 ** attempt
+                logger.debug(f"Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+        except requests.HTTPError as e:
+            logger.warning(f"HTTP error {response.status_code} fetching {url}: {e}")
+            if response.status_code == 429:  # Rate limited
+                wait_time = 30 + (10 * attempt)  # Longer wait for rate limits
+                logger.warning(f"Rate limited! Waiting {wait_time}s...")
+                time.sleep(wait_time)
+            elif response.status_code >= 500:  # Server error
+                if attempt < retries - 1:
+                    wait_time = 5 * (attempt + 1)
+                    logger.debug(f"Server error, waiting {wait_time}s...")
+                    time.sleep(wait_time)
             else:
-                console.print(f"[yellow]Failed to fetch {url}: {e}[/yellow]")
+                logger.error(f"Non-retryable HTTP error {response.status_code} for {url}")
                 return None
+        except requests.RequestException as e:
+            logger.warning(f"Request error fetching {url} (attempt {attempt+1}): {e}")
+            if attempt < retries - 1:
+                wait_time = 2 ** attempt
+                time.sleep(wait_time)
+            else:
+                logger.error(f"All retries failed for {url}: {e}")
+                return None
+    
+    logger.error(f"All {retries} attempts failed for {url}")
     return None
 
 
@@ -91,18 +121,25 @@ def clean_text(text: str) -> str:
     # Remove excessive whitespace
     text = re.sub(r'\s+', ' ', text)
     
-    # Remove common boilerplate phrases
+    # Remove common boilerplate phrases (non-greedy, limited scope)
     boilerplate = [
-        r'Was this article helpful\?.*',
-        r'Related Articles.*',
-        r'Labels:.*',
-        r'Tags:.*',
-        r'Share this article.*',
-        r'Print this article.*',
-        r'Email this article.*',
+        r'Was this article helpful\?\s*(Yes|No)?\s*(Yes|No)?',
+        r'Labels:\s*[\w\s,]+(?=\s{2}|$)',
+        r'Tags:\s*[\w\s,]+(?=\s{2}|$)',
+        r'Share this article',
+        r'Print this article',
+        r'Email this article',
+        r'Mark as New',
+        r'Bookmark',
+        r'Subscribe',
+        r'Mute',
+        r'Subscribe to RSS Feed',
+        r'Permalink',
+        r'Print',
+        r'Report Inappropriate Content',
     ]
     for pattern in boilerplate:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
     
     # Clean up whitespace again
     text = re.sub(r'\s+', ' ', text).strip()
@@ -127,26 +164,66 @@ def parse_article_html(html: str, url: str) -> Optional[Dict[str, Any]]:
         # Fallback to html.parser if lxml fails
         soup = BeautifulSoup(html, 'html.parser')
     
-    # Remove unwanted elements
-    for element in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 
-                                   'aside', 'iframe', 'noscript']):
-        element.decompose()
+    # IMPORTANT: Extract content FIRST before decomposing any elements
+    # This prevents accidentally removing parent containers
     
-    # Remove navigation and sidebar elements
-    for selector in ['.lia-menu', '.lia-breadcrumb', '.lia-navigation', 
-                     '.lia-component-common-widget-page-header',
-                     '.lia-component-common-widget-page-footer',
-                     '.lia-quilt-column-side', '.sidebar']:
-        for element in soup.select(selector):
-            element.decompose()
+    # Extract main content - try multiple selectors for article body
+    content = None
+    content_selectors = [
+        # Primary content selectors (most specific first)
+        '.lia-message-body-content',
+        '.lia-message-body',
+        '.lia-tkb-article-body-content',
+        '.lia-tkb-body',
+        '.MessageBody',
+        '.message-body-content',
+    ]
+    
+    for selector in content_selectors:
+        content_elem = soup.select_one(selector)
+        if content_elem:
+            content = content_elem.get_text(separator=' ', strip=True)
+            logger.debug(f"Selector '{selector}' found {len(content)} chars")
+            if len(content) > 100:
+                break
+    
+    # Try finding div with specific class patterns if still not found
+    if not content or len(content) < 100:
+        for div in soup.find_all('div', class_=True):
+            classes = ' '.join(div.get('class', []))
+            if any(x in classes.lower() for x in ['message-body', 'body-content']):
+                text = div.get_text(separator=' ', strip=True)
+                if len(text) > len(content or ''):
+                    content = text
+                    logger.debug(f"Found content in div.{div.get('class')[0]}: {len(content)} chars")
+    
+    if not content:
+        logger.warning(f"No content found for {url}")
+        return None
     
     # Extract title
     title = None
     
-    # Try article title first
-    title_elem = soup.find('h1', class_=re.compile(r'lia-message-subject|page-title|article-title'))
-    if title_elem:
-        title = title_elem.get_text(strip=True)
+    # Try article title selectors
+    title_selectors = [
+        'h1.lia-message-subject',
+        'h2.lia-message-subject',
+        '.page-header h1',
+        '.lia-tkb-article-subject',
+        'h1[itemprop="name"]',
+    ]
+    
+    for selector in title_selectors:
+        title_elem = soup.select_one(selector)
+        if title_elem:
+            title = title_elem.get_text(strip=True)
+            break
+    
+    # Try generic h1/h2 with lia class
+    if not title:
+        title_elem = soup.find(['h1', 'h2'], class_=re.compile(r'lia-message-subject|page-title|article-title'))
+        if title_elem:
+            title = title_elem.get_text(strip=True)
     
     # Fallback to page title
     if not title:
@@ -159,41 +236,12 @@ def parse_article_html(html: str, url: str) -> Optional[Dict[str, Any]]:
     if not title:
         title = "Untitled Article"
     
-    # Extract main content
-    content = None
-    
-    # Try to find article body
-    content_selectors = [
-        '.lia-message-body-content',
-        '.lia-message-body',
-        '.article-body',
-        '.message-body',
-        'article',
-        '.lia-quilt-column-main',
-        'main',
-    ]
-    
-    for selector in content_selectors:
-        content_elem = soup.select_one(selector)
-        if content_elem:
-            content = content_elem.get_text(separator=' ', strip=True)
-            if len(content) > 100:  # Ensure we have meaningful content
-                break
-    
-    # Fallback to body
-    if not content or len(content) < 100:
-        body = soup.find('body')
-        if body:
-            content = body.get_text(separator=' ', strip=True)
-    
-    if not content:
-        return None
-    
     # Clean the content
     content = clean_text(content)
     
-    # Skip if content is too short
-    if len(content) < 200:
+    # Skip if content is too short (lowered threshold for short articles)
+    if len(content) < 100:
+        logger.warning(f"Content too short ({len(content)} chars) for {url}")
         return None
     
     # Extract article ID
@@ -222,11 +270,21 @@ def fetch_and_parse_article(url: str) -> Optional[Dict[str, Any]]:
     Returns:
         Article data dict or None
     """
+    logger.debug(f"Fetching and parsing: {url}")
+    
     html = fetch_article_html(url)
     if not html:
+        logger.warning(f"No HTML returned for {url}")
         return None
     
-    return parse_article_html(html, url)
+    result = parse_article_html(html, url)
+    
+    if result:
+        logger.debug(f"Parsed OK: title='{result.get('title', '')[:50]}', content={result.get('content_length', 0)} chars")
+    else:
+        logger.warning(f"Parse failed for {url} (content too short or missing)")
+    
+    return result
 
 
 def fetch_articles_batch(

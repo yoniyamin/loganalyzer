@@ -52,16 +52,35 @@ class AIConfigModal {
                         </button>
                     </div>
                     
-                    <div class="ai-modal-body">
-                        <div class="ai-config-status not-configured" id="aiConfigStatus">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="12" r="10"/>
-                                <path d="M12 8v4M12 16h.01"/>
+                    <!-- Tab Navigation -->
+                    <div class="ai-modal-tabs">
+                        <button class="ai-modal-tab active" data-tab="config">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <circle cx="12" cy="12" r="3"/>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                             </svg>
-                            <span>API key not configured</span>
-                        </div>
-                        
-                        <!-- AI Enable Toggle -->
+                            Configuration
+                        </button>
+                        <button class="ai-modal-tab" data-tab="routing">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                            </svg>
+                            Routing History
+                        </button>
+                    </div>
+                    
+                    <div class="ai-modal-body">
+                        <!-- Config Tab Content -->
+                        <div class="ai-tab-content active" data-tab-content="config">
+                            <div class="ai-config-status not-configured" id="aiConfigStatus">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <path d="M12 8v4M12 16h.01"/>
+                                </svg>
+                                <span>API key not configured</span>
+                            </div>
+                            
+                            <!-- AI Enable Toggle -->
                         <div class="ai-form-group">
                             <div class="ai-toggle-row">
                                 <label class="ai-toggle-label">
@@ -183,6 +202,65 @@ class AIConfigModal {
                                 <br><span style="color: #f59e0b;">⚠️ May increase response time and cost.</span>
                             </p>
                         </div>
+                        </div><!-- End Config Tab -->
+                        
+                        <!-- Routing History Tab Content -->
+                        <div class="ai-tab-content" data-tab-content="routing">
+                            <div class="ai-routing-history-header">
+                                <h3>Routing Feedback History</h3>
+                                <p class="ai-routing-history-desc">
+                                    Track how questions were routed and provide feedback to improve future routing decisions.
+                                </p>
+                            </div>
+                            
+                            <div class="ai-routing-history-filters">
+                                <label class="ai-routing-filter-checkbox">
+                                    <input type="checkbox" id="routingMismatchOnly">
+                                    <span>Show mismatches only</span>
+                                </label>
+                                <button class="ai-btn ai-btn-secondary ai-btn-sm" id="routingExportBtn">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                        <polyline points="7 10 12 15 17 10"/>
+                                        <line x1="12" y1="15" x2="12" y2="3"/>
+                                    </svg>
+                                    Export CSV
+                                </button>
+                                <button class="ai-btn ai-btn-secondary ai-btn-sm" id="routingRefreshBtn">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                        <polyline points="23 4 23 10 17 10"/>
+                                        <polyline points="1 20 1 14 7 14"/>
+                                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                                    </svg>
+                                    Refresh
+                                </button>
+                            </div>
+                            
+                            <div class="ai-routing-history-table-wrapper">
+                                <table class="ai-routing-history-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Question</th>
+                                            <th>Actual</th>
+                                            <th>Suggested</th>
+                                            <th>Comment</th>
+                                            <th>Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="routingHistoryBody">
+                                        <tr>
+                                            <td colspan="5" class="ai-routing-history-empty">
+                                                No routing feedback yet. Rate answers in the AI Assistant to build history.
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div class="ai-routing-stats" id="routingStats">
+                                <!-- Stats will be populated by JS -->
+                            </div>
+                        </div><!-- End Routing Tab -->
                     </div>
                     
                     <div class="ai-modal-footer">
@@ -236,6 +314,27 @@ class AIConfigModal {
             if (e.key === 'Escape' && this.isOpen) {
                 this.close();
             }
+        });
+        
+        // Tab switching
+        this.overlay.querySelectorAll('.ai-modal-tab').forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                const tabName = e.currentTarget.dataset.tab;
+                this.switchTab(tabName);
+            });
+        });
+        
+        // Routing history filters and actions
+        document.getElementById('routingMismatchOnly')?.addEventListener('change', () => {
+            this.loadRoutingHistory();
+        });
+        
+        document.getElementById('routingRefreshBtn')?.addEventListener('click', () => {
+            this.loadRoutingHistory();
+        });
+        
+        document.getElementById('routingExportBtn')?.addEventListener('click', () => {
+            this.exportRoutingHistory();
         });
         
         // AI enabled toggle
@@ -584,7 +683,7 @@ class AIConfigModal {
             (openrouterKey || this.currentConfig?.openrouter_configured);
         
         if (!isConfigured) {
-            alert(`Please enter a ${isGemini ? 'Gemini' : 'OpenRouter'} API key`);
+            window.showModal('API Key Required', `<p>Please enter a ${isGemini ? 'Gemini' : 'OpenRouter'} API key to continue.</p>`, null);
             return;
         }
         
@@ -627,10 +726,10 @@ class AIConfigModal {
                 this.close();
             } else {
                 const error = await response.json();
-                alert('Failed to save: ' + (error.detail || 'Unknown error'));
+                window.showModal('Save Failed', `<p style="color: #ef4444;">Failed to save: ${error.detail || 'Unknown error'}</p>`, null);
             }
         } catch (error) {
-            alert('Failed to save configuration: ' + error.message);
+            window.showModal('Save Failed', `<p style="color: #ef4444;">Failed to save configuration: ${error.message}</p>`, null);
         } finally {
             saveBtn.disabled = false;
             saveBtn.innerHTML = `
@@ -707,6 +806,161 @@ class AIConfigModal {
             customModelSection.style.opacity = aiEnabled ? '1' : '0.5';
             customModelSection.style.pointerEvents = aiEnabled ? 'auto' : 'none';
         }
+    }
+    
+    switchTab(tabName) {
+        // Update tab buttons
+        this.overlay.querySelectorAll('.ai-modal-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.tab === tabName);
+        });
+        
+        // Update tab content
+        this.overlay.querySelectorAll('.ai-tab-content').forEach(content => {
+            content.classList.toggle('active', content.dataset.tabContent === tabName);
+        });
+        
+        // Load routing history when switching to that tab
+        if (tabName === 'routing') {
+            this.loadRoutingHistory();
+        }
+    }
+    
+    async loadRoutingHistory() {
+        const mismatchOnly = document.getElementById('routingMismatchOnly')?.checked || false;
+        const tbody = document.getElementById('routingHistoryBody');
+        
+        if (!tbody) return;
+        
+        // Show loading
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="ai-routing-history-loading">
+                    Loading...
+                </td>
+            </tr>
+        `;
+        
+        try {
+            const url = `/api/llm/routing/feedback?mismatch_only=${mismatchOnly}&limit=50`;
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error('Failed to load routing history');
+            }
+            
+            const data = await response.json();
+            
+            if (data.items.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="5" class="ai-routing-history-empty">
+                            ${mismatchOnly 
+                                ? 'No mismatches found. All routing decisions match user feedback!' 
+                                : 'No routing feedback yet. Rate answers in the AI Assistant to build history.'}
+                        </td>
+                    </tr>
+                `;
+                this.updateRoutingStats(data);
+                return;
+            }
+            
+            // Build table rows
+            tbody.innerHTML = data.items.map(item => {
+                const suggested = [];
+                if (item.should_use_local) suggested.push('⚡ Local');
+                if (item.should_use_kb) suggested.push('📚 KB');
+                if (item.should_use_ai) suggested.push('🤖 AI');
+                
+                const actualIcon = item.actual_source === 'local' ? '⚡' : 
+                                   item.actual_source === 'kb' ? '📚' : '🤖';
+                
+                const mismatchClass = item.mismatch ? 'mismatch' : '';
+                const dateStr = new Date(item.created_at).toLocaleDateString();
+                
+                return `
+                    <tr class="${mismatchClass}">
+                        <td class="ai-routing-question" title="${this.escapeHtml(item.question)}">
+                            ${this.escapeHtml(item.question.slice(0, 60))}${item.question.length > 60 ? '...' : ''}
+                        </td>
+                        <td class="ai-routing-actual">
+                            ${actualIcon} ${item.actual_source}
+                        </td>
+                        <td class="ai-routing-suggested">
+                            ${suggested.join(', ') || '-'}
+                        </td>
+                        <td class="ai-routing-comment" title="${this.escapeHtml(item.comment || '')}">
+                            ${item.comment ? this.escapeHtml(item.comment.slice(0, 30)) + (item.comment.length > 30 ? '...' : '') : '-'}
+                        </td>
+                        <td class="ai-routing-date">${dateStr}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            this.updateRoutingStats(data);
+            
+        } catch (error) {
+            console.error('Failed to load routing history:', error);
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="ai-routing-history-error">
+                        Failed to load routing history: ${error.message}
+                    </td>
+                </tr>
+            `;
+        }
+    }
+    
+    updateRoutingStats(data) {
+        const statsEl = document.getElementById('routingStats');
+        if (!statsEl) return;
+        
+        const total = data.items.length;
+        const mismatches = data.items.filter(i => i.mismatch).length;
+        const matchRate = total > 0 ? Math.round(((total - mismatches) / total) * 100) : 0;
+        
+        statsEl.innerHTML = `
+            <div class="ai-routing-stat">
+                <span class="ai-routing-stat-value">${total}</span>
+                <span class="ai-routing-stat-label">Total Feedback</span>
+            </div>
+            <div class="ai-routing-stat">
+                <span class="ai-routing-stat-value">${mismatches}</span>
+                <span class="ai-routing-stat-label">Mismatches</span>
+            </div>
+            <div class="ai-routing-stat">
+                <span class="ai-routing-stat-value">${matchRate}%</span>
+                <span class="ai-routing-stat-label">Match Rate</span>
+            </div>
+        `;
+    }
+    
+    async exportRoutingHistory() {
+        try {
+            const response = await fetch('/api/llm/routing/feedback/export');
+            if (!response.ok) {
+                throw new Error('Export failed');
+            }
+            
+            // Download the CSV file
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'routing_feedback.csv';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        } catch (error) {
+            console.error('Failed to export routing history:', error);
+            alert('Failed to export routing history');
+        }
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
     
     close() {

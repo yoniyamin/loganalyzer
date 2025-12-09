@@ -7,72 +7,19 @@ Provides embedding storage and retrieval for:
 - Anomaly sections (latency spikes, plateaus, unusual patterns)
 
 All data is sanitized before embedding to remove sensitive information.
+Uses the centralized sanitizer module for PII detection and anonymization.
 """
 
 import os
 import json
 import hashlib
-import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import chromadb
 from chromadb.config import Settings
 
-
-def _sanitize_for_embedding(text: str) -> str:
-    """
-    Sanitize text before embedding to remove sensitive information.
-    This prevents sensitive data from being stored in the vector database.
-    """
-    if not text:
-        return text
-    
-    result = text
-    
-    # Mask license information
-    result = re.sub(
-        r'Licensed to\s+([^,\n]+)',
-        'Licensed to [COMPANY]',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # Mask server/host names with domains
-    result = re.sub(
-        r'\b([A-Za-z0-9][-A-Za-z0-9]*\.)+[A-Za-z]{2,}\b',
-        '[SERVER]',
-        result
-    )
-    
-    # Mask IP addresses
-    result = re.sub(
-        r'\b(?:\d{1,3}\.){3}\d{1,3}\b',
-        '[IP]',
-        result
-    )
-    
-    # Mask Windows paths with server info
-    # Note: re.sub replacement also interprets backslashes, so use double escaping
-    result = re.sub(
-        r'C:\\Program Files\\[^\\]+\\[^\\]+\\',
-        r'C:\\Program Files\\[APP]\\',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # Mask UNC paths
-    result = re.sub(
-        r'\\\\[^\s\\]+\\[^\s]*',
-        '[UNC_PATH]',
-        result
-    )
-    
-    # Mask connection string sensitive parts
-    result = re.sub(r'UID=([^;]+)', 'UID=[USER]', result, flags=re.IGNORECASE)
-    result = re.sub(r'(SYSTEM|SERVER|HOST)=([^;]+)', r'\1=[SERVER]', result, flags=re.IGNORECASE)
-    
-    return result
+from backend.llm.sanitizer import sanitize_text as _sanitize_for_embedding
 
 
 # Default ChromaDB persist directory

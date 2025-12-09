@@ -3,160 +3,82 @@ Prompt Templates for Log Analysis Report Generation
 
 Contains system prompts and templates for generating insightful
 log analysis reports using LLMs.
+
+Uses the centralized sanitizer module for PII detection and anonymization.
+
+IMPORTANT - DATA SANITIZATION RULES:
+====================================
+This module sanitizes LOG DATA before sending to LLMs. The following rules apply:
+
+SANITIZED (contains user-specific PII):
+- Log summaries (performance data, errors, anomalies)
+- Error contexts from user logs  
+- Anomaly contexts from user logs
+- File metadata (paths, filenames)
+
+NOT SANITIZED (public documentation):
+- KB (Knowledge Base) articles - these are Qlik documentation, not user data
+- System prompts - static content, no user data
+
+When adding new prompt content:
+- Use prepare_log_context() for user log data -> sanitized
+- Use prepare_kb_context() for KB articles -> NOT sanitized
 """
 
 from typing import Dict, Any, List, Optional
 import json
-import re
+
+# Import sanitization functions from centralized module
+from backend.llm.sanitizer import sanitize_text, sanitize_dict, sanitize_list
 
 
 # ============================================================
-# DATA SANITIZATION - Remove sensitive information
+# CONTEXT PREPARATION HELPERS
 # ============================================================
 
-def sanitize_text(text: str) -> str:
+def prepare_log_context(
+    summary_data: Optional[Dict[str, Any]] = None,
+    error_contexts: Optional[List[str]] = None,
+    anomaly_contexts: Optional[List[str]] = None,
+    file_info: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Remove sensitive information from text before sending to LLM.
+    Prepare log context for LLM with sanitization applied.
     
-    Removes/masks:
-    - Server names and domain names (e.g., HSP-DBM-APP05.cs.sbsit.eu)
-    - License information (company names)
-    - IP addresses
-    - File paths that might reveal server structure
-    - Email addresses
-    - Connection strings with credentials
+    Use this function for ALL user log data to ensure PII is removed.
+    
+    Args:
+        summary_data: Performance cockpit and analysis data
+        error_contexts: List of error messages with context
+        anomaly_contexts: List of detected anomalies
+        file_info: Optional file metadata
+        
+    Returns:
+        Dictionary with sanitized versions of all inputs
     """
-    if not text:
-        return text
-    
-    result = text
-    
-    # 1. Mask license information (e.g., "Licensed to Company Name")
-    result = re.sub(
-        r'Licensed to\s+([^,]+)',
-        'Licensed to [COMPANY]',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # 2. Mask server/host names with domains (e.g., server.domain.com, SERVER-NAME.corp.local)
-    # Match hostname patterns like: name.domain.tld or NAME-01.subdomain.domain.tld
-    result = re.sub(
-        r'\b([A-Za-z0-9][-A-Za-z0-9]*\.)+[A-Za-z]{2,}\b',
-        '[SERVER]',
-        result
-    )
-    
-    # 3. Mask IP addresses (IPv4)
-    result = re.sub(
-        r'\b(?:\d{1,3}\.){3}\d{1,3}\b',
-        '[IP_ADDRESS]',
-        result
-    )
-    
-    # 4. Mask IPv6 addresses
-    result = re.sub(
-        r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b',
-        '[IP_ADDRESS]',
-        result
-    )
-    
-    # 5. Mask Windows UNC paths (e.g., \\server\share)
-    result = re.sub(
-        r'\\\\[^\s\\]+\\[^\s]*',
-        '[UNC_PATH]',
-        result
-    )
-    
-    # 6. Mask Windows file paths that might reveal server structure
-    # Keep the general structure but mask specific server/user names
-    # Note: re.sub replacement also interprets backslashes, so use double escaping
-    result = re.sub(
-        r'C:\\Program Files\\[^\\]+\\[^\\]+\\data\\tasks\\',
-        r'C:\\Program Files\\[APP]\\[INSTANCE]\\data\\tasks\\',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # 7. Mask email addresses
-    result = re.sub(
-        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-        '[EMAIL]',
-        result
-    )
-    
-    # 8. Mask UID/user names in connection strings
-    result = re.sub(
-        r'UID=([^;]+)',
-        'UID=[USER]',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # 9. Mask database server names in connection strings
-    result = re.sub(
-        r'(SYSTEM|SERVER|HOST|Data Source)=([^;]+)',
-        r'\1=[SERVER]',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # 10. Mask HTTPPath and similar cloud resource identifiers
-    result = re.sub(
-        r'HTTPPath=\{[^}]+\}',
-        'HTTPPath={[REDACTED]}',
-        result,
-        flags=re.IGNORECASE
-    )
-    
-    # 11. Mask Azure/AWS/GCP resource identifiers
-    result = re.sub(
-        r'adb-\d+\.\d+\.[a-z]+\.[a-z]+\.[a-z]+',
-        '[CLOUD_RESOURCE]',
-        result
-    )
-    
-    return result
+    return {
+        "summary_data": sanitize_dict(summary_data) if summary_data else {},
+        "error_contexts": sanitize_list(error_contexts) if error_contexts else [],
+        "anomaly_contexts": sanitize_list(anomaly_contexts) if anomaly_contexts else [],
+        "file_info": sanitize_dict(file_info) if file_info else None
+    }
 
 
-def sanitize_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+def prepare_kb_context(kb_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Recursively sanitize all string values in a dictionary.
-    """
-    if not data:
-        return data
+    Prepare KB article context for LLM WITHOUT sanitization.
     
-    result = {}
-    for key, value in data.items():
-        if isinstance(value, str):
-            result[key] = sanitize_text(value)
-        elif isinstance(value, dict):
-            result[key] = sanitize_dict(value)
-        elif isinstance(value, list):
-            result[key] = sanitize_list(value)
-        else:
-            result[key] = value
-    return result
-
-
-def sanitize_list(data: List[Any]) -> List[Any]:
-    """
-    Recursively sanitize all string values in a list.
-    """
-    if not data:
-        return data
+    KB articles are public documentation and should NOT be sanitized.
+    This function exists to make the design decision explicit.
     
-    result = []
-    for item in data:
-        if isinstance(item, str):
-            result.append(sanitize_text(item))
-        elif isinstance(item, dict):
-            result.append(sanitize_dict(item))
-        elif isinstance(item, list):
-            result.append(sanitize_list(item))
-        else:
-            result.append(item)
-    return result
+    Args:
+        kb_articles: List of KB article dicts with title, content, url
+        
+    Returns:
+        The same KB articles unchanged (no sanitization)
+    """
+    # Explicitly NOT sanitizing KB content - these are documentation, not user data
+    return kb_articles
 
 
 # ============================================================
@@ -238,6 +160,70 @@ Always structure your analysis with these sections:
 4. **Issues & Recommendations** - Problems found with web-sourced solutions
 5. **Error Code Reference** - Explanation of any error codes found (from web search)
 6. **Health Score** - Overall assessment (Healthy/Warning/Critical)
+"""
+
+
+# ============================================================
+# AI ASSISTANT SYSTEM PROMPTS
+# ============================================================
+
+# System prompt for LOG_ONLY mode - answers from log data without KB
+SYSTEM_PROMPT_LOG_FOCUSED = """You are an expert Qlik Replicate log analyst assistant.
+You help users understand their replication task logs by answering questions directly from the log data.
+
+## Your Role
+- Answer questions based on the log analysis data provided
+- Focus on facts, metrics, and observations from the log
+- Provide specific numbers, counts, and measurements when available
+- Reference specific tables, errors, and metrics from the log data
+
+## Response Guidelines
+1. Answer directly and concisely based on the log data
+2. If the data contains the answer, provide it with specific numbers
+3. If the data doesn't contain enough information, say so clearly
+4. Don't speculate beyond what the log data shows
+5. Format responses in clean Markdown
+6. Keep responses focused and under 200 words unless more detail is needed
+
+## What You Can Answer From Log Data
+- Table names and counts
+- Record/operation counts (inserts, updates, deletes, merges)
+- Error counts and types
+- Latency metrics (avg, max, p95, p99)
+- Batch statistics
+- Performance bottlenecks
+- Spike and plateau detections
+- CDC pipeline status
+- Source/target health metrics
+"""
+
+# System prompt for LOG_PLUS_KB mode - uses both log data and KB articles
+SYSTEM_PROMPT_LOG_PLUS_KB = """You are an expert Qlik Replicate support engineer assistant.
+You help users troubleshoot their replication tasks by analyzing log data and referencing knowledge base articles.
+
+## Your Role
+- Analyze log data to understand the current state and issues
+- Use KB articles to explain errors, root causes, and solutions
+- Provide actionable recommendations based on both sources
+- Connect log observations to documented solutions
+
+## Response Guidelines
+1. First, acknowledge what the log data shows
+2. Then, explain the meaning using KB article knowledge
+3. Provide specific, actionable recommendations
+4. Reference KB articles when they provide relevant guidance
+5. Format responses in clean Markdown
+6. Keep responses under 300 words unless more detail is needed
+
+## Priority Order
+1. Log data facts and metrics (primary source)
+2. KB article explanations and solutions (supporting context)
+3. General Qlik Replicate knowledge (when KB doesn't cover it)
+
+## When Referencing KB Articles
+- Mention the article title if it's directly relevant
+- Summarize the key points rather than quoting extensively
+- Focus on actionable guidance from the articles
 """
 
 

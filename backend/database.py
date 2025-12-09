@@ -251,6 +251,73 @@ class KBArticle(Base):
     status = Column(String, default="indexed")  # indexed, failed, outdated
 
 
+class AIThread(Base):
+    """Store AI Q&A threads for the AI Assistant feature."""
+    __tablename__ = "ai_threads"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"), index=True)
+    question = Column(Text)
+    answer = Column(Text)
+    kb_articles = Column(Text, nullable=True)  # JSON list of KB article references
+    model_used = Column(String, nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    thumbs_up = Column(Boolean, default=False)  # User marked as helpful
+    saved_to_chromadb = Column(Boolean, default=False)  # Saved for future RAG
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    file = relationship("LogFile", backref="ai_threads")
+
+
+class SavedFinding(Base):
+    """Store saved findings from log analysis, including Q/A threads."""
+    __tablename__ = "saved_findings"
+    
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"), index=True)
+    finding_type = Column(String, default="log_line")  # "log_line", "qa_thread", "custom"
+    title = Column(String, nullable=True)  # Optional title/summary
+    content = Column(Text)  # The finding content
+    source_thread_id = Column(Integer, nullable=True)  # Reference to AIThread if from Q/A
+    line_number = Column(Integer, nullable=True)  # If from log line
+    metadata_json = Column(Text, nullable=True)  # JSON for extra metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    file = relationship("LogFile", backref="saved_findings")
+
+
+class RoutingFeedback(Base):
+    """Store user feedback on routing decisions to improve future routing."""
+    __tablename__ = "routing_feedback"
+    
+    id = Column(Integer, primary_key=True)
+    thread_id = Column(Integer, ForeignKey("ai_threads.id"), index=True)
+    file_id = Column(Integer, ForeignKey("files.id"), index=True)
+    question = Column(Text)  # Copy of the question for easier querying
+    
+    # What the system actually used
+    actual_source = Column(String)  # "local", "kb", "ai", "needs_confirmation"
+    actual_routing_mode = Column(String, nullable=True)  # "LOCAL", "KB_FUSION", "AI_REQUIRED"
+    
+    # What the user thinks should have been used (checkboxes)
+    should_use_local = Column(Boolean, default=False)
+    should_use_kb = Column(Boolean, default=False)
+    should_use_ai = Column(Boolean, default=False)
+    
+    # User's explanation
+    comment = Column(Text, nullable=True)
+    
+    # Rating: was the answer helpful? (1-5 scale or null if not rated)
+    quality_rating = Column(Integer, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    thread = relationship("AIThread", backref="routing_feedback")
+    file = relationship("LogFile", backref="routing_feedback")
+
+
 def init_db():
     """Initialize the database and run migrations."""
     Base.metadata.create_all(bind=engine)

@@ -51,7 +51,7 @@ REPLICATE_KEYWORDS = [
 ]
 
 # Crawl settings
-CRAWL_DELAY_SECONDS = 1.5  # Polite delay between requests
+CRAWL_DELAY_SECONDS = 5  # Polite delay between requests
 REQUEST_TIMEOUT = 30  # Seconds
 MAX_RETRIES = 3
 

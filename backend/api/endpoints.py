@@ -1040,13 +1040,19 @@ def get_bulk_activity_analysis(file_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze bulk activity: {str(e)}")
 
+class ReindexRequest(BaseModel):
+    """Request to re-index a file with optional re-embedding."""
+    reembed: bool = False
+
+
 @router.post("/files/{file_id}/reindex")
 async def reindex_file(
     file_id: int,
     background_tasks: BackgroundTasks,
+    request: Optional[ReindexRequest] = None,
     db: Session = Depends(get_db)
 ):
-    """Re-index an existing log file."""
+    """Re-index an existing log file, optionally re-embedding for AI analysis."""
     from backend.database import SessionLocal
     
     log_file = db.query(LogFile).filter(LogFile.id == file_id).first()
@@ -1064,6 +1070,19 @@ async def reindex_file(
     db.query(LogError).filter(LogError.file_id == file_id).delete()
     db.commit()
     
+    # If re-embedding requested, clear existing embeddings
+    reembed = request.reembed if request else False
+    embeddings_deleted = 0
+    if reembed:
+        try:
+            from backend.llm.vectorstore import get_vector_store
+            vector_store = get_vector_store()
+            embeddings_deleted = vector_store.delete_file_embeddings(file_id)
+        except Exception as e:
+            # Log but don't fail - embeddings will be regenerated anyway
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to clear embeddings for file {file_id}: {e}")
+    
     # Set status to indexing
     log_file.status = "indexing"
     log_file.line_count = 0
@@ -1079,7 +1098,11 @@ async def reindex_file(
     
     background_tasks.add_task(reindex_task)
     
-    return {"id": file_id, "filename": log_file.filename, "status": "indexing", "message": "Re-indexing started"}
+    message = "Re-indexing started"
+    if reembed:
+        message += f" (cleared {embeddings_deleted} embeddings for re-embedding)"
+    
+    return {"id": file_id, "filename": log_file.filename, "status": "indexing", "message": message}
 
 
 @router.get("/files/{file_id}/issues")

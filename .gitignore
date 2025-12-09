@@ -12,3 +12,4 @@ chroma_db/*
 kb-assistant/.kb-venv/
 kb-assistant/kb_page_files/
 kb-assistant/kb_page_files/*/*
+kb-assistant/logs/

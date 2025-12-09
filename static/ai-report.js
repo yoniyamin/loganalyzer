@@ -395,43 +395,49 @@ class AIReportManager {
             }
         } catch (error) {
             console.error('Export failed:', error);
-            alert('Export failed: ' + error.message);
+            window.showModal('Export Failed', `<p style="color: #ef4444;">Export failed: ${error.message}</p>`, null);
         }
     }
     
     async deleteReportById(reportId) {
-        if (!confirm('Delete this report? This cannot be undone.')) return;
-        
-        try {
-            const response = await fetch(`/api/llm/report/${reportId}`, { method: 'DELETE' });
-            if (response.ok) {
-                // Reload history
-                await this.loadHistory();
-                
-                // If we deleted the current report, load the newest one or show placeholder
-                if (reportId === this.currentReportId) {
-                    if (this.reportHistory.length > 0) {
-                        await this.loadReportById(this.reportHistory[0].report_id);
-                    } else {
-                        this.currentReportId = null;
-                        this.hasReport = false;
-                        const body = document.getElementById('aiReportBody');
-                        if (body) body.innerHTML = this.getPlaceholderHTML();
+        window.showModal(
+            'Delete Report',
+            `<p>Delete this report?</p>
+             <p style="font-size: 0.85em; color: #9ca3af; margin-top: 8px;">This cannot be undone.</p>`,
+            async () => {
+                try {
+                    const response = await fetch(`/api/llm/report/${reportId}`, { method: 'DELETE' });
+                    if (response.ok) {
+                        // Reload history
+                        await this.loadHistory();
                         
-                        // Hide meta/export/delete buttons
-                        const metaInline = document.getElementById('aiReportMetaInline');
-                        const exportBtn = document.getElementById('aiExportDocxBtnHeader');
-                        const deleteBtn = document.getElementById('aiDeleteReportBtn');
-                        if (metaInline) metaInline.style.display = 'none';
-                        if (exportBtn) exportBtn.style.display = 'none';
-                        if (deleteBtn) deleteBtn.style.display = 'none';
+                        // If we deleted the current report, load the newest one or show placeholder
+                        if (reportId === this.currentReportId) {
+                            if (this.reportHistory.length > 0) {
+                                await this.loadReportById(this.reportHistory[0].report_id);
+                            } else {
+                                this.currentReportId = null;
+                                this.hasReport = false;
+                                const body = document.getElementById('aiReportBody');
+                                if (body) body.innerHTML = this.getPlaceholderHTML();
+                                
+                                // Hide meta/export/delete buttons
+                                const metaInline = document.getElementById('aiReportMetaInline');
+                                const exportBtn = document.getElementById('aiExportDocxBtnHeader');
+                                const deleteBtn = document.getElementById('aiDeleteReportBtn');
+                                if (metaInline) metaInline.style.display = 'none';
+                                if (exportBtn) exportBtn.style.display = 'none';
+                                if (deleteBtn) deleteBtn.style.display = 'none';
+                            }
+                        }
                     }
+                } catch (error) {
+                    console.error('Delete failed:', error);
+                    window.showModal('Delete Failed', `<p style="color: #ef4444;">Delete failed: ${error.message}</p>`, null);
                 }
-            }
-        } catch (error) {
-            console.error('Delete failed:', error);
-            alert('Delete failed: ' + error.message);
-        }
+            },
+            { confirmText: 'Delete', danger: true }
+        );
     }
     
     async deleteCurrentReport() {

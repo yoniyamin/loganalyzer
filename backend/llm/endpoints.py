@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from backend.database import get_db, LLMConfig, LLMReport, LogFile
+from backend.database import get_db, LLMConfig, LLMReport, LogFile, KBArticle
 from backend.llm.client import get_llm_client, set_api_key, DEFAULT_MODEL
 from backend.llm.gemini_client import get_gemini_client, set_gemini_api_key, DEFAULT_GEMINI_MODEL, GEMINI_MODELS
 from backend.llm.report_generator import ReportGenerator
@@ -457,47 +457,22 @@ def get_models(
 # Report Endpoints
 # ============================================================
 
-@router.get("/report/{file_id}", response_model=ReportResponse)
-def get_report(file_id: int, db: Session = Depends(get_db)):
-    """Get cached report for a file if it exists."""
-    # Check file exists
-    file = db.query(LogFile).filter(LogFile.id == file_id).first()
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    # Check for cached report
-    report = db.query(LLMReport).filter(
-        LLMReport.file_id == file_id
-    ).order_by(LLMReport.generated_at.desc()).first()
-    
-    if not report:
-        raise HTTPException(status_code=404, detail="No report found for this file")
-    
-    return ReportResponse(
-        report_id=report.id,
-        file_id=report.file_id,
-        model_used=report.model_used,
-        report_content=report.report_content,
-        prompt_tokens=report.prompt_tokens,
-        completion_tokens=report.completion_tokens,
-        cost_usd=report.cost_usd,
-        generated_at=report.generated_at,
-        cached=True
-    )
-
-
 @router.get("/report/{file_id}")
 def get_report(
     file_id: int,
     db: Session = Depends(get_db)
 ):
-    """Get existing report for a file (without generating)."""
+    """Get existing report for a file (without generating).
+    
+    Returns {"exists": False} if no report exists, allowing frontend
+    to decide whether to auto-generate.
+    """
     # Check file exists
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
-    # Get cached report
+    # Get cached report (most recent)
     existing = db.query(LLMReport).filter(
         LLMReport.file_id == file_id
     ).order_by(LLMReport.generated_at.desc()).first()
@@ -507,6 +482,7 @@ def get_report(
     
     return {
         "exists": True,
+        "report_id": existing.id,
         "file_id": existing.file_id,
         "model_used": existing.model_used,
         "report_content": existing.report_content,
@@ -945,3 +921,1430 @@ def export_report_docx(file_id: int, db: Session = Depends(get_db)):
         headers={"Content-Disposition": f"attachment; filename={export_filename}"}
     )
 
+
+# ============================================================
+# AI Assistant Endpoints
+# ============================================================
+
+class AskRequest(BaseModel):
+    """Request to ask a question about a log file."""
+    file_id: int
+    question: str
+    allow_ai: bool = False  # Must explicitly allow AI usage
+
+
+class AskResponse(BaseModel):
+    """Response from AI assistant."""
+    thread_id: int
+    answer: str
+    kb_articles: List[dict]
+    model_used: str
+    prompt_tokens: int
+    completion_tokens: int
+    routing_mode: str = "LOG_PLUS_KB"  # "LOCAL", "KB_FUSION", or "AI_REQUIRED"
+    used_kb: bool = True  # Whether KB articles were consulted
+    context_sections: List[str] = []  # Which log summary sections were included
+    source: str = "ai"  # "local", "kb", or "ai" - indicates where answer came from
+
+
+class ThreadResponse(BaseModel):
+    """Single thread in list."""
+    id: int
+    question: str
+    answer: str
+    kb_articles: List[dict]
+    thumbs_up: bool
+    created_at: datetime
+
+
+class ThreadsListResponse(BaseModel):
+    """List of threads for a file."""
+    file_id: int
+    threads: List[ThreadResponse]
+
+
+class PreviewRedactionsRequest(BaseModel):
+    """Request to preview what will be redacted in text."""
+    text: str
+
+
+class RedactionItem(BaseModel):
+    """Single redaction item."""
+    type: str
+    type_description: str
+    original_value: str
+    replacement: str
+    start: int
+    end: int
+    score: float
+
+
+class PreviewRedactionsResponse(BaseModel):
+    """Response showing what will be redacted."""
+    original: str
+    sanitized: str
+    redactions: List[RedactionItem]
+    summary: str
+
+
+# ============================================================
+# Routing Feedback Models
+# ============================================================
+
+class RoutingFeedbackRequest(BaseModel):
+    """Request to submit routing feedback."""
+    thread_id: int
+    should_use_local: bool = False
+    should_use_kb: bool = False
+    should_use_ai: bool = False
+    comment: Optional[str] = None
+    quality_rating: Optional[int] = None  # 1-5 scale
+
+
+class RoutingFeedbackResponse(BaseModel):
+    """Response after submitting feedback."""
+    id: int
+    thread_id: int
+    message: str
+
+
+class RoutingFeedbackItem(BaseModel):
+    """Single feedback item for listing."""
+    id: int
+    thread_id: int
+    question: str
+    actual_source: str
+    actual_routing_mode: Optional[str]
+    should_use_local: bool
+    should_use_kb: bool
+    should_use_ai: bool
+    comment: Optional[str]
+    quality_rating: Optional[int]
+    created_at: datetime
+    
+    # Computed fields
+    mismatch: bool = False  # True if actual != suggested
+
+
+class RoutingFeedbackListResponse(BaseModel):
+    """List of routing feedback entries."""
+    total: int
+    items: List[RoutingFeedbackItem]
+
+
+@router.post("/preview-redactions", response_model=PreviewRedactionsResponse)
+def preview_redactions_endpoint(request: PreviewRedactionsRequest):
+    """
+    Preview what sensitive information will be redacted from text.
+    
+    This endpoint shows users what PII will be masked before sending to the LLM,
+    providing transparency about data sanitization.
+    """
+    from backend.llm.sanitizer import preview_redactions
+    
+    result = preview_redactions(request.text)
+    return PreviewRedactionsResponse(
+        original=result["original"],
+        sanitized=result["sanitized"],
+        redactions=[RedactionItem(**r) for r in result["redactions"]],
+        summary=result["summary"]
+    )
+
+
+class PromptPreviewRequest(BaseModel):
+    """Request for comprehensive prompt preview."""
+    file_id: int
+    question: str
+
+
+class KBArticlePreview(BaseModel):
+    """KB article info for preview."""
+    title: str
+    url: str
+    similarity: float
+    content_preview: str
+
+
+class ContextSection(BaseModel):
+    """A section of context that will be included."""
+    type: str  # "kb_article", "log_error", "log_anomaly", "user_snippet"
+    title: str
+    content: str
+    sanitized_content: str
+
+
+class ProcessingStep(BaseModel):
+    """A single step in the prompt processing flow."""
+    step: str
+    status: str  # "completed", "skipped", "warning"
+    detail: str
+
+
+class PromptPreviewResponse(BaseModel):
+    """Comprehensive preview of what will be sent to the LLM."""
+    question: str
+    sanitized_question: str
+    routing_mode: str  # "LOG_ONLY" or "LOG_PLUS_KB"
+    relevant_sections: List[str]  # Which log summary sections are included
+    log_summary_context: str  # Formatted log summary
+    report_context: str  # Extracted sections from existing report
+    kb_articles: List[KBArticlePreview]
+    log_errors: List[str]
+    log_anomalies: List[str]
+    context_sections: List[ContextSection]
+    full_prompt: str
+    sanitized_prompt: str
+    redactions: List[RedactionItem]
+    summary: str
+    processing_flow: List[ProcessingStep] = []  # Processing pipeline steps
+
+
+@router.post("/prompt-preview", response_model=PromptPreviewResponse)
+def preview_prompt(
+    request: PromptPreviewRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Preview the complete prompt that will be sent to the LLM.
+    
+    This provides full transparency on:
+    - Routing mode (LOG_ONLY vs LOG_PLUS_KB)
+    - Log summary context being included
+    - Existing report sections if available
+    - What KB articles will be included (if mode requires it)
+    - What log context (errors, anomalies) will be included
+    - The full prompt with and without sanitization
+    - All PII that will be redacted
+    """
+    from backend.llm.sanitizer import preview_redactions, sanitize_text
+    from backend.llm.question_router import classify_question, get_relevant_summary_context, get_relevant_report_sections
+    from backend.llm.report_generator import ReportGenerator
+    from backend.llm.prompts import SYSTEM_PROMPT_LOG_FOCUSED, SYSTEM_PROMPT_LOG_PLUS_KB
+    
+    # Check file exists
+    file = db.query(LogFile).filter(LogFile.id == request.file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Step 1: Classify question and get relevant sections
+    routing_mode, relevant_sections = classify_question(request.question)
+    
+    # Step 2: Build log summary context
+    try:
+        generator = ReportGenerator(db)
+        summary_data = generator.build_performance_summary(request.file_id)
+    except Exception as e:
+        logger.warning(f"Failed to build performance summary: {e}")
+        summary_data = {}
+    
+    log_summary_context = get_relevant_summary_context(request.question, summary_data, relevant_sections)
+    
+    # Step 3: Get existing report content if available
+    existing_report = db.query(LLMReport).filter(
+        LLMReport.file_id == request.file_id
+    ).order_by(LLMReport.generated_at.desc()).first()
+    report_content = existing_report.report_content if existing_report else None
+    report_context = get_relevant_report_sections(request.question, report_content) if report_content else ""
+    
+    # Step 4: Conditionally query KB based on routing mode
+    vector_store = get_vector_store()
+    kb_articles = []
+    kb_context = ""
+    
+    if routing_mode == "LOG_PLUS_KB":
+        kb_results = vector_store.query_kb(request.question, n_results=5)
+        
+        # Filter out 0% matches and format KB articles
+        for kb in kb_results:
+            similarity = kb.get('similarity', 0)
+            if similarity > 0.01:  # Filter out essentially 0% matches
+                content = kb.get('content', '')[:1500]
+                kb_articles.append(KBArticlePreview(
+                    title=kb.get('title', 'Unknown'),
+                    url=kb.get('url', ''),
+                    similarity=similarity,
+                    content_preview=content[:300] + ('...' if len(content) > 300 else '')
+                ))
+                kb_context += f"\n--- KB Article: {kb.get('title', 'Unknown')} ---\n"
+                kb_context += content + "\n"
+    
+    # Step 5: Get file context (errors, anomalies)
+    file_context = vector_store.get_file_context(request.file_id, max_items=5)
+    
+    log_errors = []
+    errors_context = ""
+    if file_context.get('errors'):
+        errors_context = "\n--- Recent Errors from Log ---\n"
+        for err in file_context['errors'][:3]:
+            err_text = err[:500]
+            log_errors.append(err_text)
+            errors_context += err_text + "\n\n"
+    
+    log_anomalies = []
+    anomalies_context = ""
+    if file_context.get('anomalies'):
+        anomalies_context = "\n--- Detected Anomalies ---\n"
+        for anomaly in file_context['anomalies'][:2]:
+            anomaly_text = anomaly[:400]
+            log_anomalies.append(anomaly_text)
+            anomalies_context += anomaly_text + "\n\n"
+    
+    # Step 6: Build context sections for detailed view
+    context_sections = []
+    
+    # Add log summary section
+    if log_summary_context:
+        context_sections.append(ContextSection(
+            type="log_summary",
+            title="Log Analysis Summary",
+            content=log_summary_context,
+            sanitized_content=sanitize_text(log_summary_context)
+        ))
+    
+    # Add report sections if available
+    if report_context:
+        context_sections.append(ContextSection(
+            type="report",
+            title="From Previous Analysis Report",
+            content=report_context,
+            sanitized_content=report_context  # Report is already sanitized
+        ))
+    
+    # Add KB articles (only if routing requires it)
+    for kb in kb_articles:
+        context_sections.append(ContextSection(
+            type="kb_article",
+            title=f"KB: {kb.title}",
+            content=kb.content_preview,
+            sanitized_content=kb.content_preview  # KB articles are NOT sanitized
+        ))
+    
+    for i, err in enumerate(log_errors):
+        context_sections.append(ContextSection(
+            type="log_error",
+            title=f"Log Error #{i+1}",
+            content=err,
+            sanitized_content=sanitize_text(err)
+        ))
+    
+    for i, anomaly in enumerate(log_anomalies):
+        context_sections.append(ContextSection(
+            type="log_anomaly",
+            title=f"Anomaly #{i+1}",
+            content=anomaly,
+            sanitized_content=sanitize_text(anomaly)
+        ))
+    
+    # Step 7: Select appropriate system prompt
+    system_prompt = SYSTEM_PROMPT_LOG_FOCUSED if routing_mode == "LOG_ONLY" else SYSTEM_PROMPT_LOG_PLUS_KB
+    
+    # Step 8: Build full prompt (matching ask endpoint logic)
+    user_prompt_parts = [f"User Question: {request.question}\n"]
+    
+    if log_summary_context:
+        user_prompt_parts.append(f"\n{log_summary_context}")
+    
+    if report_context:
+        user_prompt_parts.append(f"\n{report_context}")
+    
+    if kb_context:
+        user_prompt_parts.append(f"\n## Relevant KB Articles\n{kb_context}")
+    
+    if errors_context:
+        user_prompt_parts.append(f"\n{errors_context}")
+    
+    if anomalies_context:
+        user_prompt_parts.append(f"\n{anomalies_context}")
+    
+    if routing_mode == "LOG_ONLY":
+        user_prompt_parts.append("\nAnswer based on the log data provided above.")
+    else:
+        user_prompt_parts.append("\nProvide a helpful answer based on the log data and KB articles. Reference KB articles when relevant.")
+    
+    user_prompt = "\n".join(user_prompt_parts)
+    full_prompt = f"[SYSTEM]\n{system_prompt}\n\n[USER]\n{user_prompt}"
+    
+    # Step 9: Sanitize and get redactions
+    sanitized_question = sanitize_text(request.question)
+    sanitized_user_prompt = sanitize_text(user_prompt)
+    sanitized_prompt = f"[SYSTEM]\n{system_prompt}\n\n[USER]\n{sanitized_user_prompt}"
+    
+    # Get redaction details
+    redaction_result = preview_redactions(user_prompt)
+    
+    # Build processing flow
+    processing_flow = []
+    
+    # Step 1: Question classification
+    processing_flow.append(ProcessingStep(
+        step="Question Classification",
+        status="completed",
+        detail=f"Routed to {routing_mode} mode"
+    ))
+    
+    # Step 2: Log summary retrieval
+    processing_flow.append(ProcessingStep(
+        step="Log Summary",
+        status="completed" if log_summary_context else "skipped",
+        detail=f"{len(relevant_sections)} relevant sections" if log_summary_context else "No summary available"
+    ))
+    
+    # Step 3: Previous report check
+    processing_flow.append(ProcessingStep(
+        step="Previous Report",
+        status="completed" if report_context else "skipped",
+        detail="Included relevant sections" if report_context else "No previous report found"
+    ))
+    
+    # Step 4: KB lookup
+    if routing_mode == "LOG_PLUS_KB":
+        processing_flow.append(ProcessingStep(
+            step="KB Article Search",
+            status="completed" if kb_articles else "warning",
+            detail=f"Found {len(kb_articles)} relevant articles" if kb_articles else "No relevant KB articles found"
+        ))
+    else:
+        processing_flow.append(ProcessingStep(
+            step="KB Article Search",
+            status="skipped",
+            detail="Skipped (LOG_ONLY mode - question answerable from log data)"
+        ))
+    
+    # Step 5: Error context
+    processing_flow.append(ProcessingStep(
+        step="Error Context",
+        status="completed" if log_errors else "skipped",
+        detail=f"Included {len(log_errors)} log errors" if log_errors else "No errors in context"
+    ))
+    
+    # Step 6: Presidio PII check (always runs)
+    redaction_count = len(redaction_result.get("redactions", []))
+    processing_flow.append(ProcessingStep(
+        step="Presidio PII Detection",
+        status="completed",
+        detail=f"Detected {redaction_count} PII items to redact" if redaction_count > 0 else "No sensitive information detected"
+    ))
+    
+    # Build summary
+    summary_parts = [f"Routing: {routing_mode}"]
+    if log_summary_context:
+        summary_parts.append(f"log summary ({len(relevant_sections)} sections)")
+    if report_context:
+        summary_parts.append("previous report")
+    if kb_articles:
+        summary_parts.append(f"{len(kb_articles)} KB article{'s' if len(kb_articles) > 1 else ''}")
+    if log_errors:
+        summary_parts.append(f"{len(log_errors)} error{'s' if len(log_errors) > 1 else ''}")
+    if log_anomalies:
+        summary_parts.append(f"{len(log_anomalies)} anomal{'ies' if len(log_anomalies) > 1 else 'y'}")
+    
+    context_summary = f"Context: {', '.join(summary_parts)}"
+    redaction_summary = redaction_result["summary"]
+    full_summary = f"{context_summary}. {redaction_summary}"
+    
+    return PromptPreviewResponse(
+        question=request.question,
+        sanitized_question=sanitized_question,
+        routing_mode=routing_mode,
+        relevant_sections=relevant_sections,
+        log_summary_context=log_summary_context,
+        report_context=report_context,
+        kb_articles=kb_articles,
+        log_errors=log_errors,
+        log_anomalies=log_anomalies,
+        context_sections=context_sections,
+        full_prompt=full_prompt,
+        sanitized_prompt=sanitized_prompt,
+        redactions=[RedactionItem(**r) for r in redaction_result["redactions"]],
+        summary=full_summary,
+        processing_flow=processing_flow
+    )
+
+
+@router.post("/ask", response_model=AskResponse)
+def ask_question(
+    request: AskRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Ask a question about a log file with Zero-LLM-First intelligent routing.
+    
+    This endpoint implements a 3-tier routing system:
+    1. LOCAL: Answer from SQLite data (0 tokens, instant)
+    2. KB_FUSION: Combine local facts with KB articles (0 tokens)
+    3. AI_REQUIRED: Only call LLM when truly needed (sanitize first!)
+    
+    The goal is to answer 80%+ of questions without using AI.
+    """
+    from backend.database import AIThread
+    from backend.llm.question_router import classify_question, build_log_context
+    from backend.llm.local_query_engine import AnswerMode, answer_locally, classify_intent
+    from backend.llm.kb_fusion import fuse_answer
+    from backend.llm.report_generator import ReportGenerator
+    from backend.llm.prompts import SYSTEM_PROMPT_LOG_FOCUSED, SYSTEM_PROMPT_LOG_PLUS_KB
+    from backend.llm.sanitizer import sanitize_text
+    import json
+    
+    # Check file exists
+    file = db.query(LogFile).filter(LogFile.id == request.file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Get config for model selection (needed for AI fallback)
+    config = db.query(LLMConfig).first()
+    provider = config.provider if config else PROVIDER_GEMINI
+    model = config.default_model if config else DEFAULT_GEMINI_MODEL
+    
+    # Step 1: Classify the question using new 3-tier system
+    answer_mode, intent = classify_intent(request.question)
+    routing_mode, relevant_sections = classify_question(request.question)  # For context sections
+    logger.info(f"Question classified: tier={answer_mode.value.upper()}, intent={intent.type}, entity={intent.entity}")
+    
+    # ================================================================
+    # TIER 1: Try LOCAL answer first (0 tokens)
+    # ================================================================
+    if answer_mode in (AnswerMode.LOCAL, AnswerMode.KB_FUSION):
+        local_result = answer_locally(request.question, request.file_id, db)
+        
+        if local_result and local_result.answer:
+            logger.info(f"Question answered LOCALLY (0 tokens): {intent.type}")
+            
+            # Save thread with local source
+            thread = AIThread(
+                file_id=request.file_id,
+                question=request.question,
+                answer=local_result.answer,
+                kb_articles=json.dumps([]),
+                model_used="local",
+                prompt_tokens=0,
+                completion_tokens=0
+            )
+            db.add(thread)
+            db.commit()
+            db.refresh(thread)
+            
+            return AskResponse(
+                thread_id=thread.id,
+                answer=local_result.answer,
+                kb_articles=[],
+                model_used="local",
+                prompt_tokens=0,
+                completion_tokens=0,
+                routing_mode="LOCAL",
+                used_kb=False,
+                context_sections=relevant_sections,
+                source="local"
+            )
+    
+    # ================================================================
+    # TIER 2: Try KB FUSION (0 tokens)
+    # ================================================================
+    if answer_mode in (AnswerMode.KB_FUSION, AnswerMode.LOCAL):
+        # Try to get local answer first for fusion
+        local_result = answer_locally(request.question, request.file_id, db) if answer_mode == AnswerMode.KB_FUSION else None
+        
+        fusion_result = fuse_answer(
+            question=request.question,
+            file_id=request.file_id,
+            db=db,
+            local_answer=local_result
+        )
+        
+        if fusion_result and fusion_result.answer:
+            logger.info(f"Question answered via KB FUSION (0 tokens)")
+            
+            # Format KB articles for response
+            kb_articles = fusion_result.kb_articles or []
+            
+            # Save thread with KB source
+            thread = AIThread(
+                file_id=request.file_id,
+                question=request.question,
+                answer=fusion_result.answer,
+                kb_articles=json.dumps(kb_articles),
+                model_used="kb_fusion",
+                prompt_tokens=0,
+                completion_tokens=0
+            )
+            db.add(thread)
+            db.commit()
+            db.refresh(thread)
+            
+            return AskResponse(
+                thread_id=thread.id,
+                answer=fusion_result.answer,
+                kb_articles=kb_articles,
+                model_used="kb_fusion",
+                prompt_tokens=0,
+                completion_tokens=0,
+                routing_mode="KB_FUSION",
+                used_kb=True,
+                context_sections=relevant_sections,
+                source="kb"
+            )
+    
+    # ================================================================
+    # TIER 3: AI REQUIRED - Call LLM (with sanitization!)
+    # ================================================================
+    logger.info(f"Question requires AI: {answer_mode.value}")
+    
+    # Check if AI is explicitly allowed
+    if not request.allow_ai:
+        # Return a response asking for confirmation
+        return AskResponse(
+            thread_id=0,
+            answer="**This question requires AI to answer.**\n\nLocal data and KB articles couldn't provide a complete answer. Click 'Use AI' to proceed with the AI model.",
+            kb_articles=[],
+            model_used="none",
+            prompt_tokens=0,
+            completion_tokens=0,
+            routing_mode="AI_REQUIRED",
+            used_kb=False,
+            context_sections=relevant_sections,
+            source="needs_confirmation"
+        )
+    
+    # Ensure AI is configured
+    if not config or not config.gemini_api_key_encrypted:
+        raise HTTPException(
+            status_code=400, 
+            detail="This question requires AI, but AI is not configured. Please set up AI in settings."
+        )
+    
+    _ensure_gemini_configured(db)
+    _ensure_client_configured(db)
+    
+    # Build log summary context
+    try:
+        generator = ReportGenerator(db)
+        summary_data = generator.build_performance_summary(request.file_id)
+    except Exception as e:
+        logger.warning(f"Failed to build performance summary: {e}")
+        summary_data = {}
+    
+    # Get existing report content if available
+    existing_report = db.query(LLMReport).filter(
+        LLMReport.file_id == request.file_id
+    ).order_by(LLMReport.generated_at.desc()).first()
+    report_content = existing_report.report_content if existing_report else None
+    
+    # Get file context from vector store (errors, anomalies)
+    vector_store = get_vector_store()
+    file_context = vector_store.get_file_context(request.file_id, max_items=5)
+    
+    # Build complete log context using router
+    _, log_context, _ = build_log_context(
+        question=request.question,
+        summary_data=summary_data,
+        report_content=report_content,
+        errors_context=file_context.get('errors', []),
+        anomalies_context=file_context.get('anomalies', [])
+    )
+    
+    # Query KB for additional context
+    kb_context = ""
+    kb_articles = []
+    used_kb = False
+    
+    kb_results = vector_store.query_kb(request.question, n_results=5)
+    for kb in kb_results:
+        similarity = kb.get('similarity', 0)
+        if similarity > 0.01:
+            kb_context += f"\n--- KB Article: {kb.get('title', 'Unknown')} ---\n"
+            kb_context += kb.get('content', '')[:1500] + "\n"
+            kb_articles.append({
+                "title": kb.get('title', 'Unknown'),
+                "url": kb.get('url', ''),
+                "similarity": similarity
+            })
+    
+    if kb_articles:
+        used_kb = True
+    
+    # Select appropriate system prompt
+    system_prompt = SYSTEM_PROMPT_LOG_PLUS_KB if kb_articles else SYSTEM_PROMPT_LOG_FOCUSED
+    
+    # Build user prompt with prioritized context
+    user_prompt_parts = [f"User Question: {request.question}\n"]
+    
+    if log_context:
+        user_prompt_parts.append(f"\n{log_context}")
+    
+    if kb_context:
+        user_prompt_parts.append(f"\n## Relevant KB Articles\n{kb_context}")
+    
+    user_prompt_parts.append("\nProvide a helpful, detailed answer based on the context above.")
+    user_prompt = "\n".join(user_prompt_parts)
+    
+    # *** SANITIZE before sending to AI ***
+    sanitized_prompt = sanitize_text(user_prompt)
+    
+    # Call AI
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": sanitized_prompt}
+        ]
+        
+        if provider == PROVIDER_GEMINI:
+            client = get_gemini_client()
+            result = client.complete(messages=messages, model=model)
+        else:
+            client = get_llm_client()
+            result = client.complete(messages=messages, model=model)
+        
+        answer = result.content
+        prompt_tokens = result.prompt_tokens
+        completion_tokens = result.completion_tokens
+        
+    except Exception as e:
+        logger.error(f"AI generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+    
+    # Save thread
+    thread = AIThread(
+        file_id=request.file_id,
+        question=request.question,
+        answer=answer,
+        kb_articles=json.dumps(kb_articles),
+        model_used=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens
+    )
+    db.add(thread)
+    db.commit()
+    db.refresh(thread)
+    
+    return AskResponse(
+        thread_id=thread.id,
+        answer=answer,
+        kb_articles=kb_articles,
+        model_used=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        routing_mode="AI_REQUIRED",
+        used_kb=used_kb,
+        context_sections=relevant_sections,
+        source="ai"
+    )
+
+
+@router.get("/threads/{file_id}", response_model=ThreadsListResponse)
+def get_threads(
+    file_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all Q&A threads for a file."""
+    from backend.database import AIThread
+    import json
+    
+    # Check file exists
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    threads = db.query(AIThread).filter(
+        AIThread.file_id == file_id
+    ).order_by(AIThread.created_at.desc()).all()
+    
+    return ThreadsListResponse(
+        file_id=file_id,
+        threads=[
+            ThreadResponse(
+                id=t.id,
+                question=t.question,
+                answer=t.answer,
+                kb_articles=json.loads(t.kb_articles) if t.kb_articles else [],
+                thumbs_up=t.thumbs_up or False,
+                created_at=t.created_at
+            )
+            for t in threads
+        ]
+    )
+
+
+@router.post("/threads/{thread_id}/thumbs-up")
+def thumbs_up_thread(
+    thread_id: int,
+    db: Session = Depends(get_db)
+):
+    """Mark a thread as helpful and optionally save to ChromaDB for future RAG."""
+    from backend.database import AIThread
+    
+    thread = db.query(AIThread).filter(AIThread.id == thread_id).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    thread.thumbs_up = True
+    
+    # Save to ChromaDB for future retrieval
+    if not thread.saved_to_chromadb:
+        try:
+            vector_store = get_vector_store()
+            # Add to summaries collection as a "user_validated" answer
+            vector_store.add_summary(
+                file_id=thread.file_id,
+                summary_data={
+                    "type": "user_qa",
+                    "question": thread.question,
+                    "answer": thread.answer,
+                    "source": "ai_assistant"
+                },
+                summary_type="user_qa"
+            )
+            thread.saved_to_chromadb = True
+        except Exception as e:
+            logger.warning(f"Failed to save to ChromaDB: {e}")
+    
+    db.commit()
+    
+    return {"success": True, "message": "Marked as helpful"}
+
+
+@router.delete("/threads/{thread_id}")
+def delete_thread(
+    thread_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a Q&A thread (thumbs down action)."""
+    from backend.database import AIThread
+    
+    thread = db.query(AIThread).filter(AIThread.id == thread_id).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    db.delete(thread)
+    db.commit()
+    
+    return {"success": True, "message": "Thread deleted"}
+
+
+# ============================================================
+# Saved Findings Endpoints
+# ============================================================
+
+class SaveFindingRequest(BaseModel):
+    """Request to save a finding."""
+    file_id: int
+    finding_type: str = "custom"  # "log_line", "qa_thread", "custom"
+    title: Optional[str] = None
+    content: str
+    source_thread_id: Optional[int] = None
+    line_number: Optional[int] = None
+    metadata: Optional[dict] = None
+
+
+class SavedFindingResponse(BaseModel):
+    """Response for a saved finding."""
+    id: int
+    file_id: int
+    finding_type: str
+    title: Optional[str]
+    content: str
+    source_thread_id: Optional[int]
+    line_number: Optional[int]
+    created_at: datetime
+
+
+class SavedFindingsListResponse(BaseModel):
+    """List of saved findings."""
+    file_id: int
+    findings: List[SavedFindingResponse]
+    total_count: int
+
+
+@router.post("/findings", response_model=SavedFindingResponse)
+def save_finding(
+    request: SaveFindingRequest,
+    db: Session = Depends(get_db)
+):
+    """Save a finding (log line, Q/A thread, or custom note)."""
+    from backend.database import SavedFinding
+    import json
+    
+    # Check file exists
+    file = db.query(LogFile).filter(LogFile.id == request.file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    finding = SavedFinding(
+        file_id=request.file_id,
+        finding_type=request.finding_type,
+        title=request.title,
+        content=request.content,
+        source_thread_id=request.source_thread_id,
+        line_number=request.line_number,
+        metadata_json=json.dumps(request.metadata) if request.metadata else None
+    )
+    db.add(finding)
+    db.commit()
+    db.refresh(finding)
+    
+    return SavedFindingResponse(
+        id=finding.id,
+        file_id=finding.file_id,
+        finding_type=finding.finding_type,
+        title=finding.title,
+        content=finding.content,
+        source_thread_id=finding.source_thread_id,
+        line_number=finding.line_number,
+        created_at=finding.created_at
+    )
+
+
+@router.post("/findings/from-thread/{thread_id}", response_model=SavedFindingResponse)
+def save_finding_from_thread(
+    thread_id: int,
+    db: Session = Depends(get_db)
+):
+    """Save a Q/A thread as a finding."""
+    from backend.database import AIThread, SavedFinding
+    import json
+    
+    thread = db.query(AIThread).filter(AIThread.id == thread_id).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    # Format content as Q/A
+    content = f"**Question:** {thread.question}\n\n**Answer:** {thread.answer}"
+    title = thread.question[:100] + ("..." if len(thread.question) > 100 else "")
+    
+    finding = SavedFinding(
+        file_id=thread.file_id,
+        finding_type="qa_thread",
+        title=title,
+        content=content,
+        source_thread_id=thread_id,
+        metadata_json=json.dumps({
+            "model_used": thread.model_used,
+            "kb_articles": thread.kb_articles
+        })
+    )
+    db.add(finding)
+    db.commit()
+    db.refresh(finding)
+    
+    return SavedFindingResponse(
+        id=finding.id,
+        file_id=finding.file_id,
+        finding_type=finding.finding_type,
+        title=finding.title,
+        content=finding.content,
+        source_thread_id=finding.source_thread_id,
+        line_number=finding.line_number,
+        created_at=finding.created_at
+    )
+
+
+@router.get("/findings/{file_id}", response_model=SavedFindingsListResponse)
+def get_findings(
+    file_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all saved findings for a file."""
+    from backend.database import SavedFinding
+    
+    # Check file exists
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    findings = db.query(SavedFinding).filter(
+        SavedFinding.file_id == file_id
+    ).order_by(SavedFinding.created_at.desc()).all()
+    
+    return SavedFindingsListResponse(
+        file_id=file_id,
+        findings=[
+            SavedFindingResponse(
+                id=f.id,
+                file_id=f.file_id,
+                finding_type=f.finding_type,
+                title=f.title,
+                content=f.content,
+                source_thread_id=f.source_thread_id,
+                line_number=f.line_number,
+                created_at=f.created_at
+            )
+            for f in findings
+        ],
+        total_count=len(findings)
+    )
+
+
+@router.delete("/findings/{finding_id}")
+def delete_finding(
+    finding_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a saved finding."""
+    from backend.database import SavedFinding
+    
+    finding = db.query(SavedFinding).filter(SavedFinding.id == finding_id).first()
+    if not finding:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    
+    db.delete(finding)
+    db.commit()
+    
+    return {"success": True, "message": "Finding deleted"}
+
+
+# ============================================================
+# KB Sources Endpoints
+# ============================================================
+
+class KBSourceResponse(BaseModel):
+    """Response for a KB source/article."""
+    id: int
+    url: str
+    article_id: Optional[str]
+    title: str
+    source: str  # "kb_article" or "markdown"
+    chunks_count: int
+    indexed_at: Optional[datetime]
+    status: str
+
+
+class KBSourcesListResponse(BaseModel):
+    """List of KB sources with pagination."""
+    sources: List[KBSourceResponse]
+    total_count: int
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 1
+    stats: dict
+
+
+class AddMarkdownRequest(BaseModel):
+    """Request to add a custom markdown source."""
+    title: str
+    content: str
+    tags: Optional[List[str]] = None
+    metadata: Optional[dict] = None
+
+
+@router.get("/kb/sources", response_model=KBSourcesListResponse)
+def get_kb_sources(
+    source_type: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db)
+):
+    """Get all KB sources (articles and markdown files) with pagination and search."""
+    from backend.database import KBArticle
+    
+    query = db.query(KBArticle)
+    
+    if source_type:
+        query = query.filter(KBArticle.source == source_type)
+    if status:
+        query = query.filter(KBArticle.status == status)
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (KBArticle.title.ilike(search_term)) | 
+            (KBArticle.tags.ilike(search_term))
+        )
+    
+    # Get total count before pagination
+    total_count = query.count()
+    
+    # Apply pagination
+    offset = (page - 1) * page_size
+    sources = query.order_by(KBArticle.indexed_at.desc()).offset(offset).limit(page_size).all()
+    
+    # Get stats
+    total = db.query(KBArticle).count()
+    kb_articles = db.query(KBArticle).filter(KBArticle.source == "kb_article").count()
+    markdown = db.query(KBArticle).filter(KBArticle.source == "markdown").count()
+    indexed = db.query(KBArticle).filter(KBArticle.status == "indexed").count()
+    
+    import math
+    total_pages = math.ceil(total_count / page_size) if page_size > 0 else 1
+    
+    return KBSourcesListResponse(
+        sources=[
+            KBSourceResponse(
+                id=s.id,
+                url=s.url,
+                article_id=s.article_id,
+                title=s.title,
+                source=s.source,
+                chunks_count=s.chunks_count,
+                indexed_at=s.indexed_at,
+                status=s.status
+            )
+            for s in sources
+        ],
+        total_count=total_count,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        stats={
+            "total": total,
+            "kb_articles": kb_articles,
+            "markdown": markdown,
+            "indexed": indexed
+        }
+    )
+
+
+@router.post("/kb/markdown")
+def add_markdown_source(
+    request: AddMarkdownRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Add a custom markdown document as a KB source.
+    This embeds the content and stores it in the KB.
+    """
+    from backend.database import KBArticle
+    import hashlib
+    from datetime import datetime
+    
+    # Generate a unique URL/path for this custom document
+    content_hash = hashlib.md5(request.content.encode()).hexdigest()[:12]
+    unique_path = f"custom://markdown/{content_hash}"
+    
+    # Check if already exists
+    existing = db.query(KBArticle).filter(KBArticle.url == unique_path).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Document with same content already exists")
+    
+    # Prepare content with frontmatter if tags provided
+    full_content = request.content
+    if request.tags:
+        full_content = f"Tags: {', '.join(request.tags)}\n\n{request.content}"
+    
+    # Embed the markdown content
+    try:
+        vector_store = get_vector_store()
+        
+        # Get KB collection directly for embedding
+        kb_collection = vector_store.client.get_or_create_collection(
+            name="qlik_replicate_kb",
+            metadata={"description": "Qlik Replicate Knowledge Base articles"}
+        )
+        
+        # Chunk the content
+        from backend.llm.sanitizer import sanitize_text
+        
+        # Simple chunking by paragraphs
+        chunks = []
+        paragraphs = full_content.split('\n\n')
+        current_chunk = []
+        current_length = 0
+        chunk_size = 1500  # chars
+        
+        for para in paragraphs:
+            if current_length + len(para) > chunk_size and current_chunk:
+                chunks.append('\n\n'.join(current_chunk))
+                current_chunk = [para]
+                current_length = len(para)
+            else:
+                current_chunk.append(para)
+                current_length += len(para)
+        
+        if current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+        
+        # Embed chunks
+        ids = []
+        documents = []
+        metadatas = []
+        
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"markdown_{content_hash}_{i}"
+            ids.append(chunk_id)
+            documents.append(f"{request.title}\n\n{chunk}")
+            metadatas.append({
+                "source": "markdown",
+                "url": unique_path,
+                "title": request.title,
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+                "tags": ','.join(request.tags) if request.tags else '',
+                "indexed_at": datetime.utcnow().isoformat()
+            })
+        
+        # Add to ChromaDB
+        kb_collection.add(
+            ids=ids,
+            documents=documents,
+            metadatas=metadatas
+        )
+        
+        chunks_added = len(chunks)
+        
+    except Exception as e:
+        logger.error(f"Failed to embed markdown: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to embed content: {str(e)}")
+    
+    # Save to database
+    article = KBArticle(
+        url=unique_path,
+        title=request.title,
+        source="markdown",
+        content_hash=content_hash,
+        content_length=len(request.content),
+        chunks_count=chunks_added,
+        status="indexed"
+    )
+    db.add(article)
+    db.commit()
+    db.refresh(article)
+    
+    return {
+        "success": True,
+        "message": f"Added markdown document with {chunks_added} chunks",
+        "id": article.id,
+        "title": article.title,
+        "chunks_count": chunks_added
+    }
+
+
+@router.delete("/kb/sources/{source_id}")
+def delete_kb_source(
+    source_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a KB source and its embeddings."""
+    from backend.database import KBArticle
+    
+    source = db.query(KBArticle).filter(KBArticle.id == source_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    # Delete from ChromaDB
+    try:
+        vector_store = get_vector_store()
+        kb_collection = vector_store.client.get_or_create_collection(name="qlik_replicate_kb")
+        
+        # Find and delete chunks for this URL
+        existing = kb_collection.get(where={"url": source.url})
+        if existing and existing['ids']:
+            kb_collection.delete(ids=existing['ids'])
+    except Exception as e:
+        logger.warning(f"Failed to delete from ChromaDB: {e}")
+    
+    # Delete from database
+    db.delete(source)
+    db.commit()
+    
+    return {"success": True, "message": "Source deleted"}
+
+
+# ============================================================
+# Routing Configuration Endpoints
+# ============================================================
+
+class RoutingConfigResponse(BaseModel):
+    """Current routing configuration."""
+    log_only_patterns: List[str]
+    kb_needed_patterns: List[str]
+
+
+@router.get("/routing/config", response_model=RoutingConfigResponse)
+def get_routing_config():
+    """Get current routing patterns (for display in UI)."""
+    from backend.llm.question_router import LOG_ONLY_PATTERNS, KB_NEEDED_PATTERNS
+    
+    return RoutingConfigResponse(
+        log_only_patterns=LOG_ONLY_PATTERNS,
+        kb_needed_patterns=KB_NEEDED_PATTERNS
+    )
+
+
+@router.post("/routing/test")
+def test_routing(question: str):
+    """Test how a question would be routed."""
+    from backend.llm.question_router import classify_question
+    
+    mode, sections = classify_question(question)
+    
+    return {
+        "question": question,
+        "routing_mode": mode,
+        "relevant_sections": sections,
+        "will_query_kb": mode == "LOG_PLUS_KB"
+    }
+
+
+# ============================================================
+# Routing Feedback Endpoints
+# ============================================================
+
+@router.post("/routing/feedback", response_model=RoutingFeedbackResponse)
+def submit_routing_feedback(
+    request: RoutingFeedbackRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Submit feedback on routing decision.
+    
+    This allows users to indicate what sources SHOULD have been used
+    to answer the question, helping improve future routing decisions.
+    """
+    from backend.database import AIThread, RoutingFeedback
+    
+    # Get the thread to capture question and actual routing
+    thread = db.query(AIThread).filter(AIThread.id == request.thread_id).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    # Determine actual source from model_used
+    actual_source = "ai"
+    if thread.model_used == "local":
+        actual_source = "local"
+    elif thread.model_used == "kb_fusion":
+        actual_source = "kb"
+    elif thread.model_used == "none":
+        actual_source = "needs_confirmation"
+    
+    # Create feedback entry
+    feedback = RoutingFeedback(
+        thread_id=request.thread_id,
+        file_id=thread.file_id,
+        question=thread.question,
+        actual_source=actual_source,
+        actual_routing_mode=None,  # Could be extracted from thread metadata if stored
+        should_use_local=request.should_use_local,
+        should_use_kb=request.should_use_kb,
+        should_use_ai=request.should_use_ai,
+        comment=request.comment,
+        quality_rating=request.quality_rating
+    )
+    db.add(feedback)
+    db.commit()
+    db.refresh(feedback)
+    
+    return RoutingFeedbackResponse(
+        id=feedback.id,
+        thread_id=feedback.thread_id,
+        message="Feedback submitted successfully"
+    )
+
+
+@router.get("/routing/feedback", response_model=RoutingFeedbackListResponse)
+def get_routing_feedback(
+    file_id: Optional[int] = None,
+    mismatch_only: bool = False,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    Get routing feedback history.
+    
+    Args:
+        file_id: Filter by specific file
+        mismatch_only: Only show entries where actual != suggested
+        limit: Maximum entries to return
+    """
+    from backend.database import RoutingFeedback
+    
+    query = db.query(RoutingFeedback)
+    
+    if file_id:
+        query = query.filter(RoutingFeedback.file_id == file_id)
+    
+    feedback_items = query.order_by(RoutingFeedback.created_at.desc()).limit(limit).all()
+    
+    # Build response items with mismatch detection
+    items = []
+    for f in feedback_items:
+        # Detect mismatch: actual source doesn't match what user suggested
+        actual_is_local = f.actual_source == "local"
+        actual_is_kb = f.actual_source == "kb"
+        actual_is_ai = f.actual_source == "ai" or f.actual_source == "needs_confirmation"
+        
+        # Mismatch if user suggested different sources than what was used
+        mismatch = False
+        if f.should_use_local and not actual_is_local:
+            mismatch = True
+        if f.should_use_kb and not actual_is_kb and not actual_is_ai:
+            mismatch = True
+        if f.should_use_ai and not actual_is_ai:
+            mismatch = True
+        # Also mismatch if AI was used but user thinks local/kb should suffice
+        if actual_is_ai and (f.should_use_local or f.should_use_kb) and not f.should_use_ai:
+            mismatch = True
+        
+        if mismatch_only and not mismatch:
+            continue
+        
+        items.append(RoutingFeedbackItem(
+            id=f.id,
+            thread_id=f.thread_id,
+            question=f.question,
+            actual_source=f.actual_source,
+            actual_routing_mode=f.actual_routing_mode,
+            should_use_local=f.should_use_local,
+            should_use_kb=f.should_use_kb,
+            should_use_ai=f.should_use_ai,
+            comment=f.comment,
+            quality_rating=f.quality_rating,
+            created_at=f.created_at,
+            mismatch=mismatch
+        ))
+    
+    return RoutingFeedbackListResponse(
+        total=len(items),
+        items=items
+    )
+
+
+@router.delete("/routing/feedback/{feedback_id}")
+def delete_routing_feedback(
+    feedback_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a routing feedback entry."""
+    from backend.database import RoutingFeedback
+    
+    feedback = db.query(RoutingFeedback).filter(RoutingFeedback.id == feedback_id).first()
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    
+    db.delete(feedback)
+    db.commit()
+    
+    return {"success": True, "message": "Feedback deleted"}
+
+
+@router.get("/routing/feedback/export")
+def export_routing_feedback(
+    db: Session = Depends(get_db)
+):
+    """Export all routing feedback as CSV for analysis."""
+    from backend.database import RoutingFeedback
+    import csv
+    import io
+    
+    feedback_items = db.query(RoutingFeedback).order_by(RoutingFeedback.created_at.desc()).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header
+    writer.writerow([
+        "id", "thread_id", "question", "actual_source", "actual_routing_mode",
+        "should_use_local", "should_use_kb", "should_use_ai", 
+        "comment", "quality_rating", "created_at"
+    ])
+    
+    for f in feedback_items:
+        writer.writerow([
+            f.id, f.thread_id, f.question, f.actual_source, f.actual_routing_mode,
+            f.should_use_local, f.should_use_kb, f.should_use_ai,
+            f.comment, f.quality_rating, f.created_at.isoformat()
+        ])
+    
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=routing_feedback.csv"}
+    )
