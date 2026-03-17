@@ -1580,7 +1580,18 @@ document.addEventListener("DOMContentLoaded", () => {
       fetch(`/api/files/${id}`)
         .then(res => res.json())
         .then(data => {
-          fileStatusDiv.textContent = `Status: ${data.status} (${data.line_count} lines)`;
+          // Show detailed status
+          let statusText = `Status: ${data.status}`;
+          if (data.line_count) {
+            statusText += ` (${data.line_count.toLocaleString()} lines)`;
+          }
+          if (data.status === 'indexing') {
+            statusText = `📊 Indexing... (${data.line_count ? data.line_count.toLocaleString() : '0'} lines)`;
+          } else if (data.status === 'vectorizing') {
+            statusText = `🔮 Creating embeddings... (${data.line_count ? data.line_count.toLocaleString() : '0'} lines)`;
+          }
+          fileStatusDiv.textContent = statusText;
+          
           if (data.status === "ready") {
             clearInterval(window.pollInterval);
             loadFile(id);
@@ -1767,6 +1778,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const latencyGraph = document.getElementById('latencyGraph');
     if (latencyGraph) {
       latencyGraph.innerHTML = '<p class="placeholder-text">Loading latency data...</p>';
+    }
+    
+    // Reset graph section collapsed state
+    const graphSection = document.querySelector('#log-tab .graph-section');
+    if (graphSection) {
+      graphSection.classList.remove('collapsed');
     }
     
     // Hide time range notification if visible
@@ -2973,8 +2990,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   function renderLatencyGraph(data) {
+    const graphSection = document.querySelector('#log-tab .graph-section');
+    
     if (!data.performance || data.performance.count === 0) {
         document.getElementById('latencyGraph').innerHTML = '<p class="placeholder-text">No performance data available.</p>';
+        if (graphSection) graphSection.classList.add('collapsed');
         return;
     }
     
@@ -2986,8 +3006,12 @@ document.addEventListener("DOMContentLoaded", () => {
         .then(perfData => {
             if (!perfData || perfData.length === 0) {
                 document.getElementById('latencyGraph').innerHTML = '<p class="placeholder-text">No performance data points found.</p>';
+                if (graphSection) graphSection.classList.add('collapsed');
                 return;
             }
+            
+            // Has data - ensure section is expanded
+            if (graphSection) graphSection.classList.remove('collapsed');
             
             const timestamps = perfData.map(p => p.timestamp);
             const sourceLatencies = perfData.map(p => p.source_latency);
@@ -3088,6 +3112,7 @@ document.addEventListener("DOMContentLoaded", () => {
         .catch(err => {
             console.error('Failed to load performance data:', err);
             document.getElementById('latencyGraph').innerHTML = '<p class="placeholder-text">Error loading performance data.</p>';
+            if (graphSection) graphSection.classList.add('collapsed');
         });
   }
   
@@ -3561,9 +3586,15 @@ document.addEventListener("DOMContentLoaded", () => {
     
     if (!bulkMapLink) return;
     
+    // Show loading state
+    bulkMapLink.style.display = 'flex';
+    bulkMapCount.textContent = '(loading...)';
+    bulkMapCount.style.opacity = '0.6';
+    
     fetch(`/api/files/${currentFileId}/bulk-map?limit=500`)
       .then(res => res.json())
       .then(response => {
+        bulkMapCount.style.opacity = '1';
         // Handle new response format with messages, stats, insights
         const messages = response.messages || response;  // Backward compatible
         const stats = response.stats || null;
@@ -4627,9 +4658,16 @@ document.addEventListener("DOMContentLoaded", () => {
     
     if (!issuesLink) return;
     
+    // Show loading state
+    issuesLink.style.display = 'flex';
+    issuesCount.textContent = '(analyzing...)';
+    issuesCount.style.opacity = '0.6';
+    
     fetch(`/api/files/${currentFileId}/issues`)
       .then(res => res.json())
       .then(data => {
+        issuesCount.style.opacity = '1';
+        
         if (data.summary.total_issues === 0) {
           issuesLink.style.display = 'none';
           return;
@@ -4642,6 +4680,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .catch(err => {
         console.error('Failed to load issues:', err);
         issuesLink.style.display = 'none';
+        issuesCount.style.opacity = '1';
       });
   }
   
@@ -4667,7 +4706,106 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
   
-  function renderIssues(data) {
+  // Helper function to highlight SQL column in INSERT/UPDATE statements
+  function highlightSQLColumn(text, columnNumber) {
+    if (!columnNumber || !text) {
+      return escapeHtml(text);
+    }
+    
+    // Check if this line contains an INSERT or UPDATE statement with column names
+    const insertMatch = text.match(/INSERT\s+INTO\s+[^\(]+\(([^)]+)\)/i);
+    const updateMatch = text.match(/UPDATE\s+[^\s]+\s+SET\s+(.+?)(?:WHERE|$)/i);
+    
+    let columnNames = null;
+    let columnStartIndex = -1;
+    
+    if (insertMatch) {
+      columnNames = insertMatch[1];
+      columnStartIndex = text.indexOf(columnNames);
+    } else if (updateMatch) {
+      columnNames = updateMatch[1];
+      columnStartIndex = text.indexOf(columnNames);
+    }
+    
+    if (!columnNames || columnStartIndex === -1) {
+      return escapeHtml(text);
+    }
+    
+    // Parse column names - split by comma, handling quoted identifiers
+    const columns = [];
+    let current = '';
+    let inQuotes = false;
+    let quoteChar = null;
+    
+    for (let i = 0; i < columnNames.length; i++) {
+      const char = columnNames[i];
+      
+      if ((char === '"' || char === "'") && (!inQuotes || quoteChar === char)) {
+        inQuotes = !inQuotes;
+        quoteChar = inQuotes ? char : null;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) {
+          columns.push(current.trim());
+        }
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    
+    if (current.trim()) {
+      columns.push(current.trim());
+    }
+    
+    // Get the target column (1-indexed)
+    if (columnNumber > 0 && columnNumber <= columns.length) {
+      const targetColumn = columns[columnNumber - 1];
+      console.log(`SQL Column Highlighting: Column #${columnNumber} = "${targetColumn}" in line with ${columns.length} columns`);
+      
+      // Split text into parts: before columns, columns section, after columns
+      const beforeColumns = text.substring(0, columnStartIndex);
+      const afterColumns = text.substring(columnStartIndex + columnNames.length);
+      
+      // Escape the before and after parts
+      let result = escapeHtml(beforeColumns);
+      
+      // Process the columns section - escape each column but highlight the target
+      let occurrenceIndex = 0;
+      let processedColumns = columnNames;
+      
+      // Strip quotes from target column for matching
+      const columnNameOnly = targetColumn.replace(/^["']|["']$/g, '');
+      const safePattern = columnNameOnly.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Match the column with optional quotes
+      const columnRegex = new RegExp(`(["']?)(${safePattern})(["']?)`, 'gi');
+      
+      processedColumns = processedColumns.replace(columnRegex, (match, quote1, colName, quote2) => {
+        occurrenceIndex++;
+        const escapedQuote1 = escapeHtml(quote1);
+        const escapedColName = escapeHtml(colName);
+        const escapedQuote2 = escapeHtml(quote2);
+        
+        if (occurrenceIndex === columnNumber) {
+          // Highlight this occurrence
+          return `${escapedQuote1}<span class="sql-column-highlight">${escapedColName}</span>${escapedQuote2}`;
+        }
+        return `${escapedQuote1}${escapedColName}${escapedQuote2}`;
+      });
+      
+      // Escape any remaining characters in the columns section that weren't part of the column names
+      // Split by the column names and escape the separators
+      result += processedColumns;
+      result += escapeHtml(afterColumns);
+      
+      return result;
+    }
+    
+    return escapeHtml(text);
+  }
+  
+    function renderIssues(data) {
     const issuesContent = document.getElementById('issuesMainContent');
     if (!issuesContent) return;
     
@@ -4695,29 +4833,31 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
     }
     
-    let html = `
-      <div class="issues-compact-header">
-        <div class="issues-header-row">
-          <div class="issues-title">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="#ef4444">
-              <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
-            </svg>
-            <span>Issues</span>
+    // Left side: Issues list container
+    let listHtml = `
+      <div class="issues-list-container">
+        <div class="issues-compact-header">
+          <div class="issues-header-row">
+            <div class="issues-title">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="#ef4444">
+                <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/>
+              </svg>
+              <span>Issues</span>
+            </div>
+            <div class="issues-stats-inline">
+              <span class="stat-badge total">${data.summary.total_issues} total</span>
+              ${data.summary.fatal_count > 0 ? `<span class="stat-badge fatal">${data.summary.fatal_count} fatal</span>` : ''}
+              <span class="stat-badge error">${data.summary.error_count} errors</span>
+              <span class="stat-badge warning">${data.summary.warning_count} warnings</span>
+            </div>
+            <div class="font-size-controls">
+              <button class="font-size-btn" onclick="adjustFontSize('issues', -1)" title="Decrease font size">A-</button>
+              <button class="font-size-btn" onclick="adjustFontSize('issues', 1)" title="Increase font size">A+</button>
+            </div>
           </div>
-          <div class="issues-stats-inline">
-            <span class="stat-badge total">${data.summary.total_issues} total</span>
-            ${data.summary.fatal_count > 0 ? `<span class="stat-badge fatal">${data.summary.fatal_count} fatal</span>` : ''}
-            <span class="stat-badge error">${data.summary.error_count} errors</span>
-            <span class="stat-badge warning">${data.summary.warning_count} warnings</span>
-          </div>
-          <div class="font-size-controls">
-            <button class="font-size-btn" onclick="adjustFontSize('issues', -1)" title="Decrease font size">A-</button>
-            <button class="font-size-btn" onclick="adjustFontSize('issues', 1)" title="Increase font size">A+</button>
-          </div>
+          ${timelineHtml}
         </div>
-        ${timelineHtml}
-      </div>
-      <div class="issues-list" id="issuesList">
+        <div class="issues-list" id="issuesList">
     `;
     
     // Render each issue group
@@ -4728,8 +4868,8 @@ document.addEventListener("DOMContentLoaded", () => {
       // Get all line numbers for this issue group
       const groupLineNumbers = issue.occurrences.map(occ => occ.line_number);
       
-      html += `
-        <div class="issue-group" id="${groupId}" data-lines="${groupLineNumbers.join(',')}">
+      listHtml += `
+        <div class="issue-group" id="${groupId}" data-lines="${groupLineNumbers.join(',')}" data-issue-idx="${idx}">
           <div class="issue-group-header" onclick="toggleIssueGroup('${groupId}')">
             <svg class="issue-expand-icon" width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
               <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/>
@@ -4739,6 +4879,11 @@ document.addEventListener("DOMContentLoaded", () => {
             <span class="issue-message" title="${escapeHtml(issue.message_summary)}">${escapeHtml(issue.message_summary)}</span>
             <span class="issue-timestamp">${formatTimelineTime(firstTimestamp)}</span>
             <span class="issue-count">${issue.occurrences.length}x</span>
+            <button class="issue-resolve-icon-btn" onclick="event.stopPropagation(); window.openIssueResolution(${idx});" title="Get Resolution">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+              </svg>
+            </button>
           </div>
           <div class="issue-group-content">
       `;
@@ -4747,52 +4892,93 @@ document.addEventListener("DOMContentLoaded", () => {
       issue.occurrences.slice(0, 5).forEach(occ => {
         const severityClass = issue.severity === 'warning' ? 'warning-line' : 'error-line';
         
-        html += `
+        // Extract column number from error message if present
+        const columnMatch = occ.text.match(/Column:\s*(\d+)/i);
+        const columnNumber = columnMatch ? parseInt(columnMatch[1]) : null;
+        
+        listHtml += `
           <div class="issue-occurrence">
             ${occ.timestamp ? `<div class="occurrence-time">${occ.timestamp}</div>` : ''}
         `;
         
-        // Before context
+        // Before context - check for SQL statements to highlight
         occ.before.forEach(ctx => {
-          html += `<div class="issue-context-line before"><span class="issue-line-number">${ctx.line + 1}</span>${escapeHtml(ctx.text)}</div>`;
+          const highlightedText = highlightSQLColumn(ctx.text, columnNumber);
+          console.log('Before context length:', ctx.text.length, 'Highlighted length:', highlightedText.length);
+          listHtml += `<div class="issue-context-line before"><span class="issue-line-number">${ctx.line + 1}</span>${highlightedText}</div>`;
         });
         
         // The issue line itself - with severity-based styling
-        html += `<div class="issue-context-line issue-line ${severityClass}"><span class="issue-line-number">${occ.line_number + 1}</span>${escapeHtml(occ.text)}</div>`;
+        listHtml += `<div class="issue-context-line issue-line ${severityClass}"><span class="issue-line-number">${occ.line_number + 1}</span>${escapeHtml(occ.text)}</div>`;
         
         // After context
         occ.after.forEach(ctx => {
-          html += `<div class="issue-context-line after"><span class="issue-line-number">${ctx.line + 1}</span>${escapeHtml(ctx.text)}</div>`;
+          const highlightedText = highlightSQLColumn(ctx.text, columnNumber);
+          listHtml += `<div class="issue-context-line after"><span class="issue-line-number">${ctx.line + 1}</span>${highlightedText}</div>`;
         });
         
-        html += `</div>`;
+        listHtml += `</div>`;
       });
       
       if (issue.occurrences.length > 5) {
-        html += `<p style="text-align: center; color: #6b7280; font-size: 0.7rem; margin: 8px 0;">... and ${issue.occurrences.length - 5} more occurrences</p>`;
+        listHtml += `<p style="text-align: center; color: #6b7280; font-size: 0.7rem; margin: 8px 0;">... and ${issue.occurrences.length - 5} more occurrences</p>`;
       }
       
-      // Add Google search button for error codes
+      // Add Google search button for error codes (in actions row if needed)
       if (issue.error_code) {
-        html += `
-          <button class="issue-google-btn" onclick="window.open('https://www.google.com/search?q=' + encodeURIComponent('${issue.error_code}'), '_blank')">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
-            </svg>
-            Google: ${issue.error_code}
-          </button>
+        listHtml += `
+          <div class="issue-actions-row" style="display: flex; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #1f2937;">
+            <button class="issue-google-btn" onclick="event.stopPropagation(); window.open('https://www.google.com/search?q=' + encodeURIComponent('Qlik Replicate ${issue.error_code}'), '_blank')">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+              </svg>
+              Google: ${issue.error_code}
+            </button>
+          </div>
         `;
       }
       
-      html += `
+      listHtml += `
           </div>
         </div>
       `;
     });
     
-    html += `</div>`;
-    issuesContent.innerHTML = html;
+    listHtml += `</div></div>`; // Close issues-list and issues-list-container
+
+    // Bottom: Resolution panel with toggle bar (initially collapsed)
+    const panelHtml = `
+      <div id="issueResolutionPanel" class="issue-resolution-panel collapsed">
+        <div class="issue-resolution-toggle-bar" onclick="window.toggleResolutionPanel()">
+          <div class="issue-resolution-toggle-title">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 01.708 0L8 10.293l5.646-5.647a.5.5 0 01.708.708l-6 6a.5.5 0 01-.708 0l-6-6a.5.5 0 010-.708z"/>
+            </svg>
+            <span id="resolutionPanelTitle">Resolution Panel</span>
+          </div>
+          <span class="issue-resolution-toggle-hint" id="resolutionPanelHint">Click the 🔍 icon on any issue</span>
+        </div>
+        <div class="issue-resolution-inner">
+          <div class="issue-resolution-placeholder">
+            <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor" style="opacity: 0.4;">
+              <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+            </svg>
+            <p>Click the <strong>🔍 icon</strong> on any issue header<br>to see AI insights, KB articles, and web search.</p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    issuesContent.innerHTML = listHtml + panelHtml;
   }
+  
+  // Toggle resolution panel collapse state
+  window.toggleResolutionPanel = function() {
+    const panel = document.getElementById('issueResolutionPanel');
+    if (panel) {
+      panel.classList.toggle('collapsed');
+    }
+  };
   
   // Format timeline time for display
   function formatTimelineTime(timestamp) {
@@ -4833,6 +5019,586 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
   };
+
+  // Cache for resolution results and hidden finding ids
+  window.issueResolutionCache = {};
+
+  function renderIssueResolutionLoading(issue) {
+    const panel = document.getElementById('issueResolutionPanel');
+    if (!panel) return;
+    
+    // Expand the panel and update title
+    panel.classList.remove('collapsed');
+    const titleEl = document.getElementById('resolutionPanelTitle');
+    const hintEl = document.getElementById('resolutionPanelHint');
+    if (titleEl) titleEl.textContent = `Resolution: ${issue.message_summary.slice(0, 50)}${issue.message_summary.length > 50 ? '...' : ''}`;
+    if (hintEl) hintEl.textContent = 'Loading...';
+    
+    // Highlight the selected issue group
+    document.querySelectorAll('.issue-group.selected').forEach(g => g.classList.remove('selected'));
+    
+    // Update inner content
+    const inner = panel.querySelector('.issue-resolution-inner');
+    if (inner) {
+      inner.innerHTML = `
+        <div class="issue-resolution-loading">
+          <div class="ai-loading-spinner"></div>
+          <p>Loading insights for this issue...</p>
+        </div>
+      `;
+    }
+  }
+
+  function renderIssueResolution(data, issue, occ, cacheKey) {
+    const panel = document.getElementById('issueResolutionPanel');
+    if (!panel) return;
+
+    // Update toggle bar with severity-colored text
+    const titleEl = document.getElementById('resolutionPanelTitle');
+    const hintEl = document.getElementById('resolutionPanelHint');
+    if (titleEl) titleEl.innerHTML = `<span class="resolution-severity-${issue.severity}">Resolution: ${issue.severity.toUpperCase()}</span>`;
+    if (hintEl) hintEl.textContent = `[${issue.component}] • Line ${occ.line_number + 1}`;
+
+    // Get data
+    const kbMatches = (data.kb && data.kb.matches) || [];
+    const aiReport = data.ai_report;
+    const tavily = data.tavily;
+    const tavilyConfigured = data.tavily_configured;
+    const searchQuery = data.query || '';
+
+    // Store the current query in cache for editing
+    const cache = window.issueResolutionCache[cacheKey];
+    if (cache) cache.searchQuery = searchQuery;
+
+    // Build sections in order: Web Search Result (if has answer) → AI Report → KB → Web Search (with editable query at bottom)
+
+    // Web Search Result section (only if we have results)
+    let webResultHtml = '';
+    if (tavily && tavily.answer) {
+      webResultHtml = `
+        <div class="issue-resolution-section" style="border-left: 3px solid #f59e0b;">
+          <h4>🌐 Web Search Result</h4>
+          <div class="issue-search-query">Search: "${escapeHtml(searchQuery)}"</div>
+          <div class="issue-tavily-ans">
+            <div class="issue-tavily-header">
+              <span style="color: #22c55e;">✓ Answer found</span>
+              <div class="issue-tavily-actions">
+                <button class="issue-btn" onclick="window.thumbsUpIssueResolution('${cacheKey}')" title="Good answer - save for future">👍</button>
+                <button class="issue-btn" onclick="window.saveIssueResolutionToFindings('${cacheKey}')" title="Save to Findings">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2z"/>
+                  </svg>
+                  Save
+                </button>
+                <button class="issue-btn" onclick="window.thumbsDownIssueResolution('${cacheKey}')" title="Not helpful - search again">👎</button>
+              </div>
+            </div>
+            <div class="issue-tavily-body">${escapeHtml(tavily.answer)}</div>
+            ${(tavily.sources && tavily.sources.length > 0) ? `
+              <div class="issue-tavily-sources">
+                <strong>Sources:</strong> ${tavily.sources.map(s => `<a href="${s.url}" target="_blank">${s.title || 'Link'}</a>`).join(' • ')}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    // AI Report section
+    let aiHtml = '';
+    if (aiReport && aiReport.excerpt) {
+      aiHtml = `
+        <div class="issue-resolution-section" style="border-left: 3px solid #8b5cf6;">
+          <h4>🤖 AI Report Excerpt</h4>
+          <div class="issue-ai-snippet">
+            <div class="issue-ai-body">${escapeHtml(aiReport.excerpt)}</div>
+            <div class="issue-ai-footer">
+              <a href="#" onclick="window.goToAIReport(); return false;" class="issue-link">View Full AI Report →</a>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      aiHtml = `
+        <div class="issue-resolution-section">
+          <h4>🤖 AI Report</h4>
+          <p class="placeholder-text-small" style="margin: 0;">No AI report generated yet. <a href="#" onclick="window.goToAIReport(); return false;" class="issue-link">Generate one from AI Insights tab</a>.</p>
+        </div>
+      `;
+    }
+
+    // KB section - only if matches found
+    let kbHtml = '';
+    if (kbMatches.length > 0) {
+      kbHtml = `
+        <div class="issue-resolution-section" style="border-left: 3px solid #10b981;">
+          <h4>📚 Knowledge Base (${kbMatches.length} match${kbMatches.length > 1 ? 'es' : ''})</h4>
+          ${kbMatches.map((m, i) => {
+            const title = m.source || `KB Article ${i + 1}`;
+            const link = m.url ? `<a href="${m.url}" target="_blank" class="issue-link">${escapeHtml(title)}</a>` : escapeHtml(title);
+            const similarity = m.similarity ? ` (${Math.round(m.similarity * 100)}% match)` : '';
+            return `
+              <div class="issue-kb-match">
+                <div class="issue-kb-header">
+                  <span>${link}${similarity}</span>
+                  <button class="issue-btn-small" onclick="window.saveKBToFindings('${cacheKey}', ${i})" title="Save to Findings">
+                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2z"/>
+                    </svg>
+                  </button>
+                </div>
+                <div class="issue-kb-content">${escapeHtml(m.content || '')}</div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    // Web Search section with editable query (always at bottom if no result yet)
+    let webSearchHtml = '';
+    if (!tavily || !tavily.answer) {
+      const statusMsg = !tavilyConfigured 
+        ? '<span style="color: #f87171;">Tavily API key not configured. Add it in AI Settings.</span>'
+        : 'Edit the query below and click Search to find solutions online.';
+      webSearchHtml = `
+        <div class="issue-resolution-section" style="border-left: 3px solid #6b7280;">
+          <h4>🌐 Web Search</h4>
+          <p class="placeholder-text-small" style="margin: 0 0 10px 0;">${statusMsg}</p>
+          <div class="issue-search-input-row">
+            <input type="text" id="issueSearchQueryInput" class="issue-search-input" value="${escapeHtml(searchQuery)}" placeholder="Enter search query...">
+            <button class="issue-resolve-btn" onclick="window.runIssueWebSearchWithQuery('${cacheKey}')" ${!tavilyConfigured ? 'disabled' : ''}>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+              </svg>
+              Search
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    // Build header with full error message (no search button in header anymore)
+    const headerHtml = `
+      <div class="issue-resolution-header">
+        <div style="flex: 1; min-width: 0;">
+          <div class="issue-resolution-title">
+            <span class="issue-severity-badge ${issue.severity}">${issue.severity}</span>
+            Full Error Message
+          </div>
+          <div class="issue-full-error">${escapeHtml(occ.text || issue.message_summary)}</div>
+          <div class="issue-resolution-meta">
+            [${issue.component}] • Line ${occ.line_number + 1} • ${issue.occurrences.length} occurrence${issue.occurrences.length > 1 ? 's' : ''}
+          </div>
+        </div>
+        <button class="issue-btn back-btn" onclick="window.clearIssueResolution()" title="Close">✕</button>
+      </div>
+    `;
+
+    // Build content: Header → Web Result (if any) → AI Report → KB → Web Search (if no result)
+    const inner = panel.querySelector('.issue-resolution-inner');
+    if (inner) {
+      inner.innerHTML = headerHtml + webResultHtml + aiHtml + kbHtml + webSearchHtml;
+    }
+  }
+  
+  // Run web search with custom/edited query
+  window.runIssueWebSearchWithQuery = function(cacheKey) {
+    const input = document.getElementById('issueSearchQueryInput');
+    const customQuery = input ? input.value.trim() : '';
+    
+    const cache = window.issueResolutionCache[cacheKey];
+    if (!cache) return;
+    
+    // Store custom query in cache
+    cache.customQuery = customQuery;
+    
+    runIssueWebSearch(cacheKey, customQuery);
+  };
+  
+  // Go to AI Report tab
+  window.goToAIReport = function() {
+    // Switch to Findings tab and select AI Insights subtab
+    document.querySelector('[data-tab="findings-tab"]')?.click();
+    setTimeout(() => {
+      document.querySelector('[data-subtab="insights-subtab"]')?.click();
+    }, 100);
+  };
+  
+  // Save KB article to findings
+  window.saveKBToFindings = async function(cacheKey, kbIndex) {
+    const cache = window.issueResolutionCache[cacheKey];
+    if (!cache) return;
+    
+    const { data, issue, occ } = cache;
+    const kbMatch = (data.kb?.matches || [])[kbIndex];
+    if (!kbMatch) return;
+    
+    const title = kbMatch.source || `KB Article for ${issue.message_summary.slice(0, 50)}`;
+    const content = `**KB Article:** ${kbMatch.source || 'Unknown'}\n\n${kbMatch.content || ''}\n\n**URL:** ${kbMatch.url || 'N/A'}`;
+    
+    try {
+      await fetch('/api/llm/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: currentFileId,
+          finding_type: 'custom',
+          title: title.slice(0, 120),
+          content,
+          line_number: occ.line_number,
+          metadata: { source: 'kb_article', url: kbMatch.url }
+        })
+      });
+      
+      // Refresh findings
+      if (window.savedFindingsManager) {
+        window.savedFindingsManager.loadFindings();
+      }
+      
+      // Show brief feedback
+      const btn = event.target.closest('button');
+      if (btn) {
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '✓';
+        btn.style.color = '#22c55e';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+          btn.style.color = '';
+        }, 1500);
+      }
+    } catch (e) {
+      console.error('Failed to save KB to findings:', e);
+    }
+  };
+  
+  // Thumbs up - save good answer to DB for future retrieval
+  window.thumbsUpIssueResolution = async function(cacheKey) {
+    const cache = window.issueResolutionCache[cacheKey];
+    if (!cache) return;
+    
+    const { data, issue, occ } = cache;
+    if (!data.tavily?.answer) return;
+    
+    // Save to findings as a verified resolution
+    const content = `**Issue:** ${issue.message_summary}\n\n**Verified Answer:** ${data.tavily.answer}\n\n**Sources:**\n${(data.tavily.sources || []).map(s => `- ${s.title || s.url}: ${s.url}`).join('\n') || 'N/A'}`;
+    
+    try {
+      await fetch('/api/llm/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: currentFileId,
+          finding_type: 'custom',
+          title: `✓ Verified: ${issue.message_summary}`.slice(0, 120),
+          content,
+          line_number: occ.line_number,
+          metadata: { source: 'verified_resolution', search_query: data.query, thumbs_up: true }
+        })
+      });
+      
+      // TODO: Also save to vector store for future retrieval
+      
+      // Refresh findings
+      if (window.savedFindingsManager) {
+        window.savedFindingsManager.loadFindings();
+      }
+      
+      // Show feedback on the button
+      const btn = event.target.closest('button');
+      if (btn) {
+        btn.textContent = '✓ Saved!';
+        btn.style.color = '#22c55e';
+        btn.disabled = true;
+      }
+    } catch (e) {
+      console.error('Failed to save verified resolution:', e);
+    }
+  };
+
+  function openIssueResolution(index) {
+    if (!window.issuesData || !window.issuesData.issues) return;
+    const issue = window.issuesData.issues[index];
+    if (!issue || !issue.occurrences || issue.occurrences.length === 0) return;
+    const occ = issue.occurrences[0];
+    const cacheKey = `issue-${index}`;
+
+    // If clicking a different issue, collapse the panel first then reopen
+    const panel = document.getElementById('issueResolutionPanel');
+    const currentCache = window.issueResolutionCache[window.currentResolutionKey];
+    if (window.currentResolutionKey && window.currentResolutionKey !== cacheKey && panel && !panel.classList.contains('collapsed')) {
+      // Different issue selected - collapse first
+      panel.classList.add('collapsed');
+    }
+    window.currentResolutionKey = cacheKey;
+
+    // Mark the selected issue group
+    document.querySelectorAll('.issue-group.selected').forEach(g => g.classList.remove('selected'));
+    const selectedGroup = document.getElementById(`issue-group-${index}`);
+    if (selectedGroup) {
+      selectedGroup.classList.add('selected');
+    }
+
+    renderIssueResolutionLoading(issue);
+
+    // Build context snippet from the primary occurrence
+    const snippet = [occ.text]
+      .concat((occ.before || []).map(b => b.text))
+      .concat((occ.after || []).map(a => a.text))
+      .slice(0, 6)
+      .join('\n');
+
+    const body = {
+      message_summary: issue.message_summary,
+      error_code: issue.error_code,
+      line_number: occ.line_number,
+      component: issue.component,
+      context_snippet: snippet,
+      full_error_text: occ.text,  // Pass the full error line
+      search: false
+    };
+
+    fetch(`/api/llm/issues/${currentFileId}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(res => res.json())
+      .then(data => {
+        window.issueResolutionCache[cacheKey] = { data, issue, occ, hiddenFindingId: null, searchQuery: data.query };
+        renderIssueResolution(data, issue, occ, cacheKey);
+      })
+      .catch(err => {
+        const panel = document.getElementById('issueResolutionPanel');
+        if (panel) {
+          const hintEl = document.getElementById('resolutionPanelHint');
+          if (hintEl) hintEl.textContent = 'Error loading';
+          
+          const inner = panel.querySelector('.issue-resolution-inner');
+          if (inner) {
+            inner.innerHTML = `
+              <p class="placeholder-text-small" style="color:#ef4444; padding: 20px; text-align: center;">
+                Failed to load resolution: ${err.message}
+              </p>
+            `;
+          }
+        }
+      });
+  }
+
+  function runIssueWebSearch(cacheKey, customQuery = null) {
+    const cache = window.issueResolutionCache[cacheKey];
+    if (!cache) return;
+    const { issue, occ } = cache;
+
+    // Show loading state in the inner section only (keep header visible)
+    const panel = document.getElementById('issueResolutionPanel');
+    if (panel) {
+      const inner = panel.querySelector('.issue-resolution-inner');
+      if (inner) {
+        inner.innerHTML = `
+          <div class="issue-resolution-loading">
+            <div class="ai-loading-spinner"></div>
+            <p>Searching the web...</p>
+          </div>
+        `;
+      }
+    }
+
+    const snippet = cache.data?.context || '';
+
+    const body = {
+      message_summary: issue.message_summary,
+      error_code: issue.error_code,
+      line_number: occ.line_number,
+      component: issue.component,
+      context_snippet: snippet,
+      full_error_text: occ.text,
+      custom_query: customQuery || null,  // Pass custom query if provided
+      search: true
+    };
+
+    fetch(`/api/llm/issues/${currentFileId}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(res => res.json())
+      .then(async (data) => {
+        // Auto-save hidden finding when we have a web answer
+        let hiddenId = cache.hiddenFindingId;
+        if (data.tavily && data.tavily.answer) {
+          const content = `**Issue:** ${issue.message_summary}\n\n**Answer:** ${data.tavily.answer}`;
+          try {
+            const resp = await fetch('/api/llm/findings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                file_id: currentFileId,
+                finding_type: 'custom',
+                title: `Resolution: ${issue.message_summary}`.slice(0, 120),
+                content,
+                line_number: occ.line_number,
+                metadata: { auto_saved: true, source: 'issue_resolution', search_query: data.query }
+              })
+            });
+            if (resp.ok) {
+              const saved = await resp.json();
+              hiddenId = saved.id;
+            }
+          } catch (e) {
+            console.warn('Auto-save resolution failed', e);
+          }
+        }
+
+        window.issueResolutionCache[cacheKey] = { ...cache, data, hiddenFindingId: hiddenId, searchQuery: data.query };
+        renderIssueResolution(data, issue, occ, cacheKey);
+      })
+      .catch(err => {
+        const panel = document.getElementById('issueResolutionPanel');
+        if (panel) {
+          const inner = panel.querySelector('.issue-resolution-inner');
+          if (inner) {
+            inner.innerHTML = `
+              <p class="placeholder-text-small" style="color:#ef4444; padding: 20px; text-align: center;">
+                Web search failed: ${err.message}
+              </p>
+            `;
+          }
+        }
+      });
+  }
+
+  async function thumbsDownIssueResolution(cacheKey) {
+    const cache = window.issueResolutionCache[cacheKey];
+    if (!cache) return;
+    const { issue, occ } = cache;
+    
+    const hiddenId = cache.hiddenFindingId;
+    if (hiddenId) {
+      try {
+        await fetch(`/api/llm/findings/${hiddenId}`, { method: 'DELETE' });
+      } catch (e) {
+        console.warn('Failed to delete hidden finding', e);
+      }
+      cache.hiddenFindingId = null;
+    }
+    
+    // Clear the tavily result so user can search again
+    if (cache.data) {
+      cache.data.tavily = null;
+      cache.data.tavily_error = null;
+    }
+    
+    // Re-render the panel to show the search input again
+    renderIssueResolution(cache.data, issue, occ, cacheKey);
+  }
+
+  async function saveIssueResolutionToFindings(cacheKey) {
+    const cache = window.issueResolutionCache[cacheKey];
+    if (!cache) return;
+    const { data, issue, occ, hiddenFindingId } = cache;
+
+    const answer = data.tavily?.answer || 'Resolution details not available';
+    const sources = (data.tavily?.sources || []).map(s => `- ${s.title || s.url}: ${s.url}`).join('\n');
+    const content = `**Issue:** ${issue.message_summary}\n\n**Answer:** ${answer}\n\n**Sources:**\n${sources || 'N/A'}`;
+
+    // Find the save button and show loading state
+    const btn = event?.target?.closest('button');
+    const originalHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+      btn.innerHTML = '...';
+      btn.disabled = true;
+    }
+
+    try {
+      await fetch('/api/llm/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: currentFileId,
+          finding_type: 'custom',
+          title: `Resolution: ${issue.message_summary}`.slice(0, 120),
+          content,
+          line_number: occ.line_number,
+          metadata: { source: 'issue_resolution', search_query: data.query }
+        })
+      });
+
+      // Remove hidden if it existed
+      if (hiddenFindingId) {
+        try {
+          await fetch(`/api/llm/findings/${hiddenFindingId}`, { method: 'DELETE' });
+        } catch (e) {
+          console.warn('Failed to delete hidden finding after promotion', e);
+        }
+        cache.hiddenFindingId = null;
+      }
+
+      // Refresh findings list badge
+      if (window.savedFindingsManager) {
+        window.savedFindingsManager.loadFindings();
+      }
+
+      // Show success on button, don't replace the whole panel
+      if (btn) {
+        btn.innerHTML = '✓ Saved!';
+        btn.style.color = '#22c55e';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+          btn.style.color = '';
+          btn.disabled = false;
+        }, 2000);
+      }
+    } catch (e) {
+      console.error('Failed to save to findings:', e);
+      if (btn) {
+        btn.innerHTML = 'Error';
+        btn.style.color = '#ef4444';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+          btn.style.color = '';
+          btn.disabled = false;
+        }, 2000);
+      }
+    }
+  }
+
+  function clearIssueResolution() {
+    const panel = document.getElementById('issueResolutionPanel');
+    if (panel) {
+      // Collapse and reset
+      panel.classList.add('collapsed');
+      
+      // Reset toggle bar text
+      const titleEl = document.getElementById('resolutionPanelTitle');
+      const hintEl = document.getElementById('resolutionPanelHint');
+      if (titleEl) titleEl.textContent = 'Resolution Panel';
+      if (hintEl) hintEl.textContent = 'Click the 🔍 icon on any issue';
+      
+      // Reset inner content
+      const inner = panel.querySelector('.issue-resolution-inner');
+      if (inner) {
+        inner.innerHTML = `
+          <div class="issue-resolution-placeholder">
+            <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor" style="opacity: 0.4;">
+              <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+            </svg>
+            <p>Click the <strong>🔍 icon</strong> on any issue header<br>to see AI insights, KB articles, and web search.</p>
+          </div>
+        `;
+      }
+    }
+    // Clear selected state from issue groups
+    document.querySelectorAll('.issue-group.selected').forEach(g => g.classList.remove('selected'));
+  }
+
+  // Expose resolution helpers globally for inline handlers
+  window.openIssueResolution = openIssueResolution;
+  window.runIssueWebSearch = runIssueWebSearch;
+  window.thumbsDownIssueResolution = thumbsDownIssueResolution;
+  window.saveIssueResolutionToFindings = saveIssueResolutionToFindings;
+  window.clearIssueResolution = clearIssueResolution;
   
   // Font size adjustment for reports
   const fontSizeScales = [0.75, 0.85, 1.0, 1.15, 1.3];
@@ -4930,9 +5696,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const releaseNotesLink = document.getElementById('releaseNotesLink');
     if (!summaryLink) return;
     
+    // Show loading state
+    summaryLink.style.display = 'flex';
+    summaryLink.style.opacity = '0.6';
+    summaryLink.title = 'Generating summary...';
+    
     fetch(`/api/files/${currentFileId}/log-summary`)
       .then(res => res.json())
       .then(data => {
+        summaryLink.style.opacity = '1';
+        summaryLink.title = '';
         summaryLink.style.display = 'flex';
         window.logSummaryData = data;
         

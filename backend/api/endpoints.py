@@ -1204,9 +1204,9 @@ def get_issues_with_context(
             # Extract the actual message part after the component
             msg_match = re.search(r'\][EWT]:\s*(.+?)(?:\s+\([^)]+\.\w+:\d+\))?$', line)
             if msg_match:
-                message_summary = msg_match.group(1).strip()[:80]  # First 80 chars
+                message_summary = msg_match.group(1).strip()[:200]  # First 200 chars for full error message
             else:
-                message_summary = line_stripped[:80]
+                message_summary = line_stripped[:200]
             
             # Create a group key
             group_key = f"{severity}:{component}:{message_summary}"
@@ -1303,7 +1303,9 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
         'running_mode': None,
         'start_mode': None,
         'source_endpoint': None,
+        'source_type': None,  # Database type (Oracle, SQL Server, etc.)
         'target_endpoint': None,
+        'target_type': None,  # Target type (Snowflake, Databricks, etc.)
         'license_info': None,
         'tables_count': 0,
         'tables': [],
@@ -1311,14 +1313,28 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
         'error_count': 0,
         'warning_count': 0,
         'fatal_error': None,
+        'sample_errors': [],  # First few errors with context
+        'sample_warnings': [],  # First few warnings with context
         'bulk_operations': 0,
         'cdc_events_count': 0,
         'full_load_completed': False,
         'cdc_started': False,
         'key_events': [],
-        'log_properly_closed': False,  # Indicates if "Closing log file" was found
-        'incomplete_log_warning': None,  # Warning message if log appears incomplete
-        'is_rollover': False  # Indicates if log was created from a rollover
+        'log_properly_closed': False,
+        'incomplete_log_warning': None,
+        'is_rollover': False,
+        # Configuration details
+        'config': {
+            'bulk_timeout_ms': None,
+            'parallel_apply_threads': None,
+            'merge_enabled': False
+        },
+        # ODBC/Driver info
+        'odbc_drivers': [],
+        # Connection issues
+        'connection_events': [],
+        # Performance indicators
+        'one_by_one_tables': [],  # Tables that went to one-by-one mode
     }
     
     first_timestamp = None
@@ -1375,17 +1391,25 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
                 summary['running_mode'] = mode_match.group(2).strip()
                 summary['start_mode'] = mode_match.group(3).strip()
         
-        # Source endpoint
+        # Source endpoint - enhanced to capture provider type
         if 'Source endpoint' in line and 'is using provider' in line:
             src_match = re.search(r"Source endpoint '([^']+)'", line)
             if src_match:
                 summary['source_endpoint'] = src_match.group(1)
+            # Extract provider/database type
+            provider_match = re.search(r"using provider\s*\(['\"]([^'\"]+)['\"]", line)
+            if provider_match:
+                summary['source_type'] = provider_match.group(1)
         
-        # Target endpoint
+        # Target endpoint - enhanced to capture provider type
         if 'Target endpoint' in line and 'is using provider' in line:
             tgt_match = re.search(r"Target endpoint '([^']+)'", line)
             if tgt_match:
                 summary['target_endpoint'] = tgt_match.group(1)
+            # Extract provider/database type
+            provider_match = re.search(r"using provider\s*\(['\"]([^'\"]+)['\"]", line)
+            if provider_match:
+                summary['target_type'] = provider_match.group(1)
         
         # Log level changes
         if 'log level' in line.lower() and 'changed' in line.lower():
@@ -1397,21 +1421,81 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
                     'to': level_match.group(3)
                 })
         
-        # Count errors and warnings
+        # Count errors and warnings - also capture samples with context
         if ']E:' in line:
             summary['error_count'] += 1
+            # Capture first 5 errors with more context
+            if len(summary['sample_errors']) < 5:
+                # Extract the error message (remove timestamp and component prefix)
+                error_text = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\[\w+\s*\]E:\s*', '', line.strip())
+                if error_text:
+                    summary['sample_errors'].append({
+                        'line_number': line_num + 1,
+                        'text': error_text[:300]  # Limit length
+                    })
+        
         if ']W:' in line:
             summary['warning_count'] += 1
+            # Capture first 3 warnings with context
+            if len(summary['sample_warnings']) < 3:
+                warning_text = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\[\w+\s*\]W:\s*', '', line.strip())
+                if warning_text:
+                    summary['sample_warnings'].append({
+                        'line_number': line_num + 1,
+                        'text': warning_text[:300]
+                    })
         
         # Fatal error
         if 'fatal error' in line.lower() and not summary['fatal_error']:
             summary['fatal_error'] = line.strip()[:200]
         
+        # Configuration extraction
+        if 'Set Bulk Timeout' in line and 'Min' not in line:
+            timeout_match = re.search(r'Set Bulk Timeout to (\d+)', line)
+            if timeout_match:
+                summary['config']['bulk_timeout_ms'] = int(timeout_match.group(1))
+        
+        if 'Parallel bulk apply' in line:
+            threads_match = re.search(r'Parallel bulk apply \((\d+) threads\)', line)
+            if threads_match:
+                summary['config']['parallel_apply_threads'] = int(threads_match.group(1))
+        
+        if 'Going to execute MERGE' in line or 'Merge table statement' in line:
+            summary['config']['merge_enabled'] = True
+        
+        # ODBC driver detection
+        if 'ODBC' in line and 'driver' in line.lower():
+            driver_match = re.search(r"(?:driver|Driver)[:\s]+([^\n;,]{10,80})", line)
+            if driver_match:
+                driver_name = driver_match.group(1).strip()
+                if driver_name and driver_name not in summary['odbc_drivers']:
+                    summary['odbc_drivers'].append(driver_name)
+        
+        # One-by-one mode detection (performance issue indicator)
+        if 'one-by-one' in line.lower() and 'Applying' in line:
+            table_match = re.search(r"for table '([^']+)'\.?'([^']+)'", line)
+            if table_match:
+                table_name = f"{table_match.group(1)}.{table_match.group(2)}"
+                if table_name not in summary['one_by_one_tables']:
+                    summary['one_by_one_tables'].append(table_name)
+        
+        # Connection events (reconnects, disconnects)
+        if any(x in line.lower() for x in ['reconnect', 'disconnect', 'connection lost', 'connection closed']):
+            if 'SOURCE' in line or 'TARGET' in line:
+                component = 'source' if 'SOURCE' in line else 'target'
+                event_type = 'reconnect' if 'reconnect' in line.lower() else 'disconnect'
+                summary['connection_events'].append({
+                    'line_number': line_num + 1,
+                    'component': component,
+                    'type': event_type,
+                    'text': line.strip()[:200]
+                })
+        
         # Bulk operations
         if 'Bulk finished' in line:
             summary['bulk_operations'] += 1
         
-        # Tables
+        # Tables - extract from multiple sources
         if 'get_capture_table_list' in line or ('TABLE_NAME' in line and 'TABLE_SCHEMA' in line):
             # Try to extract table names
             table_matches = re.findall(r"TABLE_NAME='([^']+)'", line)
@@ -1419,20 +1503,61 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
                 if t not in summary['tables']:
                     summary['tables'].append(t)
         
-        # Key events
+        # Also extract from "Start applying" messages
+        if 'Start applying' in line or 'Finished applying' in line:
+            table_match = re.search(r"for table '([^']+)'\.?'([^']+)'", line)
+            if table_match:
+                table_name = f"{table_match.group(1)}.{table_match.group(2)}"
+                if table_name not in summary['tables']:
+                    summary['tables'].append(table_name)
+        
+        # Key events - expanded for better context
         if 'Full load completed' in line or 'Full Load completed' in line:
             summary['full_load_completed'] = True
-            summary['key_events'].append({'line': line_num, 'event': 'Full Load Completed'})
+            summary['key_events'].append({
+                'line': line_num + 1,
+                'event': 'Full Load Completed',
+                'timestamp': ts_match.group(1) if ts_match else None
+            })
         
-        if 'Starting replication now' in line:
+        if 'Starting replication now' in line or 'Change Data Capture' in line and 'started' in line.lower():
             summary['cdc_started'] = True
-            summary['key_events'].append({'line': line_num, 'event': 'CDC Started'})
+            summary['key_events'].append({
+                'line': line_num + 1,
+                'event': 'CDC Started',
+                'timestamp': ts_match.group(1) if ts_match else None
+            })
         
         if 'Transaction consistency reached' in line:
-            summary['key_events'].append({'line': line_num, 'event': 'Transaction Consistency Reached'})
+            summary['key_events'].append({
+                'line': line_num + 1,
+                'event': 'Transaction Consistency Reached',
+                'timestamp': ts_match.group(1) if ts_match else None
+            })
         
         if 'Task initialization completed' in line:
-            summary['key_events'].append({'line': line_num, 'event': 'Task Initialization Completed'})
+            summary['key_events'].append({
+                'line': line_num + 1,
+                'event': 'Task Initialization Completed',
+                'timestamp': ts_match.group(1) if ts_match else None
+            })
+        
+        # Additional key events
+        if 'Stop reason' in line and ']I:' in line:
+            reason_match = re.search(r'Stop reason: (.+?)(?:\s+\(|$)', line)
+            if reason_match:
+                summary['key_events'].append({
+                    'line': line_num + 1,
+                    'event': f"Task Stopped: {reason_match.group(1).strip()}",
+                    'timestamp': ts_match.group(1) if ts_match else None
+                })
+        
+        if 'Task is stopped' in line or 'Task stopped' in line:
+            summary['key_events'].append({
+                'line': line_num + 1,
+                'event': 'Task Stopped',
+                'timestamp': ts_match.group(1) if ts_match else None
+            })
     
     summary['tables_count'] = len(summary['tables'])
     summary['start_time'] = first_timestamp.isoformat() if first_timestamp else None

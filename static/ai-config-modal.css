@@ -30,6 +30,8 @@
     max-width: 500px;
     max-height: 90vh;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     transform: translateY(20px) scale(0.95);
     transition: transform 0.2s ease;
@@ -86,6 +88,7 @@
     padding: 20px;
     overflow-y: auto;
     max-height: calc(90vh - 140px);
+    flex: 1;
 }
 
 .ai-config-status {
@@ -721,3 +724,78 @@
     text-transform: uppercase;
 }
 
+/* Sanitization tab */
+.ai-sanitize-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.ai-sanitize-card {
+    background: #0f172a;
+    border: 1px solid #1f2937;
+    border-radius: 8px;
+    padding: 10px;
+    color: #e5e7eb;
+}
+
+.ai-sanitize-card-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.ai-sanitize-card ul {
+    padding-left: 16px;
+    margin: 0;
+    color: #cbd5e1;
+}
+
+.ai-sanitize-layer {
+    margin-bottom: 6px;
+}
+
+.ai-sanitize-layer-title {
+    font-weight: 600;
+    color: #cbd5e1;
+}
+
+.ai-sanitize-layer-items {
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+.ai-entity-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.ai-entity-item {
+    background: #0b1220;
+    border: 1px solid #1f2937;
+    border-radius: 8px;
+    padding: 10px;
+    color: #e5e7eb;
+}
+
+.ai-entity-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.ai-entity-name {
+    font-weight: 600;
+}
+
+.ai-entity-arrow {
+    color: #64748b;
+}
+
+.ai-entity-replacement {
+    font-family: monospace;
+    color: #a5b4fc;
+}

@@ -634,7 +634,7 @@ body {
     padding: 8px;
 }
 
-/* Issues Main Content Container */
+/* Issues Main Content Container - Stacked Layout with Bottom Panel */
 #issuesMainContent {
     display: flex;
     flex-direction: column;
@@ -652,6 +652,15 @@ body {
 
 #logSummaryMainContent {
     max-width: 100%;
+}
+
+/* Issues List Container - Takes top portion */
+.issues-list-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 /* Issues List */
@@ -691,15 +700,17 @@ body {
 
 .issue-group-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    flex-wrap: wrap;
     gap: 6px;
     padding: 6px 8px;
     background: #111827;
     cursor: pointer;
     user-select: none;
-    overflow: hidden;
     min-width: 0;
-    line-height: 1.2;
+    max-width: 100%;
+    line-height: 1.4;
+    overflow-wrap: break-word;
 }
 
 .issue-group-header:hover {
@@ -727,13 +738,15 @@ body {
 }
 
 .issue-message {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
     font-size: 0.75rem;
     color: #e5e7eb;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    white-space: normal !important;
+    line-height: 1.4;
 }
 
 .issue-count {
@@ -752,6 +765,41 @@ body {
 
 .issue-group.expanded .issue-expand-icon {
     transform: rotate(90deg);
+}
+
+.issue-group.selected {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 1px #3b82f6;
+}
+
+.issue-group.selected .issue-group-header {
+    background: linear-gradient(135deg, #1e3a5f, #111827);
+}
+
+/* Resolution icon button in header */
+.issue-resolve-icon-btn {
+    background: transparent;
+    border: 1px solid #4b5563;
+    border-radius: 4px;
+    padding: 4px 6px;
+    cursor: pointer;
+    color: #9ca3af;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    transition: all 0.15s ease;
+}
+.issue-resolve-icon-btn:hover {
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: #fff;
+    transform: scale(1.1);
+}
+.issue-group.selected .issue-resolve-icon-btn {
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: #fff;
 }
 
 .issue-group-content {
@@ -781,6 +829,9 @@ body {
     font-size: 0.8rem;
     padding: 3px 6px;
     color: #9ca3af;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
 }
 
 .issue-context-line.issue-line {
@@ -802,6 +853,15 @@ body {
 .issue-context-line.before,
 .issue-context-line.after {
     color: #6b7280;
+}
+
+.sql-column-highlight {
+    background: rgba(251, 191, 36, 0.3);
+    color: #fbbf24;
+    font-weight: bold;
+    padding: 0 2px;
+    border-radius: 2px;
+    border-bottom: 2px solid #fbbf24;
 }
 
 .issue-line-number {
@@ -829,6 +889,367 @@ body {
 .issue-google-btn:hover {
     background: #4b5563;
     color: #e5e7eb;
+}
+
+/* Issue resolution panel - Bottom collapsible panel */
+.issue-resolution-panel {
+    border-top: 1px solid #313244;
+    background: #0f1419;
+    display: flex;
+    flex-direction: column;
+    max-height: 45%;
+    min-height: 0;
+    transition: max-height 0.2s ease, min-height 0.2s ease;
+}
+.issue-resolution-panel.collapsed {
+    max-height: 36px;
+    min-height: 36px;
+}
+.issue-resolution-panel.collapsed .issue-resolution-inner {
+    display: none;
+}
+.issue-resolution-panel.collapsed .issue-resolution-header {
+    border-bottom: none;
+}
+.issue-resolution-toggle-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: linear-gradient(180deg, #1e293b, #0f172a);
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 2px solid #3b82f6;
+}
+.issue-resolution-toggle-bar:hover {
+    background: linear-gradient(180deg, #334155, #1e293b);
+}
+.issue-resolution-toggle-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #e5e7eb;
+}
+.issue-resolution-toggle-title svg {
+    transition: transform 0.2s ease;
+}
+.issue-resolution-panel.collapsed .issue-resolution-toggle-title svg {
+    transform: rotate(-90deg);
+}
+.issue-resolution-toggle-hint {
+    font-size: 0.75rem;
+    color: #6b7280;
+}
+.issue-resolution-inner {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: #4b5563 #1f2937;
+}
+.issue-resolution-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    background: #111827;
+    border-bottom: 1px solid #313244;
+}
+.issue-resolution-title {
+    font-weight: 600;
+    color: #e5e7eb;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    word-break: break-word;
+    flex: 1;
+}
+.issue-resolution-meta {
+    color: #9ca3af;
+    font-size: 0.75rem;
+    margin-top: 4px;
+}
+.issue-resolution-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.issue-resolution-section {
+    margin-top: 12px;
+    padding: 10px;
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+}
+.issue-resolution-section:first-child {
+    margin-top: 0;
+}
+.issue-resolution-section h4 {
+    margin: 0 0 8px 0;
+    color: #e5e7eb;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.issue-resolution-section h4::before {
+    content: '';
+    width: 3px;
+    height: 14px;
+    background: #3b82f6;
+    border-radius: 2px;
+}
+.issue-kb-match, .issue-ai-snippet, .issue-tavily-ans {
+    background: #0b1220;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 8px;
+    color: #d1d5db;
+    word-break: break-word;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+.issue-kb-match:last-child, .issue-ai-snippet:last-child, .issue-tavily-ans:last-child {
+    margin-bottom: 0;
+}
+.issue-kb-match {
+    border-left: 3px solid #10b981;
+}
+.issue-ai-snippet {
+    border-left: 3px solid #8b5cf6;
+}
+.issue-tavily-ans {
+    border-left: 3px solid #f59e0b;
+}
+.issue-kb-meta {
+    color: #9ca3af;
+    font-size: 0.75rem;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #1f2937;
+}
+.issue-kb-meta a {
+    color: #60a5fa;
+    text-decoration: none;
+}
+.issue-kb-meta a:hover {
+    text-decoration: underline;
+}
+.issue-ai-label {
+    font-size: 0.75rem;
+    color: #8b5cf6;
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+.issue-ai-body {
+    white-space: pre-wrap;
+    font-family: inherit;
+}
+.issue-ai-footer {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid #1f2937;
+}
+.issue-full-error {
+    background: #0d1117;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.8rem;
+    color: #f87171;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+.issue-search-query {
+    background: #1f2937;
+    border-radius: 4px;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+    font-size: 0.75rem;
+    color: #9ca3af;
+    font-style: italic;
+}
+.issue-link {
+    color: #60a5fa;
+    text-decoration: none;
+}
+.issue-link:hover {
+    text-decoration: underline;
+    color: #93c5fd;
+}
+.issue-kb-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+.issue-kb-content {
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+.issue-btn-small {
+    background: transparent;
+    border: 1px solid #4b5563;
+    border-radius: 3px;
+    padding: 3px 6px;
+    cursor: pointer;
+    color: #9ca3af;
+    display: inline-flex;
+    align-items: center;
+}
+.issue-btn-small:hover {
+    background: #374151;
+    color: #e5e7eb;
+}
+
+/* Search input row */
+.issue-search-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+.issue-search-input {
+    flex: 1;
+    background: #111827;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 8px 10px;
+    color: #e5e7eb;
+    font-size: 0.8rem;
+}
+.issue-search-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+.issue-search-input::placeholder {
+    color: #6b7280;
+}
+
+/* Resolution panel toggle bar severity colors */
+.resolution-severity-error {
+    color: #f87171;
+    font-weight: 600;
+}
+.resolution-severity-warning {
+    color: #fbbf24;
+    font-weight: 600;
+}
+.resolution-severity-fatal {
+    color: #ef4444;
+    font-weight: 700;
+}
+.issue-ai-label {
+    font-weight: 600;
+    color: #a5b4fc;
+    margin-bottom: 4px;
+}
+.issue-ai-body {
+    white-space: pre-wrap;
+    color: #e5e7eb;
+}
+.issue-tavily-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #1f2937;
+}
+.issue-tavily-header span {
+    font-weight: 500;
+    color: #f59e0b;
+    font-size: 0.8rem;
+}
+.issue-tavily-actions {
+    display: flex;
+    gap: 6px;
+}
+.issue-tavily-body {
+    white-space: pre-wrap;
+    color: #e5e7eb;
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    scrollbar-width: thin;
+    scrollbar-color: #4b5563 transparent;
+}
+.issue-tavily-sources {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #1f2937;
+    font-size: 0.75rem;
+    color: #9ca3af;
+}
+.issue-tavily-sources a {
+    color: #60a5fa;
+    text-decoration: none;
+    margin-right: 4px;
+}
+.issue-tavily-sources a:hover {
+    text-decoration: underline;
+}
+.issue-btn, .issue-resolve-btn {
+    background: #1f2937;
+    border: 1px solid #374151;
+    color: #e5e7eb;
+    padding: 5px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    transition: all 0.15s ease;
+}
+.issue-resolve-btn {
+    background: linear-gradient(135deg, #1e3a5f, #1f2937);
+    border-color: #3b82f6;
+}
+.issue-resolve-btn svg {
+    color: #60a5fa;
+}
+.issue-btn:hover, .issue-resolve-btn:hover {
+    background: #374151;
+    transform: translateY(-1px);
+}
+.issue-btn.back-btn {
+    background: transparent;
+    border-color: #4b5563;
+    color: #9ca3af;
+}
+.issue-btn.back-btn:hover {
+    color: #e5e7eb;
+    background: #1f2937;
+}
+.issue-resolution-placeholder {
+    color: #6b7280;
+    padding: 24px 16px;
+    text-align: center;
+    font-size: 0.85rem;
+}
+.issue-resolution-placeholder svg {
+    display: block;
+    margin: 0 auto 12px;
+    opacity: 0.5;
+}
+.issue-resolution-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    color: #9ca3af;
+}
+.issue-resolution-loading p {
+    margin-top: 12px;
+    font-size: 0.85rem;
 }
 
 /* Log Summary Styles */
@@ -1154,6 +1575,26 @@ body {
     min-height: 220px;
     display: flex;
     flex-direction: column;
+    transition: flex-basis 0.3s ease, min-height 0.3s ease;
+}
+
+.graph-section.collapsed {
+    flex: 0 0 auto;
+    min-height: auto;
+}
+
+.graph-section.collapsed #latencyGraph {
+    display: none;
+}
+
+.graph-section.collapsed .graph-header {
+    padding: 0.6rem 0.8rem;
+}
+
+.graph-section.collapsed .section-title::after {
+    content: ' - No data';
+    color: #6b7280;
+    font-weight: normal;
 }
 
 .graph-header {
@@ -2173,6 +2614,43 @@ body {
     border-radius: 6px;
     position: relative;
     border-left: 3px solid #3b82f6;
+}
+.finding-item a {
+    color: #60a5fa;
+    text-decoration: none;
+    word-break: break-all;
+}
+.finding-item a:hover {
+    color: #93c5fd;
+    text-decoration: underline;
+}
+.finding-item strong {
+    color: #f3f4f6;
+    font-weight: 600;
+}
+.finding-content {
+    color: #d1d5db;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    word-wrap: break-word;
+}
+.finding-content code {
+    background: #111827;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.85em;
+}
+.finding-content pre {
+    background: #111827;
+    padding: 10px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
+.finding-content pre code {
+    padding: 0;
+    background: none;
 }
 
 .remove-finding-btn {

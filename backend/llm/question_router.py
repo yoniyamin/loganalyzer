@@ -168,7 +168,8 @@ def classify_question(question: str) -> Tuple[str, List[str]]:
     mode_mapping = {
         AnswerMode.LOCAL: "LOG_ONLY",
         AnswerMode.KB_FUSION: "LOG_PLUS_KB", 
-        AnswerMode.AI_REQUIRED: "AI_REQUIRED"
+        # AI is disabled for Smart Search; treat as KB fusion for compatibility
+        AnswerMode.AI_REQUIRED: "LOG_PLUS_KB"
     }
     
     return (mode_mapping.get(answer_mode, "LOG_PLUS_KB"), relevant_sections)
@@ -282,7 +283,10 @@ def get_relevant_summary_context(
 
 
 def _format_section(section_key: str, data: Dict[str, Any]) -> str:
-    """Format a single summary section as markdown."""
+    """
+    Format a single summary section as markdown.
+    Optimized for AI consumption - concise but information-rich.
+    """
     
     if section_key == "latency_profile" and "latency_profile" in data:
         lp = data["latency_profile"]
@@ -290,13 +294,17 @@ def _format_section(section_key: str, data: Dict[str, Any]) -> str:
             return ""
         
         lines = ["### Latency Profile"]
-        lines.append(f"- Data points analyzed: {lp.get('data_points', 0)}")
+        lines.append(f"- Data points: {lp.get('data_points', 0):,}")
         
+        # Format as compact table for better readability
+        components_data = []
         for component in ["source", "handling", "target"]:
             if component in lp:
                 stats = lp[component]
-                lines.append(f"- {component.title()}: avg={stats.get('avg', 0):.2f}s, "
-                           f"max={stats.get('max', 0):.2f}s, p95={stats.get('p95', 0):.2f}s")
+                components_data.append(f"{component}: avg {stats.get('avg', 0):.2f}s, max {stats.get('max', 0):.2f}s, p95 {stats.get('p95', 0):.2f}s")
+        
+        if components_data:
+            lines.append("- " + " | ".join(components_data))
         
         return "\n".join(lines) + "\n"
     
@@ -307,9 +315,15 @@ def _format_section(section_key: str, data: Dict[str, Any]) -> str:
     elif section_key == "error_summary" and "error_summary" in data:
         es = data["error_summary"]
         lines = ["### Error Summary"]
-        lines.append(f"- Total errors: {es.get('total', 0)}")
+        lines.append(f"- Total errors: {es.get('total', 0):,}")
+        
+        # Format component breakdown more readably
         if es.get("by_component"):
-            lines.append(f"- By component: {json.dumps(es['by_component'])}")
+            by_comp = es['by_component']
+            comp_list = sorted(by_comp.items(), key=lambda x: x[1], reverse=True)[:5]
+            comp_str = ", ".join([f"{comp}: {count}" for comp, count in comp_list])
+            lines.append(f"- By component: {comp_str}")
+        
         return "\n".join(lines) + "\n"
     
     elif section_key == "error_correlation" and "error_correlation" in data:
@@ -326,15 +340,23 @@ def _format_section(section_key: str, data: Dict[str, Any]) -> str:
     elif section_key == "batch_profile" and "batch_profile" in data:
         bp = data["batch_profile"]
         lines = ["### Batch Analysis"]
-        lines.append(f"- Total batches: {bp.get('total_batches', 0)}")
+        lines.append(f"- Total batches: {bp.get('total_batches', 0):,}")
+        
+        # Format closure reasons more readably
         if bp.get("closure_reasons"):
-            lines.append(f"- Closure reasons: {json.dumps(bp['closure_reasons'])}")
+            reasons = bp['closure_reasons']
+            top_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:3]
+            reasons_str = ", ".join([f"{reason}: {count}" for reason, count in top_reasons])
+            lines.append(f"- Top closure reasons: {reasons_str}")
+        
+        # More compact size stats
         if bp.get("size_stats"):
             ss = bp["size_stats"]
-            lines.append(f"- Batch sizes: avg={ss.get('avg', 0):.0f}, max={ss.get('max', 0)}, "
-                        f"total_changes={ss.get('total_changes', 0)}")
-            if ss.get("single_record_pct", 0) > 0:
-                lines.append(f"- Single-record batches: {ss.get('single_record_pct', 0):.1f}%")
+            size_info = f"avg {ss.get('avg', 0):.0f}, max {ss.get('max', 0)}, total changes {ss.get('total_changes', 0):,}"
+            if ss.get("single_record_pct", 0) > 5:  # Only highlight if > 5%
+                size_info += f" | ⚠️ {ss.get('single_record_pct', 0):.1f}% single-record"
+            lines.append(f"- Batch sizes: {size_info}")
+        
         return "\n".join(lines) + "\n"
     
     elif section_key == "batch_issues" and "batch_issues" in data:
@@ -352,11 +374,28 @@ def _format_section(section_key: str, data: Dict[str, Any]) -> str:
             return ""
         lines = ["### Tables with Performance Issues"]
         for table in tables[:5]:
-            lines.append(f"- **{table.get('table_name', 'Unknown')}**: "
-                        f"pain_score={table.get('pain_score', 0):.0f}, "
-                        f"apply_time={table.get('total_apply_time', 0):.1f}s, "
-                        f"operations={table.get('total_operations', 0)}, "
-                        f"one-by-one={table.get('one_by_one_count', 0)}")
+            # Build a more informative description
+            table_info = [f"**{table.get('table_name', 'Unknown')}**"]
+            
+            # Add key metrics
+            pain_score = table.get('pain_score', 0)
+            if pain_score > 0:
+                table_info.append(f"pain score {pain_score:.0f}")
+            
+            apply_time = table.get('total_apply_time', 0)
+            if apply_time > 0:
+                table_info.append(f"{apply_time:.1f}s total apply")
+            
+            one_by_one = table.get('one_by_one_count', 0)
+            if one_by_one > 0:
+                table_info.append(f"⚠️ {one_by_one} one-by-one")
+            
+            operations = table.get('total_operations', 0)
+            if operations > 0:
+                table_info.append(f"{operations:,} ops")
+            
+            lines.append(f"- {' | '.join(table_info)}")
+        
         return "\n".join(lines) + "\n"
     
     elif section_key == "spikes" and "spikes" in data:
@@ -364,21 +403,35 @@ def _format_section(section_key: str, data: Dict[str, Any]) -> str:
         if spikes.get("count", 0) == 0:
             return ""
         lines = ["### Latency Spikes"]
-        lines.append(f"- Total spikes detected: {spikes['count']}")
-        for spike in spikes.get("items", [])[:3]:
-            lines.append(f"- Line {spike.get('line_number', '?')}: {spike.get('value', 0):.1f}s "
-                        f"({spike.get('multiplier', 0):.1f}x baseline, driver: {spike.get('driver', '?')})")
+        lines.append(f"- Detected: {spikes['count']} spikes")
+        
+        # Show top 3 most severe spikes
+        spike_items = spikes.get("items", [])[:3]
+        for i, spike in enumerate(spike_items, 1):
+            spike_value = spike.get('value', 0)
+            multiplier = spike.get('multiplier', 0)
+            driver = spike.get('driver', 'unknown')
+            line_num = spike.get('line_number', '?')
+            lines.append(f"- Spike {i}: {spike_value:.1f}s ({multiplier:.1f}x baseline) at line {line_num}, driven by {driver}")
+        
         return "\n".join(lines) + "\n"
     
     elif section_key == "plateaus" and "plateaus" in data:
         plateaus = data["plateaus"]
         if plateaus.get("count", 0) == 0:
             return ""
-        lines = ["### Latency Plateaus"]
-        lines.append(f"- Total plateaus detected: {plateaus['count']}")
-        for plateau in plateaus.get("items", [])[:3]:
-            lines.append(f"- Lines {plateau.get('start_line', '?')}-{plateau.get('end_line', '?')}: "
-                        f"avg {plateau.get('avg_latency', 0):.1f}s for {plateau.get('duration_points', 0)} readings")
+        lines = ["### Latency Plateaus (Sustained High Latency)"]
+        lines.append(f"- Detected: {plateaus['count']} plateau periods")
+        
+        # Show top 3 longest plateaus
+        plateau_items = plateaus.get("items", [])[:3]
+        for i, plateau in enumerate(plateau_items, 1):
+            avg_lat = plateau.get('avg_latency', 0)
+            duration = plateau.get('duration_points', 0)
+            start_line = plateau.get('start_line', '?')
+            end_line = plateau.get('end_line', '?')
+            lines.append(f"- Plateau {i}: avg {avg_lat:.1f}s for {duration} data points (lines {start_line}-{end_line})")
+        
         return "\n".join(lines) + "\n"
     
     elif section_key == "cdc_pipeline" and "cdc_pipeline" in data:
@@ -405,10 +458,27 @@ def _format_section(section_key: str, data: Dict[str, Any]) -> str:
         if not recs:
             return ""
         lines = ["### Recommendations"]
-        for rec in recs[:5]:
-            lines.append(f"- [{rec.get('priority', 'medium').upper()}] **{rec.get('title', '')}** ({rec.get('area', '')})")
-            if rec.get("description"):
-                lines.append(f"  {rec['description'][:200]}")
+        
+        # Group by priority for better organization
+        high_priority = [r for r in recs if r.get('priority', '').lower() == 'high']
+        medium_priority = [r for r in recs if r.get('priority', '').lower() == 'medium']
+        
+        if high_priority:
+            lines.append("**High Priority:**")
+            for rec in high_priority[:3]:
+                title = rec.get('title', '')
+                area = rec.get('area', '')
+                desc = rec.get('description', '')[:150]
+                lines.append(f"- {title} ({area}): {desc}")
+        
+        if medium_priority and len(high_priority) < 3:
+            lines.append("**Medium Priority:**")
+            remaining = 5 - len(high_priority)
+            for rec in medium_priority[:remaining]:
+                title = rec.get('title', '')
+                area = rec.get('area', '')
+                lines.append(f"- {title} ({area})")
+        
         return "\n".join(lines) + "\n"
     
     elif section_key == "config" and "config" in data:

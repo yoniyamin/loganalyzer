@@ -160,6 +160,22 @@ LOCAL_INTENT_PATTERNS = {
         (r"\bwhat('s| is) (in |)(the |this |)log\b", "summary"),
         (r"\b(give me|show me) (a |)summary\b", "summary"),
     ],
+    
+    # REPORT intents - generated insights/reports catalog
+    "REPORT": [
+        (r"\breport(s)?\b", "reports"),
+        (r"\b(pdf|html)\b.*\breport\b", "reports"),
+        (r"\b(cockpit|dashboard|insight)s?\b", "reports"),
+        (r"\b(ai )?analysis\b", "reports"),
+    ],
+    
+    # TOP intents - ranked lists (errors/tables)
+    "TOP": [
+        (r"\b(top|most (common|frequent)|biggest|highest)\b.*\berrors?\b", "top_errors"),
+        (r"\b(top|most (common|frequent)|worst)\b.*\btables?\b", "top_tables"),
+        (r"\bmost failing tables\b", "top_tables"),
+        (r"\bmost frequent errors\b", "top_errors"),
+    ],
 }
 
 # Questions that need KB articles (but not necessarily AI)
@@ -171,17 +187,8 @@ KB_NEEDED_PATTERNS = [
     r"\bdocumentation\b",
 ]
 
-# Questions that require AI reasoning
-AI_REQUIRED_PATTERNS = [
-    r"\bwhy\b",
-    r"\bexplain\b.*\b(root cause|reason)\b",
-    r"\banalyze\b",
-    r"\bwhat should i do\b",
-    r"\brecommend\b",
-    r"\bhow (do i|to|can i)\b.*(fix|resolve|solve)",
-    r"\broot cause\b",
-    r"\bbest practice\b",
-]
+# Smart Search is zero-LLM; keep list empty to avoid AI routing
+AI_REQUIRED_PATTERNS: List[str] = []
 
 
 # =============================================================================
@@ -197,13 +204,7 @@ def classify_intent(question: str) -> Tuple[AnswerMode, QueryIntent]:
     """
     q_lower = question.lower().strip()
     
-    # Check for AI-required patterns first (they take priority)
-    for pattern in AI_REQUIRED_PATTERNS:
-        if re.search(pattern, q_lower):
-            return (AnswerMode.AI_REQUIRED, QueryIntent(
-                type="COMPLEX",
-                raw_question=question
-            ))
+    # AI_REQUIRED is disabled for Smart Search (no LLM usage)
     
     # Check for KB-needed patterns
     for pattern in KB_NEEDED_PATTERNS:
@@ -222,8 +223,8 @@ def classify_intent(question: str) -> Tuple[AnswerMode, QueryIntent]:
                     entity=entity,
                     raw_question=question
                 ))
-    
-    # Default: try KB fusion first, then AI if needed
+
+    # Default: prefer KB fusion, never escalate to AI
     return (AnswerMode.KB_FUSION, QueryIntent(
         type="GENERAL",
         raw_question=question
@@ -247,9 +248,6 @@ def answer_locally(
     """
     mode, intent = classify_intent(question)
     
-    if mode == AnswerMode.AI_REQUIRED:
-        return None  # AI required
-    
     # Route to appropriate handler based on intent type
     handlers = {
         "INFO": _handle_info_query,
@@ -259,6 +257,8 @@ def answer_locally(
         "SEARCH": _handle_search_query,
         "TIME": _handle_time_query,
         "SUMMARY": _handle_summary_query,
+        "REPORT": _handle_report_query,
+        "TOP": _handle_top_query,
     }
     
     handler = handlers.get(intent.type)
@@ -777,6 +777,76 @@ def _handle_list_query(intent: QueryIntent, file_id: int, db: Session) -> Option
     return None
 
 
+def _handle_top_query(intent: QueryIntent, file_id: int, db: Session) -> Optional[LocalAnswer]:
+    """Handle TOP type questions - ranked lists without AI."""
+    entity = intent.entity
+    
+    if entity == "top_errors":
+        rows = db.query(
+            LogError.text,
+            func.count(LogError.id).label("count")
+        ).filter(
+            LogError.file_id == file_id
+        ).group_by(LogError.text).order_by(func.count(LogError.id).desc()).limit(5).all()
+        
+        if not rows:
+            return LocalAnswer(
+                answer="No errors found in the log file.",
+                data={"top_errors": []},
+                query_type="TOP_ERRORS"
+            )
+        
+        answer_parts = ["Top errors (by frequency):\n"]
+        top_errors = []
+        for row in rows:
+            text_preview = (row.text or "")[:140]
+            top_errors.append({"text": row.text, "count": row.count})
+            answer_parts.append(f"- {row.count} occurrence(s): `{text_preview}`")
+        
+        return LocalAnswer(
+            answer="\n".join(answer_parts),
+            data={"top_errors": top_errors},
+            query_type="TOP_ERRORS"
+        )
+    
+    if entity == "top_tables":
+        tables = db.query(LogTableStats).filter(
+            LogTableStats.file_id == file_id
+        ).order_by(
+            LogTableStats.error_count.desc(),
+            LogTableStats.total_apply_time_seconds.desc()
+        ).limit(5).all()
+        
+        if not tables:
+            return LocalAnswer(
+                answer="No table statistics found in the log file.",
+                data={"top_tables": []},
+                query_type="TOP_TABLES"
+            )
+        
+        answer_parts = ["Tables with highest issues (error count, then apply time):\n"]
+        top_tables = []
+        for t in tables:
+            ops = (t.total_inserts or 0) + (t.total_updates or 0) + (t.total_deletes or 0) + (t.total_merges or 0)
+            top_tables.append({
+                "table_name": t.table_name,
+                "error_count": t.error_count,
+                "apply_time": t.total_apply_time_seconds,
+                "operations": ops
+            })
+            answer_parts.append(
+                f"- {t.table_name}: errors={t.error_count}, apply_time={t.total_apply_time_seconds or 0:.1f}s, ops={ops:,}"
+            )
+        
+        return LocalAnswer(
+            answer="\n".join(answer_parts),
+            data={"top_tables": top_tables},
+            query_type="TOP_TABLES"
+        )
+    
+    return None
+
+
 def _handle_stats_query(intent: QueryIntent, file_id: int, db: Session) -> Optional[LocalAnswer]:
     """Handle STATS type questions."""
     entity = intent.entity
@@ -864,6 +934,48 @@ def _handle_stats_query(intent: QueryIntent, file_id: int, db: Session) -> Optio
         )
     
     return None
+
+
+def _handle_report_query(intent: QueryIntent, file_id: int, db: Session) -> Optional[LocalAnswer]:
+    """Handle REPORT type questions - list available generated reports."""
+    from backend.database import LLMReport
+    
+    reports = db.query(LLMReport).filter(
+        LLMReport.file_id == file_id
+    ).order_by(LLMReport.generated_at.desc()).all()
+    
+    if not reports:
+        return LocalAnswer(
+            answer="No generated reports found for this log yet.",
+            data={"reports": []},
+            query_type="REPORTS"
+        )
+    
+    answer_lines = [f"Found {len(reports)} generated report(s):\n"]
+    report_summaries = []
+    for rpt in reports[:5]:
+        snippet = (rpt.report_content or "")[:200]
+        generated = rpt.generated_at.isoformat() if rpt.generated_at else "unknown time"
+        answer_lines.append(
+            f"- Report #{rpt.id} ({generated}): model={rpt.model_used or 'unknown'}"
+        )
+        if snippet:
+            answer_lines.append(f"  Preview: {snippet}{'...' if len(snippet)==200 else ''}")
+        report_summaries.append({
+            "id": rpt.id,
+            "generated_at": generated,
+            "model": rpt.model_used,
+            "preview": snippet
+        })
+    
+    if len(reports) > 5:
+        answer_lines.append(f"...and {len(reports) - 5} more.")
+    
+    return LocalAnswer(
+        answer="\n".join(answer_lines),
+        data={"reports": report_summaries},
+        query_type="REPORTS"
+    )
 
 
 def _handle_search_query(intent: QueryIntent, file_id: int, db: Session) -> Optional[LocalAnswer]:

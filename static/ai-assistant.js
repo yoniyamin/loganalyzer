@@ -1,5 +1,5 @@
 /**
- * AI Assistant Module
+ * Smart Search Module
  * 
  * Provides KB-powered AI assistance for log analysis:
  * - Magic wand button for quick questions
@@ -50,7 +50,7 @@ class AIAssistant {
         if (logPreviewWrapper) {
             this.magicWandBtn = document.createElement('button');
             this.magicWandBtn.className = 'ai-magic-wand-btn';
-            this.magicWandBtn.title = 'Ask AI about this log';
+            this.magicWandBtn.title = 'Open Smart Search';
             this.magicWandBtn.innerHTML = `
                 <svg viewBox="0 0 512 512" fill="currentColor">
                     <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/>
@@ -74,7 +74,7 @@ class AIAssistant {
                     </div>
                     <textarea 
                         class="ai-question-input" 
-                        placeholder="Ask about errors, performance issues, or troubleshooting..."
+                        placeholder="Search logs and KB for errors, performance, troubleshooting..."
                         rows="3"
                     ></textarea>
                     <div class="ai-redaction-preview" style="display: none;">
@@ -97,7 +97,7 @@ class AIAssistant {
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
                             </svg>
-                            Ask
+                            Search
                         </button>
                     </div>
                 </div>
@@ -132,7 +132,7 @@ class AIAssistant {
                 <svg viewBox="0 0 512 512" fill="currentColor" width="14" height="14">
                     <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/>
                 </svg>
-                Ask AI about this
+                Smart Search this
             </button>
         `;
         this.contextMenu.style.display = 'none';
@@ -567,18 +567,13 @@ class AIAssistant {
         this.hideRedactionPreview();
     }
     
-    async submitQuestion(allowAI = false) {
+    async submitQuestion() {
         let question = this.questionInput ? this.questionInput.value.trim() : '';
-        
-        // If retrying with AI, use the pending question
-        if (allowAI && this.pendingAIQuestion) {
-            question = this.pendingAIQuestion;
-        }
         
         if (!question || this.isLoading || !this.currentFileId) return;
         
         // Include snippet in question if present
-        if (this.pendingLogSnippet && !allowAI) {
+        if (this.pendingLogSnippet) {
             question = `${question}\n\nLog snippet:\n\`\`\`\n${this.pendingLogSnippet}\n\`\`\``;
         }
         
@@ -598,8 +593,7 @@ class AIAssistant {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     file_id: this.currentFileId,
-                    question: question,
-                    allow_ai: allowAI
+                    question: question
                 })
             });
             
@@ -610,16 +604,6 @@ class AIAssistant {
             
             const result = await response.json();
             
-            // Check if AI confirmation is needed
-            if (result.source === 'needs_confirmation') {
-                this.pendingAIQuestion = question;
-                this.renderAIConfirmation(result.answer, question);
-                return;
-            }
-            
-            // Clear pending question
-            this.pendingAIQuestion = null;
-            
             // Add to threads with source information
             const thread = {
                 id: result.thread_id,
@@ -628,9 +612,9 @@ class AIAssistant {
                 kb_articles: result.kb_articles || [],
                 created_at: new Date().toISOString(),
                 thumbs_up: false,
-                source: result.source || 'ai',  // "local", "kb", or "ai"
-                model_used: result.model_used || 'unknown',
-                routing_mode: result.routing_mode || 'AI_REQUIRED',
+                source: result.source || 'report',  // "local", "kb", or "report"
+                model_used: result.model_used || 'smart_search',
+                routing_mode: result.routing_mode || 'KB_FUSION',
                 prompt_tokens: result.prompt_tokens || 0,
                 completion_tokens: result.completion_tokens || 0
             };
@@ -646,49 +630,6 @@ class AIAssistant {
             this.isLoading = false;
             this.magicWandBtn.classList.remove('loading');
         }
-    }
-    
-    renderAIConfirmation(message, question) {
-        if (!this.aiPanel) return;
-        
-        this.aiPanel.innerHTML = `
-            <div class="ai-panel-header">
-                <h3>
-                    <svg viewBox="0 0 512 512" fill="currentColor">
-                        <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/>
-                    </svg>
-                    AI Assistant
-                </h3>
-            </div>
-            <div class="ai-confirmation-prompt">
-                <div class="ai-confirmation-icon">🤖</div>
-                <div class="ai-confirmation-question">
-                    <strong>Question:</strong> ${this.escapeHtml(question)}
-                </div>
-                <div class="ai-confirmation-message">
-                    ${this.formatAnswer(message)}
-                </div>
-                <div class="ai-confirmation-note">
-                    <strong>Note:</strong> Using AI will send sanitized log data to the configured AI provider.
-                </div>
-                <div class="ai-confirmation-actions">
-                    <button class="ai-confirm-btn cancel" id="aiConfirmCancel">Cancel</button>
-                    <button class="ai-confirm-btn proceed" id="aiConfirmProceed">
-                        <span>🤖</span> Use AI Model
-                    </button>
-                </div>
-            </div>
-        `;
-        
-        // Bind confirmation buttons
-        document.getElementById('aiConfirmCancel')?.addEventListener('click', () => {
-            this.pendingAIQuestion = null;
-            this.renderThreads();
-        });
-        
-        document.getElementById('aiConfirmProceed')?.addEventListener('click', () => {
-            this.submitQuestion(true);  // Retry with AI allowed
-        });
     }
     
     async loadThreads() {
@@ -741,7 +682,7 @@ class AIAssistant {
                 <svg viewBox="0 0 512 512" fill="currentColor">
                     <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/>
                 </svg>
-                AI Assistant
+                Smart Search
             </h3>
             <div class="ai-loading">
                 <div class="ai-loading-spinner"></div>
@@ -800,7 +741,7 @@ class AIAssistant {
                     <svg viewBox="0 0 512 512" fill="currentColor">
                         <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/>
                     </svg>
-                    AI Assistant
+                    Smart Search
                 </h3>
                 ${hasThreads ? `
                 <div class="ai-thread-navigation">
@@ -826,8 +767,8 @@ class AIAssistant {
                     <svg viewBox="0 0 512 512" fill="currentColor">
                         <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/>
                     </svg>
-                    <p>Click the magic wand button or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> to ask a question.</p>
-                    <p class="hint">AI will search KB articles and analyze your log context to provide helpful answers.</p>
+                    <p>Click the magic wand button or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> to open Smart Search.</p>
+                    <p class="hint">Smart Search looks at your log context and KB articles for answers—no live model call.</p>
                 </div>
             `;
         } else {
@@ -873,7 +814,7 @@ class AIAssistant {
     renderThread(thread, isCurrent = false) {
         const timeAgo = this.formatTimeAgo(thread.created_at);
         const answerHtml = this.formatAnswer(thread.answer);
-        const source = thread.source || 'ai';
+        const source = thread.source || 'local';
         
         // Build source badge based on answer source
         const sourceInfo = this.getSourceInfo(source, thread);
@@ -913,7 +854,7 @@ class AIAssistant {
         }
         
         // Add special class for AI-used threads (multicolored border)
-        const threadClass = source === 'ai' ? 'ai-thread ai-source-ai' : `ai-thread ai-source-${source}`;
+        const threadClass = `ai-thread ai-source-${source}`;
         
         return `
             <div class="${threadClass} ${isCurrent ? 'current' : ''}" data-thread-id="${thread.id}" data-source="${source}">
@@ -972,9 +913,9 @@ class AIAssistant {
                                 <span class="ai-routing-option-label">KB Articles</span>
                             </label>
                             <label class="ai-routing-option">
-                                <input type="checkbox" class="ai-routing-checkbox" data-source="ai">
-                                <span class="ai-routing-option-icon">🤖</span>
-                                <span class="ai-routing-option-label">AI Model</span>
+                                <input type="checkbox" class="ai-routing-checkbox" data-source="report">
+                                <span class="ai-routing-option-icon">📄</span>
+                                <span class="ai-routing-option-label">Insights Report</span>
                             </label>
                         </div>
                         <div class="ai-routing-feedback-comment">
@@ -1056,11 +997,11 @@ class AIAssistant {
         // Get checkbox values
         const shouldUseLocal = feedbackEl.querySelector('.ai-routing-checkbox[data-source="local"]').checked;
         const shouldUseKb = feedbackEl.querySelector('.ai-routing-checkbox[data-source="kb"]').checked;
-        const shouldUseAi = feedbackEl.querySelector('.ai-routing-checkbox[data-source="ai"]').checked;
+        const shouldUseReport = feedbackEl.querySelector('.ai-routing-checkbox[data-source="report"]').checked;
         const comment = feedbackEl.querySelector('.ai-routing-comment-input').value.trim();
         
         // Validate at least one is selected
-        if (!shouldUseLocal && !shouldUseKb && !shouldUseAi) {
+        if (!shouldUseLocal && !shouldUseKb && !shouldUseReport) {
             this.showToast('Please select at least one source', 'warning');
             return;
         }
@@ -1077,7 +1018,7 @@ class AIAssistant {
                     thread_id: parseInt(threadId),
                     should_use_local: shouldUseLocal,
                     should_use_kb: shouldUseKb,
-                    should_use_ai: shouldUseAi,
+                    should_use_report: shouldUseReport,
                     comment: comment || null
                 })
             });
@@ -1316,6 +1257,13 @@ class AIAssistant {
                     label: 'KB Fusion',
                     icon: '📚',
                     class: 'source-kb',
+                    tokens: '0 tokens'
+                };
+            case 'report':
+                return {
+                    label: 'Report Context',
+                    icon: '📄',
+                    class: 'source-report',
                     tokens: '0 tokens'
                 };
             case 'ai':

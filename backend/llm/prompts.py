@@ -255,53 +255,68 @@ def build_analysis_prompt(
     
     sections = []
     
-    # File info header (only include non-sensitive info)
+    # === CRITICAL ISSUES FIRST (if any) ===
+    # Highlight critical issues at the top for immediate attention
+    has_critical = False
+    critical_section = ["## ⚠️ Critical Issues Detected\n"]
+    
+    if summary_data.get("error_summary", {}).get("total", 0) > 100:
+        critical_section.append(f"- **High error count**: {summary_data['error_summary']['total']:,} errors logged")
+        has_critical = True
+    
+    if summary_data.get("cdc_pipeline", {}).get("health_status", "").lower() == "critical":
+        critical_section.append("- **CDC pipeline critical**: Memory warnings or disconnections detected")
+        has_critical = True
+    
+    if summary_data.get("pain_tables") and len(summary_data["pain_tables"]) > 0:
+        worst_table = summary_data["pain_tables"][0]
+        if worst_table.get("pain_score", 0) > 50:
+            critical_section.append(f"- **Problematic table**: {worst_table.get('table_name', 'Unknown')} showing severe issues")
+            has_critical = True
+    
+    if has_critical:
+        sections.append("\n".join(critical_section) + "\n")
+    
+    # File info header (compact)
     if file_info:
-        # Only include filename (which is usually just the log file name, not path)
         filename = file_info.get('filename', 'Unknown')
-        # Extra sanitization for filename - remove any path components
         if '\\' in filename:
             filename = filename.split('\\')[-1]
         if '/' in filename:
             filename = filename.split('/')[-1]
         
-        sections.append(f"""## Log File Information
-- **Filename**: {filename}
-- **Size**: {file_info.get('size_bytes', 0):,} bytes
-- **Lines**: {file_info.get('line_count', 0):,}
+        sections.append(f"""## Log Overview
+File: {filename} | Size: {file_info.get('size_bytes', 0):,} bytes | Lines: {file_info.get('line_count', 0):,}
 """)
     
-    # Performance Summary
-    sections.append("## Performance Summary")
+    # Performance Summary - more compact
+    sections.append("## Performance Metrics")
     
     if "latency_profile" in summary_data:
         lp = summary_data["latency_profile"]
-        sections.append("""
-### Latency Profile
-| Metric | Source | Handling | Target |
-|--------|--------|----------|--------|""")
-        
-        for metric in ["avg", "max", "p95", "p99"]:
-            src = lp.get("source", {}).get(metric, 0)
-            hdl = lp.get("handling", {}).get(metric, 0)
-            tgt = lp.get("target", {}).get(metric, 0)
-            sections.append(f"| {metric.upper()} | {src:.2f}s | {hdl:.2f}s | {tgt:.2f}s |")
-        
-        sections.append(f"\nData points analyzed: {lp.get('data_points', 0)}")
+        if lp.get("data_points", 0) > 0:
+            # Focus on key metrics only
+            sections.append(f"""
+### Latency ({lp.get('data_points', 0):,} samples)
+- **Source**: avg {lp.get('source', {}).get('avg', 0):.2f}s, p95 {lp.get('source', {}).get('p95', 0):.2f}s, max {lp.get('source', {}).get('max', 0):.2f}s
+- **Handling**: avg {lp.get('handling', {}).get('avg', 0):.2f}s, p95 {lp.get('handling', {}).get('p95', 0):.2f}s, max {lp.get('handling', {}).get('max', 0):.2f}s
+- **Target**: avg {lp.get('target', {}).get('avg', 0):.2f}s, p95 {lp.get('target', {}).get('p95', 0):.2f}s, max {lp.get('target', {}).get('max', 0):.2f}s
+""")
     
-    # Bottleneck Analysis
+    # Bottleneck Analysis - more actionable
     if "bottleneck" in summary_data:
         bn = summary_data["bottleneck"]
+        primary = bn.get('primary', 'Unknown')
         sections.append(f"""
-### Bottleneck Analysis
-- **Primary Bottleneck**: {bn.get('primary', 'Unknown')}
+### 🎯 Primary Bottleneck: {primary.upper()}
 """)
-        if bn.get('periods'):
-            sections.append("Recent bottleneck periods:")
-            for period in bn['periods'][:3]:
-                sections.append(f"  - {period.get('start_time', '?')} to {period.get('end_time', '?')}: "
-                              f"{period.get('bottleneck', 'unknown')} "
-                              f"(source: {period.get('source_avg', 0):.1f}s, handling: {period.get('handling_avg', 0):.1f}s)")
+        # Add context about what this means
+        if primary == 'source':
+            sections.append("The source database is the limiting factor. Consider: source query optimization, indexing, or resource allocation.\n")
+        elif primary == 'target':
+            sections.append("The target database is the limiting factor. Consider: target indexing, bulk settings, or resource allocation.\n")
+        elif primary == 'handling':
+            sections.append("Internal processing is the bottleneck. Consider: memory settings, parallel threads, or transformation logic.\n")
     
     # Spikes and Plateaus
     if "spikes" in summary_data:
@@ -324,23 +339,36 @@ Detected **{plateaus['count']} sustained high-latency periods**:""")
                 sections.append(f"- Lines {plateau.get('start_line', '?')}-{plateau.get('end_line', '?')}: "
                               f"avg {plateau.get('avg_latency', 0):.1f}s for {plateau.get('duration_points', 0)} readings")
     
-    # Batch Analysis
+    # Batch Analysis - focus on efficiency issues
     if "batch_profile" in summary_data:
         bp = summary_data["batch_profile"]
         sections.append(f"""
-### Batch Processing
-- **Total Batches**: {bp.get('total_batches', 0)}
-- **Closure Reasons**: {json.dumps(bp.get('closure_reasons', {}))}
+### Batch Processing ({bp.get('total_batches', 0):,} batches)
 """)
+        
+        # Highlight inefficiencies
         if "size_stats" in bp:
             ss = bp["size_stats"]
-            sections.append(f"- Batch sizes: avg={ss.get('avg', 0):.0f}, max={ss.get('max', 0)}, "
-                          f"single-record={ss.get('single_record_pct', 0):.1f}%")
+            single_record_pct = ss.get('single_record_pct', 0)
+            avg_size = ss.get('avg', 0)
+            
+            if single_record_pct > 20 or avg_size < 10:
+                sections.append(f"⚠️ **Batch Efficiency Issue**: avg size {avg_size:.0f}, {single_record_pct:.1f}% single-record batches\n")
+            else:
+                sections.append(f"✓ Batch sizes: avg {avg_size:.0f}, max {ss.get('max', 0):,}\n")
+        
+        # Top closure reasons
+        if bp.get('closure_reasons'):
+            top_reasons = sorted(bp['closure_reasons'].items(), key=lambda x: x[1], reverse=True)[:3]
+            sections.append("**Top closure reasons**: " + ", ".join([f"{r}: {c}" for r, c in top_reasons]) + "\n")
     
-    if "batch_issues" in summary_data and summary_data["batch_issues"]:
-        sections.append("\n**Batch Issues Detected:**")
-        for issue in summary_data["batch_issues"]:
-            sections.append(f"- [{issue.get('severity', 'info').upper()}] {issue.get('title', '')}: {issue.get('message', '')}")
+    # Batch issues - only show if present
+    if summary_data.get("batch_issues"):
+        critical_issues = [i for i in summary_data["batch_issues"] if i.get('severity') in ['warning', 'critical']]
+        if critical_issues:
+            sections.append("\n**Batch Issues:**")
+            for issue in critical_issues[:3]:
+                sections.append(f"- {issue.get('title', '')}: {issue.get('message', '')[:150]}")
     
     # Pain Tables
     if "pain_tables" in summary_data and summary_data["pain_tables"]:
@@ -376,24 +404,28 @@ Detected **{plateaus['count']} sustained high-latency periods**:""")
         if sa.get('investigation_hints'):
             sections.append("Investigation hints: " + "; ".join(sa['investigation_hints']))
     
-    # Error Summary
+    # Error Summary - prioritize critical information
     if "error_summary" in summary_data:
         es = summary_data["error_summary"]
-        sections.append(f"""
-### Error Summary
-- **Total Errors**: {es.get('total', 0)}
-- By component: {json.dumps(es.get('by_component', {}))}
-""")
-    
-    # Error Correlation
-    if "error_correlation" in summary_data:
-        ec = summary_data["error_correlation"]
-        if ec.get('total_correlated_errors', 0) > 0:
+        error_count = es.get('total', 0)
+        
+        if error_count > 0:
+            severity_indicator = "⚠️" if error_count > 100 else "ℹ️"
             sections.append(f"""
-### Errors During High Latency
-- Correlated errors: {ec.get('total_correlated_errors', 0)}
-- High latency windows: {ec.get('high_latency_windows', 0)}
-- Error types: {json.dumps(ec.get('errors_by_type', {}))}
+### {severity_indicator} Error Summary
+- **Total**: {error_count:,} errors
+""")
+            # Show top error-prone components
+            if es.get('by_component'):
+                top_components = sorted(es['by_component'].items(), key=lambda x: x[1], reverse=True)[:3]
+                sections.append("- **Top components**: " + ", ".join([f"{comp} ({count})" for comp, count in top_components]) + "\n")
+    
+    # Error Correlation - only if significant
+    if summary_data.get("error_correlation", {}).get('total_correlated_errors', 0) > 10:
+        ec = summary_data["error_correlation"]
+        sections.append(f"""
+### 🔗 Error-Latency Correlation
+{ec.get('total_correlated_errors', 0)} errors occurred during high latency periods, suggesting performance-related issues.
 """)
     
     # Existing Recommendations from analysis
@@ -407,38 +439,40 @@ Detected **{plateaus['count']} sustained high-latency periods**:""")
                 for action in rec['actions'][:2]:
                     sections.append(f"  - {action}")
     
-    # Error Contexts from RAG
+    # Error Contexts from RAG - more focused
     if error_contexts:
         sections.append("""
-## Error Context Samples
-The following are sample errors with surrounding context from the log:
+## Sample Error Details
+Key error patterns from the log (with context):
 """)
-        for i, ctx in enumerate(error_contexts[:5], 1):
-            sections.append(f"### Error Sample {i}")
-            sections.append(f"```\n{ctx[:1500]}\n```\n")
+        for i, ctx in enumerate(error_contexts[:3], 1):  # Reduced from 5 to 3
+            # Truncate context more aggressively but keep key info
+            clean_ctx = ctx[:800] if len(ctx) > 800 else ctx
+            sections.append(f"**Error {i}:**\n```\n{clean_ctx}\n```\n")
     
-    # Anomaly Contexts from RAG
+    # Anomaly Contexts from RAG - more focused
     if anomaly_contexts:
         sections.append("""
-## Detected Anomalies
+## Performance Anomalies
 """)
-        for ctx in anomaly_contexts[:3]:
-            sections.append(f"```\n{ctx[:1000]}\n```\n")
+        for i, ctx in enumerate(anomaly_contexts[:2], 1):  # Reduced from 3 to 2
+            clean_ctx = ctx[:600] if len(ctx) > 600 else ctx
+            sections.append(f"**Anomaly {i}:**\n```\n{clean_ctx}\n```\n")
     
-    # Final instruction
+    # Final instruction - more focused
     sections.append("""
 ---
 
-## Your Task
+## Analysis Request
 
-Based on the above log analysis data, provide a comprehensive report that:
+Provide a focused analysis covering:
 
-1. Summarizes the overall health and performance of this replication task
-2. Identifies the root causes of any issues
-3. Provides specific, actionable recommendations
-4. Estimates the severity and urgency of any problems found
+1. **Health Assessment**: Overall task health (Healthy/Warning/Critical) with justification
+2. **Root Cause Analysis**: For any issues found, identify the underlying causes
+3. **Priority Actions**: Top 3-5 actionable recommendations ranked by impact
+4. **Risk Assessment**: What could fail if issues aren't addressed?
 
-Focus on what a support engineer or DBA would need to know to troubleshoot and optimize this replication task.
+**Focus on**: Practical insights a DBA or support engineer can act on immediately. Reference specific metrics, line numbers, and table names when relevant.
 """)
     
     return "\n".join(sections)

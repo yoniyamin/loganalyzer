@@ -13,3 +13,8 @@ kb-assistant/.kb-venv/
 kb-assistant/kb_page_files/
 kb-assistant/kb_page_files/*/*
 kb-assistant/logs/
+.venv/
+.venv_new/
+chroma_db
+*.log
+.venv_new/Lib/site-packages/bottle.py

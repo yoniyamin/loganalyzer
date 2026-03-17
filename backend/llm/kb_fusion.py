@@ -124,16 +124,37 @@ def fuse_answer(
     if error_codes:
         search_query = f"{' '.join(error_codes)} {question}"
     
-    # Search KB
-    kb_results = vector_store.query_kb(search_query, n_results=3)
+    # Search KB (grab more then rerank)
+    kb_results = vector_store.query_kb(search_query, n_results=6)
     
-    # Filter out low-similarity results
-    relevant_articles = [
-        kb for kb in kb_results 
-        if kb.get('similarity', 0) > 0.3  # Minimum 30% similarity
-    ]
+    # Dynamic similarity threshold: lower if explicit codes are present
+    min_similarity = 0.15 if error_codes else 0.3
+    
+    def _score(article: Dict[str, Any]) -> float:
+        sim = article.get('similarity', 0)
+        title = article.get('title', '') or ''
+        content = article.get('content', '') or ''
+        has_code = any(code.lower() in (title + content).lower() for code in error_codes)
+        return sim + (0.2 if has_code else 0.0)
+    
+    ranked = sorted(
+        [kb for kb in kb_results if kb.get('similarity', 0) >= min_similarity],
+        key=_score,
+        reverse=True
+    )
+    
+    relevant_articles = ranked[:3]
     
     if not relevant_articles:
+        # Still return local evidence if available
+        if local_answer or error_codes:
+            local_facts = local_answer.answer if local_answer else _get_error_facts(error_codes, file_id, db)
+            return FusedAnswer(
+                answer=local_facts,
+                local_facts=local_facts,
+                kb_articles=[],
+                confidence="low"
+            )
         return None  # No relevant KB content
     
     # Build local facts section
@@ -166,7 +187,7 @@ def fuse_answer(
         answer=answer,
         local_facts=local_facts,
         kb_articles=kb_articles_formatted,
-        confidence="high" if relevant_articles[0].get('similarity', 0) > 0.6 else "medium"
+        confidence="high" if kb_articles_formatted and kb_articles_formatted[0].get('similarity', 0) > 0.6 else "medium"
     )
 
 

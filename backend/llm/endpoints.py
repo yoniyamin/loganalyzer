@@ -7,6 +7,7 @@ Mounted at /api/llm/
 
 import base64
 import io
+import os
 import re
 import logging
 import traceback
@@ -14,6 +15,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from sqlalchemy import text
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -23,6 +25,7 @@ from backend.llm.client import get_llm_client, set_api_key, DEFAULT_MODEL
 from backend.llm.gemini_client import get_gemini_client, set_gemini_api_key, DEFAULT_GEMINI_MODEL, GEMINI_MODELS
 from backend.llm.report_generator import ReportGenerator
 from backend.llm.vectorstore import get_vector_store
+from backend.llm.error_resolution import resolve_issue
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -44,6 +47,7 @@ class ConfigRequest(BaseModel):
     provider: Optional[str] = "gemini"  # "gemini" or "openrouter"
     gemini_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    tavily_api_key: Optional[str] = None
     default_model: Optional[str] = None  # Provider-specific model ID
     web_search_enabled: Optional[bool] = None  # Enable web search in reports
 
@@ -57,6 +61,8 @@ class ConfigResponse(BaseModel):
     openrouter_configured: bool = False
     gemini_api_key_preview: Optional[str] = None
     openrouter_api_key_preview: Optional[str] = None
+    tavily_configured: bool = False
+    tavily_api_key_preview: Optional[str] = None
     web_search_enabled: bool = False
     updated_at: Optional[datetime] = None
 
@@ -84,6 +90,18 @@ class ModelsResponse(BaseModel):
     """Response containing available models."""
     provider: str
     models: List[ModelInfo]
+
+
+class IssueResolveRequest(BaseModel):
+    """Request to resolve a specific error/issue."""
+    message_summary: str
+    error_code: Optional[str] = None
+    line_number: Optional[int] = None
+    component: Optional[str] = None
+    context_snippet: Optional[str] = None
+    full_error_text: Optional[str] = None  # Full error line for better search
+    custom_query: Optional[str] = None  # User-edited search query
+    search: bool = False
 
 
 class ReportRequest(BaseModel):
@@ -164,6 +182,32 @@ def _get_api_key_preview(api_key: str) -> str:
     return "***"
 
 
+def _ensure_tavily_column(db: Session):
+    """Ensure tavily_api_key_encrypted column exists to avoid migration errors."""
+    try:
+        db.execute(text("SELECT tavily_api_key_encrypted FROM llm_config LIMIT 1"))
+    except Exception:
+        try:
+            db.execute(text("ALTER TABLE llm_config ADD COLUMN tavily_api_key_encrypted VARCHAR"))
+            db.commit()
+        except Exception as e:
+            logger.warning("Failed to add tavily_api_key_encrypted column: %s", e)
+
+
+def _load_tavily_api_key(db: Session) -> Optional[str]:
+    """Load Tavily API key from DB or env."""
+    _ensure_tavily_column(db)
+    config = db.query(LLMConfig).first()
+    if not config:
+        return os.environ.get("TAVILY_API_KEY")
+    if config.tavily_api_key_encrypted:
+        try:
+            return _decode_api_key(config.tavily_api_key_encrypted)
+        except Exception:
+            return os.environ.get("TAVILY_API_KEY")
+    return os.environ.get("TAVILY_API_KEY")
+
+
 def _load_api_key_from_db(db: Session, provider: str = PROVIDER_OPENROUTER) -> Optional[str]:
     """Load and decode API key from database for the specified provider."""
     config = db.query(LLMConfig).first()
@@ -210,6 +254,7 @@ def _ensure_gemini_configured(db: Session):
 @router.get("/config", response_model=ConfigResponse)
 def get_config(db: Session = Depends(get_db)):
     """Get current LLM configuration status."""
+    _ensure_tavily_column(db)
     config = db.query(LLMConfig).first()
     
     if not config:
@@ -218,16 +263,19 @@ def get_config(db: Session = Depends(get_db)):
             provider=PROVIDER_GEMINI,
             default_model=DEFAULT_GEMINI_MODEL,
             gemini_configured=False,
-            openrouter_configured=False
+            openrouter_configured=False,
+            tavily_configured=False
         )
     
     # Check which providers are configured
     gemini_configured = bool(config.gemini_api_key_encrypted)
     openrouter_configured = bool(config.api_key_encrypted)
+    tavily_configured = bool(getattr(config, "tavily_api_key_encrypted", None))
     
     # Get API key previews
     gemini_preview = None
     openrouter_preview = None
+    tavily_preview = None
     
     if gemini_configured:
         try:
@@ -243,6 +291,13 @@ def get_config(db: Session = Depends(get_db)):
         except Exception:
             openrouter_preview = "***"
     
+    if tavily_configured and getattr(config, "tavily_api_key_encrypted", None):
+        try:
+            tavily_key = _decode_api_key(config.tavily_api_key_encrypted)
+            tavily_preview = _get_api_key_preview(tavily_key)
+        except Exception:
+            tavily_preview = "***"
+    
     # Determine if configured based on selected provider
     provider = config.provider or PROVIDER_GEMINI
     is_configured = (provider == PROVIDER_GEMINI and gemini_configured) or \
@@ -256,6 +311,8 @@ def get_config(db: Session = Depends(get_db)):
         openrouter_configured=openrouter_configured,
         gemini_api_key_preview=gemini_preview,
         openrouter_api_key_preview=openrouter_preview,
+        tavily_configured=tavily_configured,
+        tavily_api_key_preview=tavily_preview,
         web_search_enabled=config.web_search_enabled or False,
         updated_at=config.updated_at
     )
@@ -264,6 +321,7 @@ def get_config(db: Session = Depends(get_db)):
 @router.post("/config", response_model=ConfigResponse)
 def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     """Save LLM configuration (API keys and preferences)."""
+    _ensure_tavily_column(db)
     # Get or create config
     config = db.query(LLMConfig).first()
     if not config:
@@ -287,6 +345,12 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Invalid OpenRouter API key")
         config.api_key_encrypted = _encode_api_key(request.openrouter_api_key)
         set_api_key(request.openrouter_api_key)
+
+    # Update Tavily API key
+    if request.tavily_api_key:
+        if len(request.tavily_api_key) < 10:
+            raise HTTPException(status_code=400, detail="Invalid Tavily API key")
+        config.tavily_api_key_encrypted = _encode_api_key(request.tavily_api_key)
     
     # Validate that selected provider has a key
     provider = request.provider or config.provider or PROVIDER_GEMINI
@@ -314,9 +378,11 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     # Build response
     gemini_configured = bool(config.gemini_api_key_encrypted)
     openrouter_configured = bool(config.api_key_encrypted)
+    tavily_configured = bool(getattr(config, "tavily_api_key_encrypted", None))
     
     gemini_preview = None
     openrouter_preview = None
+    tavily_preview = None
     
     if gemini_configured:
         try:
@@ -330,6 +396,12 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         except Exception:
             openrouter_preview = "***"
     
+    if tavily_configured and getattr(config, "tavily_api_key_encrypted", None):
+        try:
+            tavily_preview = _get_api_key_preview(_decode_api_key(config.tavily_api_key_encrypted))
+        except Exception:
+            tavily_preview = "***"
+    
     return ConfigResponse(
         is_configured=True,
         provider=config.provider,
@@ -338,6 +410,8 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         openrouter_configured=openrouter_configured,
         gemini_api_key_preview=gemini_preview,
         openrouter_api_key_preview=openrouter_preview,
+        tavily_configured=tavily_configured,
+        tavily_api_key_preview=tavily_preview,
         web_search_enabled=config.web_search_enabled or False,
         updated_at=config.updated_at
     )
@@ -380,6 +454,51 @@ def test_connection(
             message=result["message"],
             model_count=result.get("model_count")
         )
+
+
+# ============================================================
+# Issue Resolution Endpoint
+# ============================================================
+
+
+@router.post("/issues/{file_id}/resolve")
+def resolve_issue_endpoint(
+    file_id: int,
+    request: IssueResolveRequest,
+    db: Session = Depends(get_db)
+):
+    """Resolve a specific issue by aggregating KB, AI report, and Tavily."""
+    _ensure_tavily_column(db)
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Always check if Tavily is configured
+    tavily_key_available = _load_tavily_api_key(db)
+    tavily_key = tavily_key_available if request.search else None
+
+    result = resolve_issue(
+        db,
+        file_id,
+        message_summary=request.message_summary,
+        error_code=request.error_code,
+        context_snippet=request.context_snippet,
+        component=request.component,
+        tavily_api_key=tavily_key,
+        full_error_text=request.full_error_text,
+        custom_query=request.custom_query,
+    )
+
+    # Add Tavily config status (separate from whether search was run)
+    result["tavily_configured"] = bool(tavily_key_available)
+    result["search_requested"] = request.search
+
+    # Echo inputs for client convenience
+    result["file_id"] = file_id
+    result["line_number"] = request.line_number
+    result["component"] = request.component
+    result["error_code"] = request.error_code
+    return result
 
 
 # ============================================================
@@ -944,7 +1063,7 @@ class AskResponse(BaseModel):
     routing_mode: str = "LOG_PLUS_KB"  # "LOCAL", "KB_FUSION", or "AI_REQUIRED"
     used_kb: bool = True  # Whether KB articles were consulted
     context_sections: List[str] = []  # Which log summary sections were included
-    source: str = "ai"  # "local", "kb", or "ai" - indicates where answer came from
+    source: str = "ai"  # "local", "kb", "report" - indicates where answer came from
 
 
 class ThreadResponse(BaseModel):
@@ -996,7 +1115,7 @@ class RoutingFeedbackRequest(BaseModel):
     thread_id: int
     should_use_local: bool = False
     should_use_kb: bool = False
-    should_use_ai: bool = False
+    should_use_report: bool = False
     comment: Optional[str] = None
     quality_rating: Optional[int] = None  # 1-5 scale
 
@@ -1011,13 +1130,13 @@ class RoutingFeedbackResponse(BaseModel):
 class RoutingFeedbackItem(BaseModel):
     """Single feedback item for listing."""
     id: int
-    thread_id: int
+    thread_id: Optional[int] = 0
     question: str
     actual_source: str
     actual_routing_mode: Optional[str]
     should_use_local: bool
     should_use_kb: bool
-    should_use_ai: bool
+    should_use_report: bool
     comment: Optional[str]
     quality_rating: Optional[int]
     created_at: datetime
@@ -1390,11 +1509,6 @@ def ask_question(
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
-    # Get config for model selection (needed for AI fallback)
-    config = db.query(LLMConfig).first()
-    provider = config.provider if config else PROVIDER_GEMINI
-    model = config.default_model if config else DEFAULT_GEMINI_MODEL
-    
     # Step 1: Classify the question using new 3-tier system
     answer_mode, intent = classify_intent(request.question)
     routing_mode, relevant_sections = classify_question(request.question)  # For context sections
@@ -1484,36 +1598,10 @@ def ask_question(
             )
     
     # ================================================================
-    # TIER 3: AI REQUIRED - Call LLM (with sanitization!)
+    # TIER 3: Context-only Smart Search (no remote LLM)
     # ================================================================
-    logger.info(f"Question requires AI: {answer_mode.value}")
-    
-    # Check if AI is explicitly allowed
-    if not request.allow_ai:
-        # Return a response asking for confirmation
-        return AskResponse(
-            thread_id=0,
-            answer="**This question requires AI to answer.**\n\nLocal data and KB articles couldn't provide a complete answer. Click 'Use AI' to proceed with the AI model.",
-            kb_articles=[],
-            model_used="none",
-            prompt_tokens=0,
-            completion_tokens=0,
-            routing_mode="AI_REQUIRED",
-            used_kb=False,
-            context_sections=relevant_sections,
-            source="needs_confirmation"
-        )
-    
-    # Ensure AI is configured
-    if not config or not config.gemini_api_key_encrypted:
-        raise HTTPException(
-            status_code=400, 
-            detail="This question requires AI, but AI is not configured. Please set up AI in settings."
-        )
-    
-    _ensure_gemini_configured(db)
-    _ensure_client_configured(db)
-    
+    logger.info("Question requires deeper reasoning; returning context-only Smart Search answer.")
+
     # Build log summary context
     try:
         generator = ReportGenerator(db)
@@ -1521,17 +1609,17 @@ def ask_question(
     except Exception as e:
         logger.warning(f"Failed to build performance summary: {e}")
         summary_data = {}
-    
+
     # Get existing report content if available
     existing_report = db.query(LLMReport).filter(
         LLMReport.file_id == request.file_id
     ).order_by(LLMReport.generated_at.desc()).first()
     report_content = existing_report.report_content if existing_report else None
-    
+
     # Get file context from vector store (errors, anomalies)
     vector_store = get_vector_store()
     file_context = vector_store.get_file_context(request.file_id, max_items=5)
-    
+
     # Build complete log context using router
     _, log_context, _ = build_log_context(
         question=request.question,
@@ -1540,92 +1628,57 @@ def ask_question(
         errors_context=file_context.get('errors', []),
         anomalies_context=file_context.get('anomalies', [])
     )
-    
-    # Query KB for additional context
-    kb_context = ""
+
     kb_articles = []
-    used_kb = False
-    
+    kb_context_snippets = []
     kb_results = vector_store.query_kb(request.question, n_results=5)
     for kb in kb_results:
         similarity = kb.get('similarity', 0)
         if similarity > 0.01:
-            kb_context += f"\n--- KB Article: {kb.get('title', 'Unknown')} ---\n"
-            kb_context += kb.get('content', '')[:1500] + "\n"
             kb_articles.append({
                 "title": kb.get('title', 'Unknown'),
                 "url": kb.get('url', ''),
                 "similarity": similarity
             })
-    
-    if kb_articles:
-        used_kb = True
-    
-    # Select appropriate system prompt
-    system_prompt = SYSTEM_PROMPT_LOG_PLUS_KB if kb_articles else SYSTEM_PROMPT_LOG_FOCUSED
-    
-    # Build user prompt with prioritized context
-    user_prompt_parts = [f"User Question: {request.question}\n"]
-    
+            snippet = kb.get('content', '')[:300]
+            kb_context_snippets.append(f"- {kb.get('title', 'KB Article')} ({int(similarity * 100)}% match): {snippet}")
+
+    fallback_parts = [
+        "Smart Search could not fully answer this without a remote model.",
+        "Context gathered from logs, summaries, and KB:"
+    ]
     if log_context:
-        user_prompt_parts.append(f"\n{log_context}")
-    
-    if kb_context:
-        user_prompt_parts.append(f"\n## Relevant KB Articles\n{kb_context}")
-    
-    user_prompt_parts.append("\nProvide a helpful, detailed answer based on the context above.")
-    user_prompt = "\n".join(user_prompt_parts)
-    
-    # *** SANITIZE before sending to AI ***
-    sanitized_prompt = sanitize_text(user_prompt)
-    
-    # Call AI
-    try:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": sanitized_prompt}
-        ]
-        
-        if provider == PROVIDER_GEMINI:
-            client = get_gemini_client()
-            result = client.complete(messages=messages, model=model)
-        else:
-            client = get_llm_client()
-            result = client.complete(messages=messages, model=model)
-        
-        answer = result.content
-        prompt_tokens = result.prompt_tokens
-        completion_tokens = result.completion_tokens
-        
-    except Exception as e:
-        logger.error(f"AI generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
-    
-    # Save thread
+        fallback_parts.append(log_context)
+    if kb_context_snippets:
+        fallback_parts.append("Relevant KB matches:\n" + "\n".join(kb_context_snippets))
+    fallback_parts.append("For deeper reasoning, open the Insights report in Findings (Gemini with OpenRouter fallback).")
+    answer = "\n\n".join(fallback_parts)
+
+    # Save thread as context-only Smart Search (0 tokens)
     thread = AIThread(
         file_id=request.file_id,
         question=request.question,
         answer=answer,
         kb_articles=json.dumps(kb_articles),
-        model_used=model,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens
+        model_used="smart_search",
+        prompt_tokens=0,
+        completion_tokens=0
     )
     db.add(thread)
     db.commit()
     db.refresh(thread)
-    
+
     return AskResponse(
         thread_id=thread.id,
         answer=answer,
         kb_articles=kb_articles,
-        model_used=model,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        routing_mode="AI_REQUIRED",
-        used_kb=used_kb,
+        model_used="smart_search",
+        prompt_tokens=0,
+        completion_tokens=0,
+        routing_mode="KB_FUSION" if kb_articles else "LOCAL",
+        used_kb=bool(kb_articles),
         context_sections=relevant_sections,
-        source="ai"
+        source="report" if report_content else ("kb" if kb_articles else "local")
     )
 
 
@@ -1744,6 +1797,7 @@ class SavedFindingResponse(BaseModel):
     source_thread_id: Optional[int]
     line_number: Optional[int]
     created_at: datetime
+    metadata: Optional[dict] = None
 
 
 class SavedFindingsListResponse(BaseModel):
@@ -1788,7 +1842,8 @@ def save_finding(
         content=finding.content,
         source_thread_id=finding.source_thread_id,
         line_number=finding.line_number,
-        created_at=finding.created_at
+        created_at=finding.created_at,
+        metadata=request.metadata
     )
 
 
@@ -1832,7 +1887,8 @@ def save_finding_from_thread(
         content=finding.content,
         source_thread_id=finding.source_thread_id,
         line_number=finding.line_number,
-        created_at=finding.created_at
+        created_at=finding.created_at,
+        metadata=json.loads(finding.metadata_json) if finding.metadata_json else None
     )
 
 
@@ -1843,6 +1899,7 @@ def get_findings(
 ):
     """Get all saved findings for a file."""
     from backend.database import SavedFinding
+    import json
     
     # Check file exists
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
@@ -1864,7 +1921,8 @@ def get_findings(
                 content=f.content,
                 source_thread_id=f.source_thread_id,
                 line_number=f.line_number,
-                created_at=f.created_at
+                created_at=f.created_at,
+                metadata=json.loads(f.metadata_json) if getattr(f, "metadata_json", None) else None
             )
             for f in findings
         ],
@@ -2196,13 +2254,13 @@ def submit_routing_feedback(
         raise HTTPException(status_code=404, detail="Thread not found")
     
     # Determine actual source from model_used
-    actual_source = "ai"
+    actual_source = "report" if thread.model_used not in ("local", "kb_fusion") else "local"
     if thread.model_used == "local":
         actual_source = "local"
     elif thread.model_used == "kb_fusion":
         actual_source = "kb"
-    elif thread.model_used == "none":
-        actual_source = "needs_confirmation"
+    elif thread.model_used in ("smart_search", "report"):
+        actual_source = "report"
     
     # Create feedback entry
     feedback = RoutingFeedback(
@@ -2213,7 +2271,7 @@ def submit_routing_feedback(
         actual_routing_mode=None,  # Could be extracted from thread metadata if stored
         should_use_local=request.should_use_local,
         should_use_kb=request.should_use_kb,
-        should_use_ai=request.should_use_ai,
+        should_use_ai=request.should_use_report,  # stored in existing column
         comment=request.comment,
         quality_rating=request.quality_rating
     )
@@ -2255,21 +2313,24 @@ def get_routing_feedback(
     # Build response items with mismatch detection
     items = []
     for f in feedback_items:
+        # Skip rows missing thread_id to avoid validation errors
+        if f.thread_id is None:
+            continue
         # Detect mismatch: actual source doesn't match what user suggested
         actual_is_local = f.actual_source == "local"
         actual_is_kb = f.actual_source == "kb"
-        actual_is_ai = f.actual_source == "ai" or f.actual_source == "needs_confirmation"
+        actual_is_report = f.actual_source == "report"
         
         # Mismatch if user suggested different sources than what was used
         mismatch = False
         if f.should_use_local and not actual_is_local:
             mismatch = True
-        if f.should_use_kb and not actual_is_kb and not actual_is_ai:
+        if f.should_use_kb and not actual_is_kb and not actual_is_report:
             mismatch = True
-        if f.should_use_ai and not actual_is_ai:
+        if f.should_use_ai and not actual_is_report:
             mismatch = True
-        # Also mismatch if AI was used but user thinks local/kb should suffice
-        if actual_is_ai and (f.should_use_local or f.should_use_kb) and not f.should_use_ai:
+        # Mismatch if report was used but user thinks local/kb should suffice
+        if actual_is_report and (f.should_use_local or f.should_use_kb) and not f.should_use_ai:
             mismatch = True
         
         if mismatch_only and not mismatch:
@@ -2277,13 +2338,13 @@ def get_routing_feedback(
         
         items.append(RoutingFeedbackItem(
             id=f.id,
-            thread_id=f.thread_id,
+            thread_id=f.thread_id or 0,
             question=f.question,
             actual_source=f.actual_source,
             actual_routing_mode=f.actual_routing_mode,
             should_use_local=f.should_use_local,
             should_use_kb=f.should_use_kb,
-            should_use_ai=f.should_use_ai,
+            should_use_report=f.should_use_ai,
             comment=f.comment,
             quality_rating=f.quality_rating,
             created_at=f.created_at,
@@ -2331,13 +2392,13 @@ def export_routing_feedback(
     # Header
     writer.writerow([
         "id", "thread_id", "question", "actual_source", "actual_routing_mode",
-        "should_use_local", "should_use_kb", "should_use_ai", 
+        "should_use_local", "should_use_kb", "should_use_report", 
         "comment", "quality_rating", "created_at"
     ])
     
     for f in feedback_items:
         writer.writerow([
-            f.id, f.thread_id, f.question, f.actual_source, f.actual_routing_mode,
+            f.id, f.thread_id or 0, f.question, f.actual_source, f.actual_routing_mode,
             f.should_use_local, f.should_use_kb, f.should_use_ai,
             f.comment, f.quality_rating, f.created_at.isoformat()
         ])

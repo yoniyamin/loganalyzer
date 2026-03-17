@@ -20,21 +20,24 @@ Sanitization is applied:
 Sanitization is NOT applied:
 - When embedding KB articles (kb-assistant/embedder.py)
 - When querying KB articles (vectorstore.query_kb())
+
+LAZY LOADING: Presidio and spaCy are imported on first use (get_sanitizer())
+to avoid slow startup when the app loads. The UI appears quickly; NLP loads
+when the user first uses AI/PII features.
 """
+from __future__ import annotations
 
 import re
 import logging
+import sys
 import warnings
 from typing import List, Dict, Any, Optional, Tuple
 
-# Suppress Presidio's verbose warnings
+# Suppress Presidio's verbose warnings (set early; presidio loads later)
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", category=UserWarning, module="presidio_analyzer")
 
-from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
-from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
+# Presidio/spaCy imports are deferred to _ensure_presidio_loaded() for fast app startup
 
 
 # =============================================================================
@@ -53,6 +56,9 @@ LOG_ENTITIES = [
     # NOTE: DATE_TIME removed - timestamps in logs are not PII and are important for analysis
     
     # Custom recognizers for log-specific patterns
+    "HOST_AFTER_VERSION",   # Host right after version token in Task Server log header
+    "CONNECTION_HOST",      # Host values inside connection strings (SYSTEM/HOST/SERVER/Data Source)
+    "CONNECTION_PASSWORD",  # Password values inside connection strings
     "HOSTNAME",             # Custom - FQDN patterns
     "UNC_PATH",             # Custom - Windows UNC paths
     "CONNECTION_STRING",    # Custom - UID=, SERVER=, HOST= values
@@ -93,30 +99,8 @@ DENYLIST_PATTERNS = [
     r"\b[A-Z_]+\.[A-Z_]+\b",
 ]
 
-# Anonymization operators - what to replace each entity type with
-ANONYMIZATION_OPERATORS = {
-    # Built-in Presidio recognizers
-    "IP_ADDRESS": OperatorConfig("replace", {"new_value": "[IP_ADDRESS]"}),
-    "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "[EMAIL]"}),
-    "URL": OperatorConfig("replace", {"new_value": "[URL]"}),
-    "PHONE_NUMBER": OperatorConfig("replace", {"new_value": "[PHONE]"}),
-    # DATE_TIME removed - timestamps are important for log analysis
-    
-    # SpaCy NER entities (second protection layer)
-    "PERSON": OperatorConfig("replace", {"new_value": "[PERSON]"}),
-    "NRP": OperatorConfig("replace", {"new_value": "[GROUP]"}),
-    
-    # Custom recognizers
-    "HOSTNAME": OperatorConfig("replace", {"new_value": "[HOSTNAME]"}),
-    "UNC_PATH": OperatorConfig("replace", {"new_value": "[UNC_PATH]"}),
-    "CONNECTION_STRING": OperatorConfig("replace", {"new_value": "[REDACTED]"}),
-    "LICENSE_INFO": OperatorConfig("replace", {"new_value": "[COMPANY]"}),
-    "WINDOWS_PATH": OperatorConfig("replace", {"new_value": "[PATH]"}),
-    "CLOUD_RESOURCE": OperatorConfig("replace", {"new_value": "[CLOUD_RESOURCE]"}),
-    "HTTP_PATH": OperatorConfig("replace", {"new_value": "[REDACTED]"}),
-    "TASK_SERVER_INFO": OperatorConfig("replace", {"new_value": "[SERVER_INFO]"}),
-    "REVISION_HASH": OperatorConfig("replace", {"new_value": "[REVISION]"}),
-}
+# Anonymization operators - populated by _ensure_presidio_loaded()
+ANONYMIZATION_OPERATORS: Dict[str, Any] = {}
 
 # Human-readable descriptions for each entity type (for preview UI)
 ENTITY_DESCRIPTIONS = {
@@ -132,6 +116,9 @@ ENTITY_DESCRIPTIONS = {
     "NRP": "Group/Nationality (SpaCy NER)",
     
     # Custom recognizers
+    "HOST_AFTER_VERSION": "Host in Task Server header",
+    "CONNECTION_HOST": "Host in connection string",
+    "CONNECTION_PASSWORD": "Password in connection string",
     "HOSTNAME": "Server/Hostname",
     "UNC_PATH": "Network Path (UNC)",
     "CONNECTION_STRING": "Connection String",
@@ -145,10 +132,58 @@ ENTITY_DESCRIPTIONS = {
 
 
 # =============================================================================
+# Lazy Presidio/spaCy Loader (for fast app startup)
+# =============================================================================
+
+def _ensure_presidio_loaded() -> None:
+    """
+    Load Presidio and spaCy on first use. Injects classes into module namespace
+    so create_*_recognizer() and LogSanitizer can use them.
+    """
+    mod = sys.modules[__name__]
+    if getattr(mod, "_presidio_loaded", False):
+        return
+    from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+    from presidio_analyzer.nlp_engine import NlpEngineProvider
+    from presidio_anonymizer import AnonymizerEngine
+    from presidio_anonymizer.entities import OperatorConfig
+
+    mod.AnalyzerEngine = AnalyzerEngine
+    mod.PatternRecognizer = PatternRecognizer
+    mod.Pattern = Pattern
+    mod.NlpEngineProvider = NlpEngineProvider
+    mod.AnonymizerEngine = AnonymizerEngine
+    mod.OperatorConfig = OperatorConfig
+
+    # Build ANONYMIZATION_OPERATORS (uses OperatorConfig)
+    mod.ANONYMIZATION_OPERATORS = {
+        "IP_ADDRESS": OperatorConfig("replace", {"new_value": "[IP_ADDRESS]"}),
+        "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "[EMAIL]"}),
+        "URL": OperatorConfig("replace", {"new_value": "[URL]"}),
+        "PHONE_NUMBER": OperatorConfig("replace", {"new_value": "[PHONE]"}),
+        "PERSON": OperatorConfig("replace", {"new_value": "[PERSON]"}),
+        "NRP": OperatorConfig("replace", {"new_value": "[GROUP]"}),
+        "HOST_AFTER_VERSION": OperatorConfig("replace", {"new_value": "[HOST]"}),
+        "CONNECTION_HOST": OperatorConfig("replace", {"new_value": "[HOST]"}),
+        "CONNECTION_PASSWORD": OperatorConfig("replace", {"new_value": "[PASSWORD]"}),
+        "HOSTNAME": OperatorConfig("replace", {"new_value": "[HOSTNAME]"}),
+        "UNC_PATH": OperatorConfig("replace", {"new_value": "[UNC_PATH]"}),
+        "CONNECTION_STRING": OperatorConfig("replace", {"new_value": "[REDACTED]"}),
+        "LICENSE_INFO": OperatorConfig("replace", {"new_value": "[COMPANY_NAME]"}),
+        "WINDOWS_PATH": OperatorConfig("replace", {"new_value": "[PATH]"}),
+        "CLOUD_RESOURCE": OperatorConfig("replace", {"new_value": "[CLOUD_RESOURCE]"}),
+        "HTTP_PATH": OperatorConfig("replace", {"new_value": "[REDACTED]"}),
+        "TASK_SERVER_INFO": OperatorConfig("replace", {"new_value": "[SERVER_INFO]"}),
+        "REVISION_HASH": OperatorConfig("replace", {"new_value": "[REVISION]"}),
+    }
+    mod._presidio_loaded = True
+
+
+# =============================================================================
 # Custom Recognizers for Log-Specific Patterns
 # =============================================================================
 
-def create_hostname_recognizer() -> PatternRecognizer:
+def create_hostname_recognizer() -> "PatternRecognizer":
     """
     Recognizer for fully qualified domain names (FQDNs).
     Matches patterns like: server.domain.com, HSP-DBM-APP05.cs.sbsit.eu
@@ -168,7 +203,7 @@ def create_hostname_recognizer() -> PatternRecognizer:
     )
 
 
-def create_unc_path_recognizer() -> PatternRecognizer:
+def create_unc_path_recognizer() -> "PatternRecognizer":
     """
     Recognizer for Windows UNC paths.
     Matches patterns like: \\\\server\\share\\folder
@@ -188,7 +223,7 @@ def create_unc_path_recognizer() -> PatternRecognizer:
     )
 
 
-def create_connection_string_recognizer() -> PatternRecognizer:
+def create_connection_string_recognizer() -> "PatternRecognizer":
     """
     Recognizer for connection string sensitive values.
     Matches: UID=value, SERVER=value, HOST=value, Data Source=value, SYSTEM=value
@@ -213,7 +248,66 @@ def create_connection_string_recognizer() -> PatternRecognizer:
     )
 
 
-def create_license_info_recognizer() -> PatternRecognizer:
+def create_connection_host_recognizer() -> "PatternRecognizer":
+    """
+    Recognizer to capture only host values inside connection strings,
+    preserving keys like SYSTEM=/HOST=/SERVER=/Data Source=
+    """
+    patterns = [
+        Pattern(
+            name="system_host_value",
+            regex=r"(?<=SYSTEM=)[^;]+",
+            score=0.9
+        ),
+        Pattern(
+            name="server_host_value",
+            regex=r"(?<=SERVER=)[^;]+",
+            score=0.9
+        ),
+        Pattern(
+            name="host_host_value",
+            regex=r"(?<=HOST=)[^;]+",
+            score=0.9
+        ),
+        Pattern(
+            name="datasource_host_value",
+            regex=r"(?<=Data Source=)[^;]+",
+            score=0.9
+        ),
+    ]
+    return PatternRecognizer(
+        supported_entity="CONNECTION_HOST",
+        patterns=patterns,
+        name="ConnectionHostValueRecognizer",
+        supported_language="en"
+    )
+
+
+def create_connection_password_recognizer() -> "PatternRecognizer":
+    """
+    Recognizer to capture password values inside connection strings (PWD= or PASSWORD=).
+    """
+    patterns = [
+        Pattern(
+            name="pwd_value",
+            regex=r"(?<=PWD=)[^;]+",
+            score=0.9
+        ),
+        Pattern(
+            name="password_value",
+            regex=r"(?<=PASSWORD=)[^;]+",
+            score=0.9
+        ),
+    ]
+    return PatternRecognizer(
+        supported_entity="CONNECTION_PASSWORD",
+        patterns=patterns,
+        name="ConnectionPasswordRecognizer",
+        supported_language="en"
+    )
+
+
+def create_license_info_recognizer() -> "PatternRecognizer":
     """
     Recognizer for license information.
     Matches patterns like: Licensed to Company Name
@@ -233,7 +327,7 @@ def create_license_info_recognizer() -> PatternRecognizer:
     )
 
 
-def create_windows_path_recognizer() -> PatternRecognizer:
+def create_windows_path_recognizer() -> "PatternRecognizer":
     """
     Recognizer for Windows file paths that may reveal sensitive information.
     Matches patterns like: C:\\Program Files\\AppName\\Instance\\data\\tasks\\
@@ -258,7 +352,7 @@ def create_windows_path_recognizer() -> PatternRecognizer:
     )
 
 
-def create_cloud_resource_recognizer() -> PatternRecognizer:
+def create_cloud_resource_recognizer() -> "PatternRecognizer":
     """
     Recognizer for cloud resource identifiers (Azure, AWS, GCP).
     Matches patterns like: adb-1234567890.12.azuredatabricks.net
@@ -283,7 +377,7 @@ def create_cloud_resource_recognizer() -> PatternRecognizer:
     )
 
 
-def create_http_path_recognizer() -> PatternRecognizer:
+def create_http_path_recognizer() -> "PatternRecognizer":
     """
     Recognizer for HTTP paths and similar resource identifiers.
     Matches patterns like: HTTPPath={...}
@@ -303,7 +397,7 @@ def create_http_path_recognizer() -> PatternRecognizer:
     )
 
 
-def create_task_server_log_recognizer() -> PatternRecognizer:
+def create_task_server_log_recognizer() -> "PatternRecognizer":
     """
     Recognizer for Task Server Log header lines.
     These lines contain server name, OS info, and other sensitive details.
@@ -312,9 +406,15 @@ def create_task_server_log_recognizer() -> PatternRecognizer:
     patterns = [
         Pattern(
             name="task_server_log_header",
-            # Match the parenthetical part containing version, server, OS info
-            regex=r"\(V\d+\.\d+\.\d+\.\d+\s+[^\)]+\)",
-            score=0.85
+            # Match the full parenthetical section including PID even with nested parentheses
+            regex=r"\(V\d+[\w\.\-]*.*?PID:\s*\d+\s*\)",
+            score=0.9
+        ),
+        Pattern(
+            name="task_server_log_prefix",
+            # Match the lead-in before the parentheses
+            regex=r"Task Server Log\s*-\s*[A-Za-z0-9_.-]+",
+            score=0.65
         ),
     ]
     return PatternRecognizer(
@@ -325,7 +425,26 @@ def create_task_server_log_recognizer() -> PatternRecognizer:
     )
 
 
-def create_revision_hash_recognizer() -> PatternRecognizer:
+def create_host_after_version_recognizer() -> "PatternRecognizer":
+    """
+    Recognizer for the host immediately following the version token in Task Server headers.
+    Example match: V2025.5.0.247 HSP-DBM-APP05.cs.sbsit.eu -> captures host only.
+    """
+    patterns = [
+        Pattern(
+            name="host_after_version",
+            regex=r"(?<=V[\w\.\-]+\s)([A-Za-z0-9][-A-Za-z0-9\.]+)",
+            score=0.9
+        ),
+    ]
+    return PatternRecognizer(
+        supported_entity="HOST_AFTER_VERSION",
+        patterns=patterns,
+        name="HostAfterVersionRecognizer",
+        supported_language="en"
+    )
+
+def create_revision_hash_recognizer() -> "PatternRecognizer":
     """
     Recognizer for Git revision hashes.
     Matches patterns like: Revision:b6b2ebe61b2f25940ff3932dc4c4a7bb9d2691d8
@@ -399,11 +518,14 @@ class LogSanitizer:
             create_hostname_recognizer(),
             create_unc_path_recognizer(),
             create_connection_string_recognizer(),
+            create_connection_host_recognizer(),
+            create_connection_password_recognizer(),
             create_license_info_recognizer(),
             create_windows_path_recognizer(),
             create_cloud_resource_recognizer(),
             create_http_path_recognizer(),
             create_task_server_log_recognizer(),
+            create_host_after_version_recognizer(),
             create_revision_hash_recognizer(),
         ]
         
@@ -639,11 +761,13 @@ def get_sanitizer() -> LogSanitizer:
     Get the singleton LogSanitizer instance.
     
     The sanitizer is thread-safe and should be reused for performance.
+    Presidio/spaCy are loaded on first call (lazy) for fast app startup.
     
     Returns:
         LogSanitizer instance
     """
     global _sanitizer
+    _ensure_presidio_loaded()
     if _sanitizer is None:
         _sanitizer = LogSanitizer()
     return _sanitizer

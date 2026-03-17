@@ -32,6 +32,9 @@ class AIConfigModal {
         
         // Load available models for current provider
         this.loadModels();
+
+        // Prepare sanitization list
+        this.renderSanitizationEntities();
     }
     
     createModal() {
@@ -66,6 +69,12 @@ class AIConfigModal {
                                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                             </svg>
                             Routing History
+                        </button>
+                        <button class="ai-modal-tab" data-tab="sanitization">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M12 1l3 5 5 3-5 3-3 5-3-5-5-3 5-3z"/>
+                            </svg>
+                            Sanitization
                         </button>
                     </div>
                     
@@ -202,6 +211,24 @@ class AIConfigModal {
                                 <br><span style="color: #f59e0b;">⚠️ May increase response time and cost.</span>
                             </p>
                         </div>
+
+                        <!-- Tavily API Key -->
+                        <div class="ai-form-group">
+                            <label for="aiTavilyKey">Tavily API Key (for error resolutions)</label>
+                            <div class="ai-input-wrapper">
+                                <input type="password" id="aiTavilyKey" class="ai-input" 
+                                       placeholder="tvly-..." autocomplete="off">
+                                <button class="ai-toggle-visibility" id="aiToggleTavilyKey" type="button">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p class="ai-help-text">
+                                Used for manual error resolution searches (Tavily advanced answer).
+                            </p>
+                        </div>
                         </div><!-- End Config Tab -->
                         
                         <!-- Routing History Tab Content -->
@@ -261,6 +288,36 @@ class AIConfigModal {
                                 <!-- Stats will be populated by JS -->
                             </div>
                         </div><!-- End Routing Tab -->
+
+                        <!-- Sanitization Tab Content -->
+                        <div class="ai-tab-content" data-tab-content="sanitization">
+                            <div class="ai-sanitization-header">
+                                <h3>Sanitization Rules</h3>
+                                <p class="ai-sanitization-desc">
+                                    Log data is sanitized before any model call. KB articles stay unmodified.
+                                    Preview detections and replacements below.
+                                </p>
+                            </div>
+
+                            <div class="ai-sanitization-entities" id="aiSanitizationEntities">
+                                <!-- Filled by JS -->
+                            </div>
+
+                            <div class="ai-sanitization-tester">
+                                <label for="aiSanitizeInput">Test redaction</label>
+                                <textarea id="aiSanitizeInput" class="ai-input" rows="4" placeholder="Paste log lines to preview redactions..."></textarea>
+                                <div class="ai-sanitize-actions">
+                                    <button class="ai-btn ai-btn-primary ai-btn-sm" id="aiSanitizePreviewBtn">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                            <circle cx="12" cy="12" r="3"/>
+                                        </svg>
+                                        Preview Redactions
+                                    </button>
+                                </div>
+                                <div class="ai-sanitize-result" id="aiSanitizeResult"></div>
+                            </div>
+                        </div><!-- End Sanitization Tab -->
                     </div>
                     
                     <div class="ai-modal-footer">
@@ -336,6 +393,11 @@ class AIConfigModal {
         document.getElementById('routingExportBtn')?.addEventListener('click', () => {
             this.exportRoutingHistory();
         });
+
+        // Sanitization preview
+        document.getElementById('aiSanitizePreviewBtn')?.addEventListener('click', () => {
+            this.previewSanitization();
+        });
         
         // AI enabled toggle
         document.getElementById('aiEnabled').addEventListener('change', () => {
@@ -360,6 +422,13 @@ class AIConfigModal {
         // Toggle password visibility - OpenRouter
         document.getElementById('aiToggleKey').addEventListener('click', () => {
             const input = document.getElementById('aiApiKey');
+            const isPassword = input.type === 'password';
+            input.type = isPassword ? 'text' : 'password';
+        });
+
+        // Toggle password visibility - Tavily
+        document.getElementById('aiToggleTavilyKey').addEventListener('click', () => {
+            const input = document.getElementById('aiTavilyKey');
             const isPassword = input.type === 'password';
             input.type = isPassword ? 'text' : 'password';
         });
@@ -525,6 +594,7 @@ class AIConfigModal {
         const statusDiv = document.getElementById('aiConfigStatus');
         const geminiInput = document.getElementById('aiGeminiKey');
         const openrouterInput = document.getElementById('aiApiKey');
+        const tavilyInput = document.getElementById('aiTavilyKey');
         
         if (!this.currentConfig) {
             statusDiv.className = 'ai-config-status not-configured';
@@ -549,6 +619,9 @@ class AIConfigModal {
         if (this.currentConfig.openrouter_api_key_preview) {
             openrouterInput.placeholder = this.currentConfig.openrouter_api_key_preview;
         }
+        if (this.currentConfig.tavily_api_key_preview && tavilyInput) {
+            tavilyInput.placeholder = this.currentConfig.tavily_api_key_preview;
+        }
         
         // Check if the active provider is configured
         const activeConfigured = (activeProvider === 'gemini' && geminiConfigured) || 
@@ -566,6 +639,7 @@ class AIConfigModal {
             let statusParts = [];
             if (geminiConfigured) statusParts.push(`✨ Gemini: ${this.currentConfig.gemini_api_key_preview || '✓'}`);
             if (openrouterConfigured) statusParts.push(`🔀 OpenRouter: ${this.currentConfig.openrouter_api_key_preview || '✓'}`);
+            if (this.currentConfig.tavily_configured) statusParts.push(`🌐 Tavily: ${this.currentConfig.tavily_api_key_preview || '✓'}`);
             
             statusDiv.innerHTML = `
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -666,6 +740,7 @@ class AIConfigModal {
     async save() {
         const geminiKey = document.getElementById('aiGeminiKey').value.trim();
         const openrouterKey = document.getElementById('aiApiKey').value.trim();
+        const tavilyKey = document.getElementById('aiTavilyKey').value.trim();
         const defaultModel = document.getElementById('aiDefaultModel').value;
         const customModelInput = document.getElementById('aiCustomModel');
         const customModel = customModelInput ? customModelInput.value.trim() : '';
@@ -699,6 +774,9 @@ class AIConfigModal {
                 ai_enabled: aiEnabled,
                 auto_generate: autoGenerate
             };
+            if (tavilyKey) {
+                payload.tavily_api_key = tavilyKey;
+            }
             
             // Add API keys if provided
             if (geminiKey) {
@@ -754,6 +832,7 @@ class AIConfigModal {
         document.getElementById('aiApiKey').value = '';
         document.getElementById('aiGeminiKey').value = '';
         document.getElementById('aiCustomModel').value = '';
+        document.getElementById('aiTavilyKey').value = '';
         
         // If current model is not in our predefined list, show it in custom field
         if (this.currentConfig && this.currentConfig.default_model) {
@@ -856,7 +935,7 @@ class AIConfigModal {
                         <td colspan="5" class="ai-routing-history-empty">
                             ${mismatchOnly 
                                 ? 'No mismatches found. All routing decisions match user feedback!' 
-                                : 'No routing feedback yet. Rate answers in the AI Assistant to build history.'}
+                                : 'No routing feedback yet. Rate answers in Smart Search to build history.'}
                         </td>
                     </tr>
                 `;
@@ -869,10 +948,10 @@ class AIConfigModal {
                 const suggested = [];
                 if (item.should_use_local) suggested.push('⚡ Local');
                 if (item.should_use_kb) suggested.push('📚 KB');
-                if (item.should_use_ai) suggested.push('🤖 AI');
+                if (item.should_use_report) suggested.push('📄 Report');
                 
                 const actualIcon = item.actual_source === 'local' ? '⚡' : 
-                                   item.actual_source === 'kb' ? '📚' : '🤖';
+                                   item.actual_source === 'kb' ? '📚' : '📄';
                 
                 const mismatchClass = item.mismatch ? 'mismatch' : '';
                 const dateStr = new Date(item.created_at).toLocaleDateString();
@@ -957,6 +1036,120 @@ class AIConfigModal {
         }
     }
     
+    renderSanitizationEntities() {
+        const container = document.getElementById('aiSanitizationEntities');
+        if (!container) return;
+        const layers = [
+            { title: 'Layer 1: Presidio Core', items: ['IP address', 'Email', 'URL', 'Phone'] },
+            { title: 'Layer 2: SpaCy NER', items: ['Person names', 'Groups/Nationalities'] },
+            { title: 'Layer 3: Custom Recognizers', items: ['Hostnames', 'UNC paths', 'Connection strings', 'License info', 'File paths', 'Cloud resources', 'HTTPPath', 'Task server headers', 'Revision hashes'] },
+            { title: 'Layer 4: Denylist Guards', items: ['ODBC/SQL codes', 'Replicate task terms', 'Schema.table patterns'] }
+        ];
+        const entities = [
+            { label: 'IP Address', replacement: '[IP_ADDRESS]' },
+            { label: 'Email Address', replacement: '[EMAIL]' },
+            { label: 'URL', replacement: '[URL]' },
+            { label: 'Phone Number', replacement: '[PHONE]' },
+            { label: 'Person Name', replacement: '[PERSON]' },
+            { label: 'Group/Nationality', replacement: '[GROUP]' },
+            { label: 'Server/Hostname', replacement: '[HOSTNAME]' },
+            { label: 'Network Path (UNC)', replacement: '[UNC_PATH]' },
+            { label: 'Connection String', replacement: '[REDACTED]' },
+            { label: 'License/Company Info', replacement: '[COMPANY]' },
+            { label: 'File Path', replacement: '[PATH]' },
+            { label: 'Cloud Resource ID', replacement: '[CLOUD_RESOURCE]' },
+            { label: 'HTTP Path', replacement: '[REDACTED]' },
+            { label: 'Task Server Info', replacement: '[SERVER_INFO]' },
+            { label: 'Revision Hash', replacement: '[REVISION]' },
+        ];
+        container.innerHTML = `
+            <div class="ai-sanitize-summary">
+                <div class="ai-sanitize-card">
+                    <div class="ai-sanitize-card-title">Sanitized</div>
+                    <ul>
+                        <li>Log summaries, errors, anomalies</li>
+                        <li>File metadata (paths, filenames)</li>
+                    </ul>
+                </div>
+                <div class="ai-sanitize-card">
+                    <div class="ai-sanitize-card-title">Not sanitized</div>
+                    <ul>
+                        <li>KB articles (public docs)</li>
+                        <li>System prompts</li>
+                    </ul>
+                </div>
+                <div class="ai-sanitize-card">
+                    <div class="ai-sanitize-card-title">Layers</div>
+                    ${layers.map(layer => `
+                        <div class="ai-sanitize-layer">
+                            <div class="ai-sanitize-layer-title">${layer.title}</div>
+                            <div class="ai-sanitize-layer-items">${layer.items.join(' · ')}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="ai-entity-list">
+                ${entities.map(e => `
+                    <div class="ai-entity-item">
+                        <div class="ai-entity-row">
+                            <span class="ai-entity-name">${e.label}</span>
+                            <span class="ai-entity-arrow">→</span>
+                            <span class="ai-entity-replacement">${e.replacement}</span>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    async previewSanitization() {
+        const input = document.getElementById('aiSanitizeInput');
+        const resultEl = document.getElementById('aiSanitizeResult');
+        if (!input || !resultEl) return;
+        const text = input.value.trim();
+        if (!text) {
+            resultEl.innerHTML = '<div class="ai-sanitize-empty">Enter text to preview redactions.</div>';
+            return;
+        }
+        resultEl.innerHTML = '<div class="ai-sanitize-loading">Analyzing...</div>';
+        try {
+            const resp = await fetch('/api/llm/preview-redactions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            if (!resp.ok) {
+                throw new Error('Preview failed');
+            }
+            const data = await resp.json();
+            const redactions = data.redactions || [];
+            resultEl.innerHTML = `
+                <div class="ai-sanitize-section">
+                    <div class="ai-sanitize-label">Sanitized</div>
+                    <pre class="ai-sanitize-block">${this.escapeHtml(data.sanitized || '')}</pre>
+                </div>
+                <div class="ai-sanitize-section">
+                    <div class="ai-sanitize-label">Detections (${redactions.length})</div>
+                    ${redactions.length === 0 ? '<div class="ai-sanitize-none">No sensitive info detected.</div>' : `
+                        <ul class="ai-sanitize-list">
+                            ${redactions.map(r => `
+                                <li>
+                                    <span class="ai-sanitize-type">${this.escapeHtml(r.type_description || r.type)}</span>
+                                    <code>${this.escapeHtml(r.original_value)}</code>
+                                    <span class="ai-sanitize-arrow">→</span>
+                                    <code>${this.escapeHtml(r.replacement)}</code>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    `}
+                </div>
+            `;
+        } catch (error) {
+            console.error('Sanitization preview failed', error);
+            resultEl.innerHTML = '<div class="ai-sanitize-error">Preview failed. Try again.</div>';
+        }
+    }
+
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;

@@ -22,7 +22,12 @@ from backend.core.analysis import PerformanceCockpit
 from backend.llm.vectorstore import get_vector_store, LogVectorStore
 from backend.llm.client import get_llm_client, OpenRouterClient, DEFAULT_MODEL
 from backend.llm.gemini_client import get_gemini_client, GeminiClient, DEFAULT_GEMINI_MODEL
-from backend.llm.prompts import get_messages_for_analysis, count_prompt_tokens
+from backend.llm.prompts import (
+    get_messages_for_analysis,
+    count_prompt_tokens,
+    sanitize_dict,
+    sanitize_list,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -342,10 +347,10 @@ class ReportGenerator:
         context = self.get_rag_context(file_id)
         
         messages = get_messages_for_analysis(
-            summary_data=summary,
-            error_contexts=context.get("errors", []),
-            anomaly_contexts=context.get("anomalies", []),
-            file_info=file_info
+            summary_data=sanitize_dict(summary),
+            error_contexts=sanitize_list(context.get("errors", [])),
+            anomaly_contexts=sanitize_list(context.get("anomalies", [])),
+            file_info=sanitize_dict(file_info) if file_info else None
         )
         
         prompt_tokens = count_prompt_tokens(messages)
@@ -435,10 +440,10 @@ class ReportGenerator:
         try:
             logger.info(f"Building prompt messages (web_search={web_search})...")
             messages = get_messages_for_analysis(
-                summary_data=summary,
-                error_contexts=context.get("errors", []),
-                anomaly_contexts=context.get("anomalies", []),
-                file_info=file_info,
+                summary_data=sanitize_dict(summary),
+                error_contexts=sanitize_list(context.get("errors", [])),
+                anomaly_contexts=sanitize_list(context.get("anomalies", [])),
+                file_info=sanitize_dict(file_info) if file_info else None,
                 quick=quick,
                 web_search=web_search
             )

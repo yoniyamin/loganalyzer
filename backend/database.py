@@ -211,6 +211,8 @@ class LLMConfig(Base):
     gemini_api_key_encrypted = Column(String, nullable=True)
     # OpenRouter API key (legacy field renamed for clarity)
     api_key_encrypted = Column(String, nullable=True)  # OpenRouter key
+    # Tavily API key for external search
+    tavily_api_key_encrypted = Column(String, nullable=True)
     # Default model (provider-specific)
     default_model = Column(String, default="gemini-2.5-flash")
     # Web search enabled for report generation

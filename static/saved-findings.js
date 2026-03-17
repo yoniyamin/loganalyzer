@@ -94,7 +94,9 @@ class SavedFindingsManager {
     renderFindings(container) {
         if (!container) return;
         
-        if (this.findings.length === 0) {
+        const visibleFindings = (this.findings || []).filter(f => !(f.metadata && f.metadata.auto_saved));
+        
+        if (visibleFindings.length === 0) {
             container.innerHTML = `
                 <p class="placeholder-text">
                     No findings yet. 
@@ -109,7 +111,7 @@ class SavedFindingsManager {
         
         let html = '';
         
-        this.findings.forEach(finding => {
+        visibleFindings.forEach(finding => {
             const dateStr = new Date(finding.created_at).toLocaleString();
             const typeIcon = this.getTypeIcon(finding.finding_type);
             const typeLabel = this.getTypeLabel(finding.finding_type);
@@ -179,6 +181,19 @@ class SavedFindingsManager {
         // Inline code
         formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
         
+        // Convert URLs to clickable links (must be done before line breaks)
+        // Match URLs that aren't already in HTML tags
+        formatted = formatted.replace(
+            /(https?:\/\/[^\s<>"']+)/g, 
+            '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+        );
+        
+        // Markdown-style links [text](url)
+        formatted = formatted.replace(
+            /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+            '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+        );
+        
         // Line breaks
         formatted = formatted.replace(/\n/g, '<br>');
         
@@ -187,8 +202,9 @@ class SavedFindingsManager {
     
     updateBadge() {
         const badge = document.getElementById('findingsCountBadge');
+        const visibleCount = (this.findings || []).filter(f => !(f.metadata && f.metadata.auto_saved)).length;
         if (badge) {
-            badge.textContent = this.findings.length > 0 ? this.findings.length : '';
+            badge.textContent = visibleCount > 0 ? visibleCount : '';
         }
     }
     
