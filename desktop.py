@@ -33,7 +33,7 @@ class Api:
 
     def save_file(self, suggested_name, content):
         """Open a native save file dialog and save the content."""
-        file_types = ('Text Files (*.txt)', 'All files (*.*)')
+        file_types = ('Markdown Files (*.md)', 'Text Files (*.txt)', 'All files (*.*)')
         result = self._window.create_file_dialog(
             webview.FileDialog.SAVE,
             save_filename=suggested_name,

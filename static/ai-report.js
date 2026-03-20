@@ -16,6 +16,7 @@ class AIReportManager {
         this.isGenerating = false;
         this.hasReport = false;
         this.autoGenerateEnabled = true;
+        this._timerInterval = null;
         
         this.init();
     }
@@ -142,8 +143,10 @@ class AIReportManager {
         this.currentFileId = fileId;
         this.renderSection();
         
-        // Check for existing report
-        this.checkExistingReport();
+        // Don't race GET with in-flight auto-generation POST
+        if (!this.isGenerating) {
+            this.checkExistingReport();
+        }
     }
     
     renderSection() {
@@ -193,7 +196,7 @@ class AIReportManager {
                             </svg>
                             Export
                         </button>
-                        <button class="ai-generate-btn" id="aiGenerateBtn" ${!this.isConfigured ? 'disabled' : ''}>
+                        <button class="ai-generate-btn" id="aiGenerateBtn" ${!this.isConfigured || this.isGenerating ? 'disabled' : ''}>
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                             </svg>
@@ -202,13 +205,63 @@ class AIReportManager {
                     </div>
                 </div>
                 <div class="ai-report-body" id="aiReportBody">
-                    ${this.isConfigured ? this.getPlaceholderHTML() : this.getNotConfiguredHTML()}
+                    ${!this.isConfigured ? this.getNotConfiguredHTML() : this.isGenerating ? this.getAutoGeneratingBodyHTML() : this.getPlaceholderHTML()}
                 </div>
             </div>
         `;
         
         // Bind events
         this.bindEvents();
+
+        if (this.isGenerating && this.isConfigured) {
+            const generateBtn = document.getElementById('aiGenerateBtn');
+            if (generateBtn) {
+                generateBtn.disabled = true;
+                generateBtn.innerHTML = `
+                    <div class="ai-btn-spinner"></div>
+                    Generating...
+                `;
+            }
+            // Tab switches re-run renderSection; keep one timer across remounts
+            if (this._timerInterval) {
+                this._syncTimerDisplay();
+            } else {
+                this._startTimer();
+            }
+            this.updateStatusBadge('loading');
+        }
+    }
+
+    getAutoGeneratingBodyHTML() {
+        return `
+            <div class="ai-report-loading">
+                <div class="ai-loading-spinner"></div>
+                <p>Auto-generating AI insights...</p>
+                <div class="ai-generation-timer" id="aiGenerationTimer">0s</div>
+                <div class="cost-estimate">Using default model settings</div>
+            </div>
+        `;
+    }
+
+    /** Push loading markup into the report body if the panel is mounted (container may exist before first paint). */
+    _applyGeneratingBodyToDom() {
+        if (!this.container) return;
+        const body = document.getElementById('aiReportBody');
+        if (body) {
+            body.innerHTML = this.getAutoGeneratingBodyHTML();
+        }
+    }
+
+    _resetGenerateButtonHtml() {
+        const generateBtn = document.getElementById('aiGenerateBtn');
+        if (!generateBtn) return;
+        generateBtn.disabled = !this.isConfigured;
+        generateBtn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+            Generate Report
+        `;
     }
     
     getPlaceholderHTML() {
@@ -464,9 +517,34 @@ class AIReportManager {
         }
     }
     
+    _startTimer() {
+        this._stopTimer();
+        this._timerStart = Date.now();
+        this._syncTimerDisplay();
+        this._timerInterval = setInterval(() => {
+            this._syncTimerDisplay();
+        }, 1000);
+    }
+
+    /** Update #aiGenerationTimer from _timerStart without resetting the start time (used after tab switches re-mount the DOM). */
+    _syncTimerDisplay() {
+        const el = document.getElementById('aiGenerationTimer');
+        if (!el || this._timerStart == null) return;
+        const elapsed = Math.floor((Date.now() - this._timerStart) / 1000);
+        el.textContent = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+    }
+    
+    _stopTimer() {
+        if (this._timerInterval) {
+            clearInterval(this._timerInterval);
+            this._timerInterval = null;
+        }
+    }
+
     async generateReport(regenerate = false) {
         if (!this.currentFileId) return;
         
+        this._manualGeneration = true;
         const body = document.getElementById('aiReportBody');
         const generateBtn = document.getElementById('aiGenerateBtn');
         
@@ -487,9 +565,12 @@ class AIReportManager {
             <div class="ai-report-loading">
                 <div class="ai-loading-spinner"></div>
                 <p>Generating AI insights...</p>
+                <div class="ai-generation-timer" id="aiGenerationTimer">0s</div>
                 <div class="cost-estimate" id="aiCostEstimate">Estimating cost...</div>
             </div>
         `;
+        
+        this._startTimer();
         
         // Get cost estimate
         try {
@@ -532,6 +613,7 @@ class AIReportManager {
         } catch (error) {
             this.showError('Network error: ' + error.message);
         } finally {
+            this._stopTimer();
             this.isGenerating = false;
             generateBtn.disabled = false;
             generateBtn.innerHTML = `
@@ -550,7 +632,7 @@ class AIReportManager {
         
         // Dispatch event to notify other components (like Log Summary) that report is ready
         window.dispatchEvent(new CustomEvent('aiReportReady', { 
-            detail: { fileId: this.currentFileId, report: report }
+            detail: { fileId: this.currentFileId, report: report, manual: this._manualGeneration || false }
         }));
         
         // Update header meta info
@@ -586,13 +668,106 @@ class AIReportManager {
         // Convert markdown to HTML
         const htmlContent = this.markdownToHtml(report.report_content);
         
-        // Just show the report content - no footer meta
-        body.innerHTML = `<div class="ai-report-content">${htmlContent}</div>`;
+        let extraSections = '';
+
+        // References section (KB + Release Notes)
+        extraSections += this.buildReferencesSection(report);
+
+        // Latency chart image (collapsed)
+        if (report.chart_image_base64) {
+            extraSections += `
+                <div class="ai-report-appendix" style="margin-top:24px;border-top:1px solid #374151;padding-top:16px">
+                    <details>
+                        <summary style="font-size:0.9rem;color:#e5e7eb;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;list-style:none;margin-bottom:10px">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="#9ca3af" style="transition:transform .2s"><path d="M6 12l4-4-4-4"/></svg>
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="#3b82f6"><path d="M1 11a1 1 0 011-1h2a1 1 0 011 1v3a1 1 0 01-1 1H2a1 1 0 01-1-1v-3zM6 7a1 1 0 011-1h2a1 1 0 011 1v7a1 1 0 01-1 1H7a1 1 0 01-1-1V7zM11 3a1 1 0 011-1h2a1 1 0 011 1v11a1 1 0 01-1 1h-2a1 1 0 01-1-1V3z"/></svg>
+                            Latency Chart (sent to model)
+                        </summary>
+                        <img src="data:image/png;base64,${report.chart_image_base64}"
+                             alt="Latency Over Time" style="width:100%;border-radius:6px;border:1px solid #374151" />
+                    </details>
+                </div>`;
+        }
+
+        // Log summary
+        const summary = window.logSummaryData;
+        if (summary) {
+            const dur = summary.duration || '';
+            const src = summary.source_endpoint || '';
+            const tgt = summary.target_endpoint || '';
+            const ver = summary.version || '';
+            const errs = summary.error_count != null ? summary.error_count : (summary.errors_total != null ? summary.errors_total : '');
+            const taskName = summary.task_name || '';
+            let sumRows = '';
+            if (taskName) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Task</td><td style="font-size:0.75rem;color:#e5e7eb">${taskName}</td></tr>`;
+            if (ver) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Version</td><td style="font-size:0.75rem;color:#e5e7eb">${ver}</td></tr>`;
+            if (src) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Source</td><td style="font-size:0.75rem;color:#10b981">${src}</td></tr>`;
+            if (tgt) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Target</td><td style="font-size:0.75rem;color:#f59e0b">${tgt}</td></tr>`;
+            if (dur) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Duration</td><td style="font-size:0.75rem;color:#e5e7eb">${dur}</td></tr>`;
+            if (errs !== '') sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Errors</td><td style="font-size:0.75rem;color:${errs > 0 ? '#f38ba8' : '#10b981'}">${errs}</td></tr>`;
+            if (sumRows) {
+                extraSections += `
+                    <div class="ai-report-appendix" style="margin-top:16px;border-top:1px solid #374151;padding-top:16px">
+                        <h3 style="font-size:0.9rem;color:#e5e7eb;margin:0 0 10px;display:flex;align-items:center;gap:6px">
+                            <svg width="16" height="16" viewBox="0 0 512 512" fill="#8b5cf6"><path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/></svg>
+                            Log Summary
+                        </h3>
+                        <table style="border-collapse:collapse">${sumRows}</table>
+                    </div>`;
+            }
+        }
+
+        if (body) {
+            body.innerHTML = `<div class="ai-report-content">${htmlContent}</div>${extraSections}`;
+        }
         
         this.updateStatusBadge('ready');
         
         // Load history to update dropdown
         this.loadHistory();
+    }
+
+    buildReferencesSection(report) {
+        const hasKb = report.kb_references && report.kb_references.length > 0;
+        const hasRn = report.release_notes_references && report.release_notes_references.length > 0;
+        if (!hasKb && !hasRn) return '';
+
+        const dbIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#10b981" stroke-width="1.3" title="Indexed (ChromaDB)"><ellipse cx="8" cy="3" rx="6" ry="2.5"/><path d="M2 3v10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V3"/><path d="M2 8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/></svg>';
+        const webIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#60a5fa" stroke-width="1.3" title="Web search"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2.2 3 4.8 3 6.5s-1 4.3-3 6.5c-2-2.2-3-4.8-3-6.5s1-4.3 3-6.5"/></svg>';
+
+        let html = '<div class="ai-report-appendix" style="margin-top:24px;border-top:1px solid #374151;padding-top:16px">';
+        html += '<details style="cursor:pointer"><summary style="font-size:0.9rem;color:#e5e7eb;font-weight:600;margin-bottom:10px;list-style:none;display:flex;align-items:center;gap:6px">';
+        html += '<svg width="14" height="14" viewBox="0 0 16 16" fill="#9ca3af" style="transition:transform .2s"><path d="M6 12l4-4-4-4"/></svg>';
+        html += 'References</summary>';
+
+        if (hasKb) {
+            html += '<div style="margin-bottom:12px"><div style="font-size:0.75rem;color:#9ca3af;text-transform:uppercase;margin-bottom:6px;font-weight:600">Knowledge Base Articles</div>';
+            for (const kb of report.kb_references) {
+                const icon = kb.source === 'web' ? webIcon : dbIcon;
+                const link = kb.url
+                    ? `<a href="${kb.url}" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:0.8rem">${kb.title}</a>`
+                    : `<span style="color:#e5e7eb;font-size:0.8rem">${kb.title}</span>`;
+                html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:4px 0">${icon} ${link}</div>`;
+            }
+            html += '</div>';
+        }
+
+        if (hasRn) {
+            html += '<div><div style="font-size:0.75rem;color:#9ca3af;text-transform:uppercase;margin-bottom:6px;font-weight:600">Release Notes</div>';
+            for (const rn of report.release_notes_references) {
+                const icon = rn.source === 'web' ? webIcon : dbIcon;
+                const fixTag = rn.fix_id ? ` <span style="padding:1px 4px;background:#06b6d4;color:#111827;border-radius:2px;font-size:0.6rem;font-weight:bold">${rn.fix_id}</span>` : '';
+                const verTag = rn.version ? ` <span style="color:#6b7280;font-size:0.7rem">(${rn.version})</span>` : '';
+                const link = rn.url
+                    ? `<a href="${rn.url}" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:0.8rem">${rn.title}</a>`
+                    : `<span style="color:#e5e7eb;font-size:0.8rem">${rn.title}</span>`;
+                html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:4px 0">${icon} ${link}${fixTag}${verTag}</div>`;
+            }
+            html += '</div>';
+        }
+
+        html += '</details></div>';
+        return html;
     }
     
     async exportDocx() {
@@ -752,8 +927,8 @@ class AIReportManager {
             this.renderSection();
         }
         
-        // Auto-generate insights when a new file is loaded
-        if (fileId && this.isConfigured && this.autoGenerateEnabled) {
+        // Auto-generate insights when a new file is loaded (await config inside autoGenerate)
+        if (fileId && this.autoGenerateEnabled) {
             this.autoGenerate();
         }
     }
@@ -762,82 +937,69 @@ class AIReportManager {
      * Auto-generate report in background when file is loaded
      */
     async autoGenerate() {
-        if (!this.currentFileId || !this.isConfigured || this.isGenerating) return;
-        
-        // First check if we already have a cached report
-        try {
-            const response = await fetch(`/api/llm/report/${this.currentFileId}`);
-            if (response.ok) {
-                const data = await response.json();
-                // Check if report exists (new format returns {exists: true/false})
-                if (data.exists !== false) {
-                    this.hasReport = true;
-                    this.updateStatusBadge('ready');
-                    // If container is rendered, show the report
-                    if (this.container) {
-                        this.displayReport(data);
-                    }
-                    return;
-                }
-            }
-        } catch (e) {
-            // No cached report, continue to generate
-        }
-        
-        // Generate new report
+        if (!this.currentFileId || this.isGenerating) return;
+        await this.checkConfig();
+        if (!this.isConfigured || !this.autoGenerateEnabled) return;
+        this._manualGeneration = false;
+
+        // Loading state during cache GET and POST (fixes empty UI when config was still loading or container mounted late)
         this.isGenerating = true;
         this.updateStatusBadge('loading');
-        
-        // Update UI if container is rendered
-        if (this.container) {
-            const body = document.getElementById('aiReportBody');
-            if (body) {
-                body.innerHTML = `
-                    <div class="ai-report-loading">
-                        <div class="ai-loading-spinner"></div>
-                        <p>Auto-generating AI insights...</p>
-                        <div class="cost-estimate">Using default model settings</div>
-                    </div>
-                `;
-            }
-        }
-        
+        this._applyGeneratingBodyToDom();
+        this._startTimer();
+
         try {
+            // Cached report?
+            try {
+                const response = await fetch(`/api/llm/report/${this.currentFileId}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.exists !== false) {
+                        this.hasReport = true;
+                        this.updateStatusBadge('ready');
+                        if (this.container) {
+                            this.displayReport(data);
+                        }
+                        return;
+                    }
+                }
+            } catch (e) {
+                // No cache, generate below
+            }
+
             const response = await fetch(`/api/llm/report/${this.currentFileId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: null, // Use default model
+                    model: null,
                     regenerate: false,
                     quick: false
                 })
             });
-            
+
             if (response.ok) {
                 const report = await response.json();
                 this.hasReport = true;
                 this.updateStatusBadge('ready');
-                
-                // Display report if container is rendered
                 if (this.container) {
                     this.displayReport(report);
                 }
             } else {
                 const error = await response.json();
                 this.updateStatusBadge('error', error.detail || 'Generation failed');
-                
                 if (this.container) {
                     this.showError(error.detail || 'Failed to auto-generate report');
                 }
             }
         } catch (error) {
             this.updateStatusBadge('error', error.message);
-            
             if (this.container) {
                 this.showError('Network error: ' + error.message);
             }
         } finally {
+            this._stopTimer();
             this.isGenerating = false;
+            this._resetGenerateButtonHtml();
         }
     }
 }

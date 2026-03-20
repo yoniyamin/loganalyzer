@@ -38,56 +38,64 @@ RECOMMENDED_MODELS = {
         "description": "FREE - Google's latest flash model, great for log analysis",
         "context_length": 1048576,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": ["vision"]
     },
     "meta-llama/llama-3.2-3b-instruct:free": {
         "name": "🆓 Llama 3.2 3B (Free)",
         "description": "FREE - Lightweight Meta model, fast responses",
         "context_length": 131072,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": []
     },
     "qwen/qwen-2.5-7b-instruct:free": {
         "name": "🆓 Qwen 2.5 7B (Free)",
         "description": "FREE - Alibaba's efficient model, good reasoning",
         "context_length": 32768,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": []
     },
     "microsoft/phi-3-mini-128k-instruct:free": {
         "name": "🆓 Phi-3 Mini (Free)",
         "description": "FREE - Microsoft's compact model, 128k context",
         "context_length": 128000,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": []
     },
     "x-ai/grok-4.1-fast:free": {
         "name": "🆓 Grok 4.1 Fast (Free)",
         "description": "FREE - xAI's fast model, 2M context window",
         "context_length": 2000000,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": ["vision"]
     },
     "google/gemma-3n-e2b-it:free": {
         "name": "🆓 Gemma 3n E2B (Free)",
         "description": "FREE - Google's efficient edge model",
         "context_length": 32768,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": []
     },
     "deepseek/deepseek-r1:free": {
         "name": "🆓 DeepSeek R1 (Free)",
         "description": "FREE - Strong reasoning model, great for analysis",
         "context_length": 163840,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": []
     },
     "nousresearch/deephermes-3-llama-3-8b-preview:free": {
         "name": "🆓 DeepHermes 3 8B (Free)",
         "description": "FREE - Nous Research model, good instruction following",
         "context_length": 131072,
         "pricing": {"prompt": 0.0, "completion": 0.0},
-        "is_free": True
+        "is_free": True,
+        "capabilities": []
     },
     
     # === PAID MODELS (Budget-friendly) ===
@@ -96,28 +104,32 @@ RECOMMENDED_MODELS = {
         "description": "Very cheap - Fast and cost-effective analysis",
         "context_length": 1000000,
         "pricing": {"prompt": 0.10, "completion": 0.40},
-        "is_free": False
+        "is_free": False,
+        "capabilities": ["vision"]
     },
     "openai/gpt-4o-mini": {
         "name": "💰 GPT-4o Mini",
         "description": "Budget - Balanced speed and quality",
         "context_length": 128000,
         "pricing": {"prompt": 0.15, "completion": 0.60},
-        "is_free": False
+        "is_free": False,
+        "capabilities": ["vision"]
     },
     "anthropic/claude-3-haiku": {
         "name": "💰 Claude 3 Haiku",
         "description": "Budget - Very fast, good for quick analysis",
         "context_length": 200000,
         "pricing": {"prompt": 0.25, "completion": 1.25},
-        "is_free": False
+        "is_free": False,
+        "capabilities": ["vision"]
     },
     "meta-llama/llama-3.3-70b-instruct": {
         "name": "💰 Llama 3.3 70B",
         "description": "Budget - Open model, great reasoning",
         "context_length": 131072,
         "pricing": {"prompt": 0.30, "completion": 0.30},
-        "is_free": False
+        "is_free": False,
+        "capabilities": []
     },
     
     # === PAID MODELS (Premium) ===
@@ -126,21 +138,24 @@ RECOMMENDED_MODELS = {
         "description": "Premium - Excellent reasoning, best for complex logs",
         "context_length": 200000,
         "pricing": {"prompt": 3.00, "completion": 15.00},
-        "is_free": False
+        "is_free": False,
+        "capabilities": ["vision"]
     },
     "openai/gpt-4o": {
         "name": "💎 GPT-4o",
         "description": "Premium - OpenAI's best model",
         "context_length": 128000,
         "pricing": {"prompt": 2.50, "completion": 10.00},
-        "is_free": False
+        "is_free": False,
+        "capabilities": ["vision"]
     },
     "mistralai/mistral-large-2411": {
         "name": "💎 Mistral Large",
         "description": "Premium - Strong European model, multilingual",
         "context_length": 128000,
         "pricing": {"prompt": 2.00, "completion": 6.00},
-        "is_free": False
+        "is_free": False,
+        "capabilities": []
     }
 }
 
@@ -507,7 +522,9 @@ class OpenRouterClient:
         max_tokens: int = 2000,
         temperature: float = 0.3,
         stream: bool = False,
-        web_search: bool = False
+        web_search: bool = False,
+        image_data: Optional[bytes] = None,
+        image_mime_type: str = "image/png",
     ) -> CompletionResult:
         """
         Generate a completion.
@@ -519,12 +536,36 @@ class OpenRouterClient:
             temperature: Sampling temperature (0-1)
             stream: Whether to stream the response
             web_search: Whether to enable web search for the model
+            image_data: Optional image bytes to include with the user message
+            image_mime_type: MIME type of the image (default: image/png)
         
         Returns:
             CompletionResult with the generated content
         """
         if not self.api_key:
             raise ValueError("OpenRouter API key not configured")
+
+        import base64 as _b64
+
+        # If image_data is provided, convert messages to multimodal format
+        if image_data:
+            b64_str = _b64.b64encode(image_data).decode("utf-8")
+            data_url = f"data:{image_mime_type};base64,{b64_str}"
+            converted = []
+            image_attached = False
+            for msg in messages:
+                if msg.get("role") == "user" and not image_attached:
+                    converted.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": msg.get("content", "")},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ]
+                    })
+                    image_attached = True
+                else:
+                    converted.append(msg)
+            messages = converted
         
         payload = {
             "model": model,
@@ -650,4 +691,10 @@ def set_api_key(api_key: str):
     """Set the API key for the singleton client."""
     client = get_llm_client()
     client.set_api_key(api_key)
+
+
+def openrouter_model_supports_vision(model_id: str) -> bool:
+    """Check if an OpenRouter model supports vision/image input."""
+    info = RECOMMENDED_MODELS.get(model_id, {})
+    return "vision" in info.get("capabilities", [])
 

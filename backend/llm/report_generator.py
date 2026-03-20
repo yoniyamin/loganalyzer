@@ -7,6 +7,7 @@ This module ties together:
 3. LLM completion for report generation
 """
 
+import base64
 import json
 import logging
 import traceback
@@ -20,14 +21,15 @@ from backend.database import (
 )
 from backend.core.analysis import PerformanceCockpit
 from backend.llm.vectorstore import get_vector_store, LogVectorStore
-from backend.llm.client import get_llm_client, OpenRouterClient, DEFAULT_MODEL
-from backend.llm.gemini_client import get_gemini_client, GeminiClient, DEFAULT_GEMINI_MODEL
+from backend.llm.client import get_llm_client, OpenRouterClient, DEFAULT_MODEL, openrouter_model_supports_vision
+from backend.llm.gemini_client import get_gemini_client, GeminiClient, DEFAULT_GEMINI_MODEL, gemini_model_supports_vision
 from backend.llm.prompts import (
     get_messages_for_analysis,
     count_prompt_tokens,
     sanitize_dict,
     sanitize_list,
 )
+from backend.llm.tavily_client import TavilyClient
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -295,6 +297,182 @@ class ReportGenerator:
         
         return counts
     
+    def _get_endpoint_types(self, file_id: int, summary: Dict[str, Any]) -> Dict[str, str]:
+        """Extract source/target endpoint types from task config or summary."""
+        config = self.db.query(LogTaskConfig).filter(
+            LogTaskConfig.file_id == file_id
+        ).first()
+
+        source_type = ""
+        target_type = ""
+        if config:
+            source_type = config.source_type or ""
+            target_type = config.target_type or ""
+
+        if not source_type and "source_analysis" in summary:
+            source_type = summary["source_analysis"].get("source_type", "")
+        if not target_type and "target_analysis" in summary:
+            target_type = summary["target_analysis"].get("target_type", "")
+
+        return {"source": source_type, "target": target_type}
+
+    def get_release_notes_context(
+        self,
+        file_id: int,
+        summary: Dict[str, Any],
+        max_results: int = 8
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve relevant release notes from the indexed collection and
+        optionally supplement with a live Tavily web search.
+
+        Returns a de-duplicated list of release note entries.
+        """
+        endpoints = self._get_endpoint_types(file_id, summary)
+        source_type = endpoints["source"]
+        target_type = endpoints["target"]
+
+        queries = []
+        if source_type:
+            queries.append(f"Qlik Replicate {source_type} source endpoint new feature enhancement")
+        if target_type:
+            queries.append(f"Qlik Replicate {target_type} target endpoint new feature enhancement")
+
+        error_summary = summary.get("error_summary", {})
+        if error_summary.get("by_component"):
+            top_components = sorted(
+                error_summary["by_component"].items(), key=lambda x: x[1], reverse=True
+            )[:2]
+            for comp, _ in top_components:
+                queries.append(f"Qlik Replicate {comp} fix improvement")
+
+        if not queries:
+            queries = ["Qlik Replicate new feature improvement enhancement"]
+
+        results = []
+        seen_urls = set()
+
+        endpoint_filter = source_type or target_type or None
+        per_query = max(3, max_results // len(queries) + 1)
+
+        for q in queries:
+            try:
+                hits = self.vector_store.query_release_notes(
+                    query=q,
+                    n_results=per_query,
+                    endpoint_filter=endpoint_filter,
+                )
+                for h in hits:
+                    url = h.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        results.append(h)
+            except Exception as e:
+                logger.debug(f"Release notes query failed for '{q}': {e}")
+
+        # Broader fallback without endpoint filter if too few results
+        if len(results) < 3 and endpoint_filter:
+            for q in queries[:2]:
+                try:
+                    hits = self.vector_store.query_release_notes(query=q, n_results=per_query)
+                    for h in hits:
+                        url = h.get("url", "")
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            results.append(h)
+                except Exception:
+                    pass
+
+        # Tavily supplement
+        try:
+            tavily = TavilyClient()
+            if tavily.is_configured and (source_type or target_type):
+                parts = ["Qlik Replicate release notes fix"]
+                if source_type:
+                    parts.append(source_type)
+                if target_type:
+                    parts.append(target_type)
+                tavily_query = " ".join(parts)
+
+                tavily_result = tavily.advanced_answer(
+                    query=tavily_query, max_results=3, search_depth="basic"
+                )
+                for src in tavily_result.get("results", []):
+                    url = src.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        results.append({
+                            "content": src.get("content", ""),
+                            "title": src.get("title", "Web result"),
+                            "url": url,
+                            "version": "",
+                            "fix_id": "",
+                            "similarity": 0.5,
+                            "metadata": {"source": "tavily_web_search"},
+                        })
+        except Exception as e:
+            logger.debug(f"Tavily release notes search failed: {e}")
+
+        results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+        return results[:max_results]
+
+    def get_kb_context(
+        self,
+        file_id: int,
+        summary: Dict[str, Any],
+        max_results: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Query the KB for articles relevant to detected errors, endpoint
+        types, and performance symptoms.
+        """
+        queries = []
+        endpoints = self._get_endpoint_types(file_id, summary)
+        source_type = endpoints["source"]
+        target_type = endpoints["target"]
+
+        if source_type:
+            queries.append(f"Qlik Replicate {source_type} source")
+        if target_type:
+            queries.append(f"Qlik Replicate {target_type} target")
+
+        error_summary = summary.get("error_summary", {})
+        if error_summary.get("by_component"):
+            top = sorted(error_summary["by_component"].items(), key=lambda x: x[1], reverse=True)[:3]
+            for comp, _ in top:
+                queries.append(f"Qlik Replicate {comp} error troubleshooting")
+
+        has_perf_issues = (
+            summary.get("spikes", {}).get("count", 0) > 0
+            or summary.get("plateaus", {}).get("count", 0) > 0
+            or summary.get("bottleneck", {}).get("primary", "unknown") != "unknown"
+        )
+        if has_perf_issues:
+            bottleneck = summary.get("bottleneck", {}).get("primary", "")
+            queries.append(f"Qlik Replicate high latency {bottleneck} performance troubleshooting")
+            if summary.get("cdc_pipeline", {}).get("memory_warnings", 0) > 0:
+                queries.append("Qlik Replicate memory pressure CDC")
+
+        if not queries:
+            queries = ["Qlik Replicate troubleshooting"]
+
+        results = []
+        seen_urls = set()
+
+        for q in queries[:5]:
+            try:
+                hits = self.vector_store.query_kb(query=q, n_results=4)
+                for h in hits:
+                    url = h.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        results.append(h)
+            except Exception as e:
+                logger.debug(f"KB query failed for '{q}': {e}")
+
+        results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+        return results[:max_results]
+
     def get_rag_context(self, file_id: int, query: Optional[str] = None) -> Dict[str, List[str]]:
         """
         Retrieve relevant context from the vector store.
@@ -435,6 +613,24 @@ class ReportGenerator:
         except Exception as e:
             logger.warning(f"Error getting RAG context (continuing anyway): {e}")
             context = {"errors": [], "anomalies": []}
+
+        # Get release notes context
+        release_notes_context = []
+        try:
+            logger.info("Fetching release notes context...")
+            release_notes_context = self.get_release_notes_context(file_id, summary)
+            logger.debug(f"Release notes context: {len(release_notes_context)} entries")
+        except Exception as e:
+            logger.warning(f"Error getting release notes context (continuing anyway): {e}")
+
+        # Get KB context
+        kb_context = []
+        try:
+            logger.info("Fetching KB context...")
+            kb_context = self.get_kb_context(file_id, summary)
+            logger.debug(f"KB context: {len(kb_context)} articles")
+        except Exception as e:
+            logger.warning(f"Error getting KB context (continuing anyway): {e}")
         
         # Build messages
         try:
@@ -445,45 +641,122 @@ class ReportGenerator:
                 anomaly_contexts=sanitize_list(context.get("anomalies", [])),
                 file_info=sanitize_dict(file_info) if file_info else None,
                 quick=quick,
-                web_search=web_search
+                web_search=web_search,
+                release_notes_context=release_notes_context,
+                kb_context=kb_context,
             )
             logger.debug(f"Message count: {len(messages)}")
         except Exception as e:
             logger.error(f"Error building messages: {e}\n{traceback.format_exc()}")
             raise ValueError(f"Failed to build prompt: {e}")
         
+        # Render latency chart image for vision-capable models
+        chart_image_data = None
+        supports_vision = (
+            (use_gemini and gemini_model_supports_vision(model))
+            or (not use_gemini and openrouter_model_supports_vision(model))
+        )
+        if supports_vision and not quick:
+            try:
+                from backend.llm.chart_renderer import render_latency_chart, is_available as chart_available
+                if chart_available():
+                    logger.info("Rendering latency chart for vision model...")
+                    chart_image_data = render_latency_chart(self.db, file_id)
+                    if chart_image_data:
+                        logger.info(f"Chart rendered: {len(chart_image_data)} bytes")
+                        for msg in messages:
+                            if msg["role"] == "user":
+                                msg["content"] = (
+                                    "**Attached: Latency Over Time graph** - This chart shows source, "
+                                    "target, and handling latency trends over the log period. Reference "
+                                    "this graph in your Performance Analysis section.\n\n"
+                                    + msg["content"]
+                                )
+                                break
+                    else:
+                        logger.info("Chart renderer returned no data (no performance data for this file)")
+                else:
+                    logger.info("Chart rendering skipped: plotly/kaleido not installed (pip install plotly kaleido)")
+            except ImportError:
+                logger.info("Chart rendering skipped: plotly/kaleido not installed (pip install plotly kaleido)")
+            except Exception as e:
+                logger.warning(f"Chart rendering failed (continuing without image): {e}")
+        elif not supports_vision:
+            logger.debug(f"Chart rendering skipped: model {model} does not support vision")
+        elif quick:
+            logger.debug("Chart rendering skipped: quick report mode")
+
         # Generate completion using appropriate provider
         try:
             provider_name = "Gemini" if use_gemini else "OpenRouter"
             logger.info(f"Calling {provider_name} API with model={model}...")
             
-            # Use higher max_tokens for detailed reports
-            # Gemini 2.5 Flash supports up to 65K output tokens
-            # OpenRouter models typically support 4K-16K
             max_output = 8192 if not quick else 800
             
-            if use_gemini:
-                result = self.gemini_client.complete(
-                    messages=messages,
-                    model=model,
-                    max_tokens=max_output,
-                    temperature=0.3,
-                    web_search=web_search
+            def _call_llm(use_web_search: bool):
+                if use_gemini:
+                    return self.gemini_client.complete(
+                        messages=messages,
+                        model=model,
+                        max_tokens=max_output,
+                        temperature=0.3,
+                        web_search=use_web_search,
+                        image_data=chart_image_data,
+                    )
+                else:
+                    return self.llm_client.complete(
+                        messages=messages,
+                        model=model,
+                        max_tokens=max_output,
+                        temperature=0.3,
+                        web_search=use_web_search,
+                        image_data=chart_image_data,
+                    )
+            
+            result = _call_llm(web_search)
+            
+            # Retry without web_search if response was empty (grounding conflict)
+            if result.completion_tokens == 0 and not result.content.strip() and web_search:
+                logger.warning(
+                    f"Empty response with web_search enabled (finish_reason={result.finish_reason}). "
+                    "Retrying without web search..."
                 )
-            else:
-                result = self.llm_client.complete(
-                    messages=messages,
-                    model=model,
-                    max_tokens=max_output,
-                    temperature=0.3,
-                    web_search=web_search
-                )
+                result = _call_llm(False)
             
             logger.info(f"{provider_name} call successful: {result.prompt_tokens} prompt + {result.completion_tokens} completion tokens, cost=${result.cost_usd:.4f}")
         except Exception as e:
             logger.error(f"LLM API call failed: {e}\n{traceback.format_exc()}")
             raise ValueError(f"LLM API call failed: {e}")
         
+        # Build reference lists with source tags
+        kb_refs = []
+        for kb in kb_context:
+            meta = kb.get("metadata", {})
+            src = "web" if isinstance(meta, dict) and meta.get("source") == "tavily_web_search" else "chromadb"
+            kb_refs.append({
+                "title": kb.get("title", ""),
+                "url": kb.get("url", ""),
+                "source": src,
+                "snippet": (kb.get("content", "") or "")[:200],
+            })
+
+        rn_refs = []
+        for rn in release_notes_context:
+            meta = rn.get("metadata", {})
+            src = "web" if isinstance(meta, dict) and meta.get("source") == "tavily_web_search" else "chromadb"
+            rn_refs.append({
+                "title": rn.get("title", ""),
+                "url": rn.get("url", ""),
+                "source": src,
+                "snippet": (rn.get("content", "") or "")[:200],
+                "version": rn.get("version", ""),
+                "fix_id": rn.get("fix_id", ""),
+            })
+
+        chart_b64 = None
+        if chart_image_data:
+            chart_b64 = base64.b64encode(chart_image_data).decode("utf-8")
+
         return {
             "file_id": file_id,
             "model_used": result.model,
@@ -494,7 +767,10 @@ class ReportGenerator:
             "cost_usd": result.cost_usd,
             "generated_at": datetime.utcnow().isoformat(),
             "quick": quick,
-            "web_search": web_search
+            "web_search": web_search,
+            "chart_image_base64": chart_b64,
+            "kb_references": kb_refs if kb_refs else None,
+            "release_notes_references": rn_refs if rn_refs else None,
         }
 
 

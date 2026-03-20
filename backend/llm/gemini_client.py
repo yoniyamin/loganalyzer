@@ -34,7 +34,7 @@ GEMINI_MODELS = {
         "output_limit": 65536,
         "pricing": {"prompt": 0.0, "completion": 0.0},  # Free tier available
         "is_free": True,
-        "capabilities": ["thinking", "code_execution", "function_calling", "search_grounding"]
+        "capabilities": ["thinking", "code_execution", "function_calling", "search_grounding", "vision"]
     },
     "gemini-2.0-flash": {
         "name": "Gemini 2.0 Flash",
@@ -43,7 +43,7 @@ GEMINI_MODELS = {
         "output_limit": 8192,
         "pricing": {"prompt": 0.0, "completion": 0.0},
         "is_free": True,
-        "capabilities": ["live_api", "code_execution", "function_calling", "search_grounding"]
+        "capabilities": ["live_api", "code_execution", "function_calling", "search_grounding", "vision"]
     },
     "gemini-2.0-flash-lite": {
         "name": "Gemini 2.0 Flash-Lite",
@@ -52,7 +52,7 @@ GEMINI_MODELS = {
         "output_limit": 8192,
         "pricing": {"prompt": 0.0, "completion": 0.0},
         "is_free": True,
-        "capabilities": ["function_calling", "structured_outputs"]
+        "capabilities": ["function_calling", "structured_outputs", "vision"]
     },
     "gemini-1.5-flash": {
         "name": "Gemini 1.5 Flash",
@@ -61,7 +61,7 @@ GEMINI_MODELS = {
         "output_limit": 8192,
         "pricing": {"prompt": 0.0, "completion": 0.0},
         "is_free": True,
-        "capabilities": ["code_execution", "function_calling", "search_grounding"]
+        "capabilities": ["code_execution", "function_calling", "search_grounding", "vision"]
     },
     "gemini-1.5-pro": {
         "name": "Gemini 1.5 Pro",
@@ -70,7 +70,7 @@ GEMINI_MODELS = {
         "output_limit": 8192,
         "pricing": {"prompt": 1.25, "completion": 5.00},  # Per million tokens
         "is_free": False,
-        "capabilities": ["code_execution", "function_calling", "search_grounding"]
+        "capabilities": ["code_execution", "function_calling", "search_grounding", "vision"]
     },
 }
 
@@ -188,7 +188,9 @@ class GeminiClient:
         model: str = DEFAULT_GEMINI_MODEL,
         max_tokens: int = 2000,
         temperature: float = 0.3,
-        web_search: bool = False
+        web_search: bool = False,
+        image_data: Optional[bytes] = None,
+        image_mime_type: str = "image/png",
     ) -> GeminiCompletionResult:
         """
         Generate a completion using Gemini.
@@ -199,6 +201,8 @@ class GeminiClient:
             max_tokens: Maximum tokens in completion
             temperature: Sampling temperature (0-2)
             web_search: Enable Google Search grounding
+            image_data: Optional image bytes to include with the user message
+            image_mime_type: MIME type of the image (default: image/png)
         
         Returns:
             GeminiCompletionResult with the generated content
@@ -206,6 +210,8 @@ class GeminiClient:
         if not self.api_key:
             raise ValueError("Gemini API key not configured")
         
+        import base64 as _b64
+
         # Convert OpenAI-style messages to Gemini format
         contents = []
         system_instruction = None
@@ -222,9 +228,18 @@ class GeminiClient:
                     "parts": [{"text": content}]
                 })
             else:  # user
+                parts = [{"text": content}]
+                if image_data and role == "user":
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": image_mime_type,
+                            "data": _b64.b64encode(image_data).decode("utf-8"),
+                        }
+                    })
+                    image_data = None  # only attach to the first user message
                 contents.append({
                     "role": "user",
-                    "parts": [{"text": content}]
+                    "parts": parts,
                 })
         
         # Build request payload
@@ -288,7 +303,13 @@ class GeminiClient:
                 if model_info:
                     cost = model_info.estimate_cost(prompt_tokens, completion_tokens)
                 
-                logger.info(f"Gemini response: {prompt_tokens} prompt + {completion_tokens} completion tokens")
+                logger.info(f"Gemini response: {prompt_tokens} prompt + {completion_tokens} completion tokens, finish_reason={finish_reason}")
+                
+                if completion_tokens == 0 and finish_reason != "STOP":
+                    logger.warning(
+                        f"Gemini returned 0 completion tokens with finish_reason={finish_reason}. "
+                        f"Candidate: {json.dumps(candidate, default=str)[:500]}"
+                    )
                 
                 return GeminiCompletionResult(
                     content=content,
@@ -324,4 +345,10 @@ def set_gemini_api_key(api_key: str):
     """Set the API key for the singleton client."""
     client = get_gemini_client()
     client.set_api_key(api_key)
+
+
+def gemini_model_supports_vision(model_id: str) -> bool:
+    """Check if a Gemini model supports vision/image input."""
+    info = GEMINI_MODELS.get(model_id, {})
+    return "vision" in info.get("capabilities", [])
 

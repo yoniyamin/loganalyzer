@@ -111,6 +111,9 @@ Always structure your analysis with these sections:
 3. **Performance Analysis** - Latency, throughput, bottlenecks
 4. **Issues & Recommendations** - Problems found and how to fix them
 5. **Health Score** - Overall assessment (Healthy/Warning/Critical)
+
+If the user prompt includes a "Release Notes Correlation" section, add a corresponding section in your report correlating issues with known fixes (reference fix IDs like RECOB-XXXX).
+If the user prompt includes a "Relevant Knowledge Base Articles" section, reference those articles when discussing related issues.
 """
 
 
@@ -160,6 +163,9 @@ Always structure your analysis with these sections:
 4. **Issues & Recommendations** - Problems found with web-sourced solutions
 5. **Error Code Reference** - Explanation of any error codes found (from web search)
 6. **Health Score** - Overall assessment (Healthy/Warning/Critical)
+
+If the user prompt includes a "Release Notes Correlation" section, add a corresponding section in your report correlating issues with known fixes (reference fix IDs like RECOB-XXXX).
+If the user prompt includes a "Relevant Knowledge Base Articles" section, reference those articles when discussing related issues.
 """
 
 
@@ -231,7 +237,10 @@ def build_analysis_prompt(
     summary_data: Dict[str, Any],
     error_contexts: List[str],
     anomaly_contexts: List[str],
-    file_info: Optional[Dict[str, Any]] = None
+    file_info: Optional[Dict[str, Any]] = None,
+    release_notes_context: Optional[List[Dict[str, Any]]] = None,
+    kb_context: Optional[List[Dict[str, Any]]] = None,
+    web_search: bool = False,
 ) -> str:
     """
     Build the user prompt for log analysis.
@@ -459,8 +468,46 @@ Key error patterns from the log (with context):
             clean_ctx = ctx[:600] if len(ctx) > 600 else ctx
             sections.append(f"**Anomaly {i}:**\n```\n{clean_ctx}\n```\n")
     
+    # Release notes correlation (omit URLs when web_search is enabled to avoid grounding conflicts)
+    if release_notes_context:
+        sections.append("""
+## Release Notes Correlation
+The following release note entries may be relevant to the issues detected:
+""")
+        for i, rn in enumerate(release_notes_context[:6], 1):
+            title = rn.get("title", "Unknown")
+            version = rn.get("version", "")
+            fix_id = rn.get("fix_id", "")
+            snippet = rn.get("content", "")[:200]
+            version_label = f" ({version})" if version else ""
+            fix_label = f" [{fix_id}]" if fix_id else ""
+            sections.append(f"{i}. **{title}{version_label}{fix_label}**: {snippet}\n")
+
+    # KB articles (titles + short summaries only; no URLs to avoid grounding conflicts)
+    if kb_context:
+        sections.append("""
+## Relevant Knowledge Base Articles
+The following KB articles from the Qlik support knowledge base may help:
+""")
+        for i, kb in enumerate(kb_context[:5], 1):
+            title = kb.get("title", "Unknown")
+            snippet = kb.get("content", "")[:150]
+            sections.append(f"{i}. **{title}**: {snippet}\n")
+
     # Final instruction - more focused
-    sections.append("""
+    extra_items = []
+    if release_notes_context:
+        extra_items.append("**Release Notes Correlation**: Identify which issues may already be fixed in a newer release, referencing fix IDs (RECOB-XXXX) and versions")
+    if kb_context:
+        extra_items.append("**Relevant KB Articles**: Reference specific KB articles that provide guidance for the issues found")
+
+    numbered_extras = ""
+    if extra_items:
+        base_num = 5
+        for j, item in enumerate(extra_items):
+            numbered_extras += f"\n{base_num + j}. {item}"
+
+    sections.append(f"""
 ---
 
 ## Analysis Request
@@ -470,7 +517,7 @@ Provide a focused analysis covering:
 1. **Health Assessment**: Overall task health (Healthy/Warning/Critical) with justification
 2. **Root Cause Analysis**: For any issues found, identify the underlying causes
 3. **Priority Actions**: Top 3-5 actionable recommendations ranked by impact
-4. **Risk Assessment**: What could fail if issues aren't addressed?
+4. **Risk Assessment**: What could fail if issues aren't addressed?{numbered_extras}
 
 **Focus on**: Practical insights a DBA or support engineer can act on immediately. Reference specific metrics, line numbers, and table names when relevant.
 """)
@@ -529,7 +576,9 @@ def get_messages_for_analysis(
     anomaly_contexts: List[str],
     file_info: Optional[Dict[str, Any]] = None,
     quick: bool = False,
-    web_search: bool = False
+    web_search: bool = False,
+    release_notes_context: Optional[List[Dict[str, Any]]] = None,
+    kb_context: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, str]]:
     """
     Build the complete messages list for the LLM.
@@ -541,6 +590,8 @@ def get_messages_for_analysis(
         file_info: Optional file metadata
         quick: If True, use quick summary mode
         web_search: If True, use system prompt with web search instructions
+        release_notes_context: Release note entries from vector store / Tavily
+        kb_context: KB articles from vector store
     
     Returns:
         List of message dicts ready for the LLM API
@@ -555,7 +606,10 @@ def get_messages_for_analysis(
         summary_data=summary_data,
         error_contexts=error_contexts,
         anomaly_contexts=anomaly_contexts,
-        file_info=file_info
+        file_info=file_info,
+        release_notes_context=release_notes_context,
+        kb_context=kb_context,
+        web_search=web_search,
     )
     
     # Use web search system prompt if enabled

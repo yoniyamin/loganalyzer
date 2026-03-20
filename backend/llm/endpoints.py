@@ -7,11 +7,13 @@ Mounted at /api/llm/
 
 import base64
 import io
+import json
 import os
 import re
 import logging
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -84,6 +86,7 @@ class ModelInfo(BaseModel):
     completion_price: float
     is_free: bool = False
     provider: str = "gemini"
+    capabilities: List[str] = []
 
 
 class ModelsResponse(BaseModel):
@@ -112,6 +115,16 @@ class ReportRequest(BaseModel):
     web_search: bool = False  # Enable web search for additional context
 
 
+class ReferenceItem(BaseModel):
+    """A KB article or release note reference passed to the LLM."""
+    title: str
+    url: str = ""
+    source: str = "chromadb"  # "chromadb" or "web"
+    snippet: str = ""
+    version: str = ""
+    fix_id: str = ""
+
+
 class ReportResponse(BaseModel):
     """Response containing generated report."""
     report_id: Optional[int] = None
@@ -123,6 +136,9 @@ class ReportResponse(BaseModel):
     cost_usd: float
     generated_at: datetime
     cached: bool = False
+    chart_image_base64: Optional[str] = None
+    kb_references: Optional[List[ReferenceItem]] = None
+    release_notes_references: Optional[List[ReferenceItem]] = None
 
 
 class ReportHistoryItem(BaseModel):
@@ -538,7 +554,8 @@ def get_models(
                     prompt_price=m.prompt_price,
                     completion_price=m.completion_price,
                     is_free=m.is_free,
-                    provider=PROVIDER_GEMINI
+                    provider=PROVIDER_GEMINI,
+                    capabilities=m.capabilities,
                 )
                 for m in models
             ]
@@ -553,6 +570,7 @@ def get_models(
             logger.info("Refreshing OpenRouter models list...")
             client.refresh_models()
         
+        from backend.llm.client import RECOMMENDED_MODELS as _REC_MODELS
         models = client.get_models(recommended_only=recommended_only)
         return ModelsResponse(
             provider=PROVIDER_OPENROUTER,
@@ -565,7 +583,8 @@ def get_models(
                     prompt_price=m.prompt_price,
                     completion_price=m.completion_price,
                     is_free=m.prompt_price == 0 and m.completion_price == 0,
-                    provider=PROVIDER_OPENROUTER
+                    provider=PROVIDER_OPENROUTER,
+                    capabilities=_REC_MODELS.get(m.id, {}).get("capabilities", []),
                 )
                 for m in models
             ]
@@ -598,7 +617,31 @@ def get_report(
     
     if not existing:
         return {"exists": False, "file_id": file_id}
-    
+
+    # Re-render chart for GET requests (cached in-memory after first render)
+    chart_b64 = None
+    try:
+        from backend.llm.chart_renderer import render_latency_chart_base64, is_available as chart_available
+        if chart_available():
+            chart_b64 = render_latency_chart_base64(db, file_id)
+    except Exception:
+        pass
+
+    # Re-derive references for cached reports
+    kb_refs = None
+    rn_refs = None
+    try:
+        generator = ReportGenerator(db)
+        summary = generator.build_performance_summary(file_id) or {}
+        kb_ctx = generator.get_kb_context(file_id, summary, max_results=5)
+        rn_ctx = generator.get_release_notes_context(file_id, summary, max_results=6)
+        if kb_ctx:
+            kb_refs = [{"title": k.get("title", ""), "url": k.get("url", ""), "source": "web" if isinstance(k.get("metadata"), dict) and k["metadata"].get("source") == "tavily_web_search" else "chromadb"} for k in kb_ctx]
+        if rn_ctx:
+            rn_refs = [{"title": r.get("title", ""), "url": r.get("url", ""), "fix_id": r.get("fix_id", ""), "source": "web" if isinstance(r.get("metadata"), dict) and r["metadata"].get("source") == "tavily_web_search" else "chromadb"} for r in rn_ctx]
+    except Exception:
+        pass
+
     return {
         "exists": True,
         "report_id": existing.id,
@@ -609,7 +652,10 @@ def get_report(
         "completion_tokens": existing.completion_tokens,
         "cost_usd": existing.cost_usd,
         "generated_at": existing.generated_at.isoformat() if existing.generated_at else None,
-        "cached": True
+        "cached": True,
+        "chart_image_base64": chart_b64,
+        "kb_references": kb_refs,
+        "release_notes_references": rn_refs,
     }
 
 
@@ -639,6 +685,30 @@ def generate_report(
         ).order_by(LLMReport.generated_at.desc()).first()
         
         if existing:
+            # Re-render chart for cached reports (cached in-memory after first render)
+            cached_chart_b64 = None
+            try:
+                from backend.llm.chart_renderer import render_latency_chart_base64, is_available as chart_available
+                if chart_available():
+                    cached_chart_b64 = render_latency_chart_base64(db, file_id)
+            except Exception:
+                pass
+
+            # Re-derive references
+            cached_kb = None
+            cached_rn = None
+            try:
+                gen = ReportGenerator(db)
+                s = gen.build_performance_summary(file_id) or {}
+                kb_c = gen.get_kb_context(file_id, s, max_results=5)
+                rn_c = gen.get_release_notes_context(file_id, s, max_results=6)
+                if kb_c:
+                    cached_kb = [ReferenceItem(title=k.get("title", ""), url=k.get("url", ""), source="web" if isinstance(k.get("metadata"), dict) and k["metadata"].get("source") == "tavily_web_search" else "chromadb") for k in kb_c]
+                if rn_c:
+                    cached_rn = [ReferenceItem(title=r.get("title", ""), url=r.get("url", ""), fix_id=r.get("fix_id", ""), source="web" if isinstance(r.get("metadata"), dict) and r["metadata"].get("source") == "tavily_web_search" else "chromadb") for r in rn_c]
+            except Exception:
+                pass
+
             return ReportResponse(
                 report_id=existing.id,
                 file_id=existing.file_id,
@@ -648,7 +718,10 @@ def generate_report(
                 completion_tokens=existing.completion_tokens,
                 cost_usd=existing.cost_usd,
                 generated_at=existing.generated_at,
-                cached=True
+                cached=True,
+                chart_image_base64=cached_chart_b64,
+                kb_references=cached_kb,
+                release_notes_references=cached_rn,
             )
     
     # Get default model if not specified
@@ -698,7 +771,10 @@ def generate_report(
         completion_tokens=report.completion_tokens,
         cost_usd=report.cost_usd,
         generated_at=report.generated_at,
-        cached=False
+        cached=False,
+        chart_image_base64=result.get("chart_image_base64"),
+        kb_references=[ReferenceItem(**r) for r in result["kb_references"]] if result.get("kb_references") else None,
+        release_notes_references=[ReferenceItem(**r) for r in result["release_notes_references"]] if result.get("release_notes_references") else None,
     )
 
 
@@ -730,6 +806,369 @@ def get_report_history(file_id: int, db: Session = Depends(get_db)):
         ],
         total_count=len(reports)
     )
+
+
+@router.get("/release-notes/{file_id}")
+def get_release_notes(
+    file_id: int,
+    release_version: Optional[str] = None,
+    source_endpoint: Optional[str] = None,
+    target_endpoint: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Return structured RECOB entries and EOL warnings.
+
+    Endpoints and version are passed from the frontend (which already
+    parsed them from the log file) to avoid expensive backend lookups.
+    Uses a pre-built JSON cache instead of querying ChromaDB at runtime.
+    """
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Build endpoint keys from frontend-supplied values
+    task_endpoint_keys: set[str] = set()
+    for ep in (source_endpoint or "", target_endpoint or ""):
+        if ep:
+            task_endpoint_keys.update(_normalize_endpoint_name(ep))
+
+    detected_date = _parse_version_date(release_version) if release_version else None
+    logger.info(f"Release notes: version={release_version}, endpoints={task_endpoint_keys}")
+
+    # Load pre-built release notes cache (fast JSON read, no ChromaDB)
+    rn_data = _load_release_notes_cache()
+    if not rn_data:
+        return {
+            "file_id": file_id,
+            "indexed_count": 0,
+            "results": [],
+            "eol_warnings": [],
+            "message": (
+                "No release notes indexed. Run the release notes indexer "
+                "(python kb-assistant/index_help_release_notes.py) to index "
+                "Qlik Replicate release notes for correlation analysis."
+            ),
+        }
+
+    all_entries: list[dict] = []
+    eol_entries: list[dict] = []
+    seen_fix_ids: set[str] = set()
+
+    for entry in rn_data.get("entries", []):
+        ver = entry.get("version", "")
+
+        # Version filter: skip older than detected release
+        if detected_date:
+            entry_date = _parse_version_date(ver)
+            if entry_date and entry_date < detected_date:
+                continue
+
+        fid = entry.get("fix_id", "")
+        if fid and fid in seen_fix_ids:
+            continue
+        if fid:
+            seen_fix_ids.add(fid)
+
+        # Tag future releases
+        if detected_date:
+            entry_date = _parse_version_date(ver)
+            entry["future_release"] = bool(entry_date and entry_date > detected_date)
+        else:
+            entry["future_release"] = False
+
+        all_entries.append(entry)
+
+    for eol in rn_data.get("eol_entries", []):
+        ver = eol.get("version", "")
+        if detected_date:
+            eol_date = _parse_version_date(ver)
+            if eol_date and eol_date < detected_date:
+                continue
+        eol_entries.append(eol)
+
+    # Filter by endpoint relevance and tag specificity
+    if task_endpoint_keys:
+        filtered = []
+        for e in all_entries:
+            match = _classify_endpoint_match(e, task_endpoint_keys)
+            if match:
+                e["endpoint_specific"] = (match == "specific")
+                filtered.append(e)
+        all_entries = filtered
+        eol_entries = [e for e in eol_entries if _eol_matches_endpoints(e, task_endpoint_keys)]
+
+    # Sort: current release first, then future
+    all_entries.sort(key=lambda e: (
+        e.get("future_release", False),
+        _parse_version_date(e.get("version", "")) or (0, 0),
+    ))
+
+    # Deduplicate EOL
+    seen_eol: set[str] = set()
+    unique_eol: list[dict] = []
+    for eol in eol_entries:
+        key = eol["description"][:80]
+        if key not in seen_eol:
+            seen_eol.add(key)
+            unique_eol.append(eol)
+
+    return {
+        "file_id": file_id,
+        "indexed_count": rn_data.get("total_entries", 0),
+        "results": all_entries[:30],
+        "eol_warnings": unique_eol[:10],
+    }
+
+
+_RELEASE_NOTES_CACHE: dict | None = None
+
+def _load_release_notes_cache() -> dict | None:
+    """Load pre-built release notes JSON file (generated by the indexer).
+
+    Returns the parsed dict or None if no cache exists.
+    """
+    global _RELEASE_NOTES_CACHE
+    if _RELEASE_NOTES_CACHE is not None:
+        return _RELEASE_NOTES_CACHE
+
+    cache_path = Path(__file__).resolve().parent.parent.parent / "data" / "release_notes_cache.json"
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            _RELEASE_NOTES_CACHE = json.load(f)
+        logger.info(f"Loaded release notes cache: {len(_RELEASE_NOTES_CACHE.get('entries', []))} entries")
+        return _RELEASE_NOTES_CACHE
+    except Exception as e:
+        logger.error(f"Failed to load release notes cache: {e}")
+        return None
+
+
+def _eol_matches_endpoints(eol: dict, task_keys: set[str]) -> bool:
+    """Check if an EOL warning is relevant to the task endpoints."""
+    desc = (eol.get("description", "") or "").lower()
+    for key in task_keys:
+        if key in desc:
+            return True
+        parts = key.split()
+        if any(p in desc for p in parts if len(p) > 3):
+            return True
+    return False
+
+
+def _parse_recob_entries(text: str) -> list[dict]:
+    """Parse individual RECOB fix entries from a raw chunk of community release notes.
+
+    The community pages follow a repeating pattern:
+        Jira issue: RECOB-XXXX
+        Salesforce case: NNNN (or N/A)
+        Type: Issue|Enhancement
+        Component/Process: <component name>
+        Description: <free text until next 'Jira issue:' block>
+    """
+    import re
+    entries = []
+    blocks = re.split(r'(?=Jira\s+issue\s*:\s*RECOB-)', text)
+    for block in blocks:
+        fid_m = re.search(r'Jira\s+issue\s*:\s*(RECOB-\d+(?:\s*,\s*RECOB-\d+)*)', block)
+        if not fid_m:
+            continue
+        fix_id = fid_m.group(1).strip()
+
+        sf_m = re.search(r'Salesforce\s+case\s*:\s*(.+?)(?:\n|$)', block)
+        sf_case = sf_m.group(1).strip() if sf_m else ""
+
+        type_m = re.search(r'Type\s*:\s*(.+?)(?:\n|$)', block)
+        entry_type = type_m.group(1).strip() if type_m else ""
+
+        comp_m = re.search(r'Component/Process\s*:\s*(.+?)(?:\n|$)', block)
+        component = comp_m.group(1).strip() if comp_m else ""
+
+        desc_m = re.search(r'Description\s*:\s*(.+)', block, re.DOTALL)
+        description = ""
+        if desc_m:
+            description = desc_m.group(1).strip()
+            description = re.sub(r'\s+', ' ', description)[:300]
+
+        entries.append({
+            "fix_id": fix_id,
+            "component": component,
+            "entry_type": entry_type,
+            "description": description,
+            "salesforce_case": sf_case,
+        })
+    return entries
+
+
+def _parse_all_eol_entries(text: str) -> list[dict]:
+    """Extract ALL End of Life / End of Support items (unfiltered, for indexing)."""
+    entries = []
+    lines = text.split('\n')
+    capture = False
+    section_count = 0
+    for ln in lines:
+        lower = ln.lower().strip()
+        if any(kw in lower for kw in ("has been discontinued", "no longer supported", "end of support")):
+            capture = True
+            section_count = 0
+            continue
+        if capture:
+            if not lower or lower.startswith(("resolved", "known", "downloads", "what", "migration")):
+                capture = False
+                continue
+            if section_count >= 20:
+                capture = False
+                continue
+            stripped = ln.strip()
+            if len(stripped) > 3:
+                section_count += 1
+                entries.append({
+                    "entry_type": "End of Support",
+                    "description": stripped,
+                    "component": "",
+                    "fix_id": "",
+                    "salesforce_case": "",
+                    "source": "chromadb",
+                })
+    return entries
+
+
+def _parse_eol_entries(text: str, task_endpoint_keys: set[str]) -> list[dict]:
+    """Extract End of Life / End of Support items relevant to the task's endpoints."""
+    entries = []
+    lines = text.split('\n')
+    capture = False
+    section_count = 0
+    for ln in lines:
+        lower = ln.lower().strip()
+        if any(kw in lower for kw in ("has been discontinued", "no longer supported", "end of support")):
+            capture = True
+            section_count = 0
+            continue
+        if capture:
+            if not lower or lower.startswith(("resolved", "known", "downloads", "what", "migration")):
+                capture = False
+                continue
+            if section_count >= 20:
+                capture = False
+                continue
+            stripped = ln.strip()
+            if len(stripped) > 3:
+                section_count += 1
+                line_lower = stripped.lower()
+                relevant = False
+                if task_endpoint_keys:
+                    for key in task_endpoint_keys:
+                        if key in line_lower:
+                            relevant = True
+                            break
+                        parts = key.split()
+                        if any(p in line_lower for p in parts if len(p) > 3):
+                            relevant = True
+                            break
+                if relevant:
+                    entries.append({
+                        "entry_type": "End of Support",
+                        "description": stripped,
+                        "component": "",
+                        "fix_id": "",
+                        "salesforce_case": "",
+                        "source": "chromadb",
+                    })
+    return entries
+
+
+def _classify_endpoint_match(entry: dict, task_keys: set[str]) -> str | None:
+    """Classify how a release note entry matches the task endpoints.
+
+    Returns "specific" for direct endpoint match, "generic" for
+    broadly-applicable components, or None for no match.
+    """
+    if entry.get("source") == "web":
+        return "generic"
+    comp = (entry.get("component", "") or "").lower()
+    if not comp:
+        return None
+
+    generic = {"server", "engine", "sorter", "log stream", "security",
+               "batch optimized apply", "common", "general", "setup"}
+    if comp in generic:
+        return "generic"
+
+    for key in task_keys:
+        if key in comp:
+            return "specific"
+        parts = key.split()
+        if any(p in comp for p in parts if len(p) > 3):
+            return "specific"
+
+    return None
+
+
+def _normalize_endpoint_name(raw: str) -> set[str]:
+    """Turn a task endpoint name like 'PostgreSQL Source' into a set of
+    lowercase search keys that can match the comma-separated endpoint_types
+    metadata field (e.g. {'postgresql'})."""
+    import re
+    stripped = re.sub(r'\b(source|target)\b', '', raw, flags=re.IGNORECASE).strip()
+    stripped = stripped.lower()
+    keys = {stripped} if stripped else set()
+
+    _ALIASES = {
+        "sql server": {"sql server", "microsoft sql server"},
+        "microsoft sql server": {"sql server", "microsoft sql server"},
+        "postgres": {"postgresql", "postgres"},
+        "postgresql": {"postgresql", "postgres"},
+        "db2": {"db2", "ibm db2"},
+        "ibm db2": {"db2", "ibm db2"},
+        "bigquery": {"bigquery", "google bigquery"},
+        "google bigquery": {"bigquery", "google bigquery"},
+        "redshift": {"redshift", "amazon redshift"},
+        "amazon redshift": {"redshift", "amazon redshift"},
+        "s3": {"s3", "amazon s3"},
+        "amazon s3": {"s3", "amazon s3"},
+        "adls": {"adls", "azure data lake"},
+        "azure data lake": {"adls", "azure data lake"},
+        "gcs": {"gcs", "google cloud storage"},
+        "google cloud storage": {"gcs", "google cloud storage"},
+        "flat file": {"flat file", "file channel", "file"},
+        "file channel": {"flat file", "file channel", "file"},
+        "file": {"flat file", "file channel", "file"},
+        "sap hana": {"sap hana", "sap"},
+        "sap ase": {"sap ase", "sybase"},
+        "sybase": {"sap ase", "sybase"},
+        "iseries": {"ibm iseries", "as/400"},
+        "ibm iseries": {"ibm iseries", "as/400"},
+    }
+    expanded = set()
+    for k in keys:
+        expanded.add(k)
+        if k in _ALIASES:
+            expanded.update(_ALIASES[k])
+    return expanded
+
+
+def _parse_version_date(version_str: str):
+    """Parse 'November 2024' or 'November2024' into (year, month_num)."""
+    import re
+    _MONTHS = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    m = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)\s*(\d{4})', version_str, re.IGNORECASE)
+    if m:
+        return (int(m.group(2)), _MONTHS[m.group(1).lower()])
+    return None
+
+
+def _version_is_gte(version_str: str, min_date: tuple) -> bool:
+    """Check if a version string represents a date >= min_date (year, month)."""
+    if not version_str:
+        return True  # Keep entries with no version (e.g. web results)
+    parsed = _parse_version_date(version_str)
+    if not parsed:
+        return True  # Can't parse, keep it
+    return parsed >= min_date
 
 
 @router.get("/report/by-id/{report_id}", response_model=ReportResponse)
@@ -1644,7 +2083,7 @@ def ask_question(
             kb_context_snippets.append(f"- {kb.get('title', 'KB Article')} ({int(similarity * 100)}% match): {snippet}")
 
     fallback_parts = [
-        "Smart Search could not fully answer this without a remote model.",
+        "Quick Insights could not fully answer this without a remote model.",
         "Context gathered from logs, summaries, and KB:"
     ]
     if log_context:
@@ -1892,6 +2331,49 @@ def save_finding_from_thread(
     )
 
 
+@router.post("/findings/{file_id}/export")
+def export_findings(
+    file_id: int,
+    db: Session = Depends(get_db)
+):
+    """Export findings — returns markdown content for the native save dialog."""
+    from backend.database import SavedFinding
+
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    findings = db.query(SavedFinding).filter(
+        SavedFinding.file_id == file_id
+    ).order_by(SavedFinding.created_at.desc()).all()
+
+    md = f"# Analysis Findings\n\n**File:** {file.filename}\n**Exported:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+
+    for i, f in enumerate(findings, 1):
+        meta = json.loads(f.metadata_json) if f.metadata_json else {}
+        if meta.get("auto_saved"):
+            continue
+        title = f.title or f.finding_type or "Finding"
+        md += f"## {i}. {title}\n\n"
+        md += f"**Type:** {f.finding_type}  \n"
+        md += f"**Date:** {f.created_at.strftime('%Y-%m-%d %H:%M')}  \n"
+        if f.line_number:
+            md += f"**Line:** {f.line_number}  \n"
+        src = meta.get("source", "")
+        if src:
+            md += f"**Source:** {src.replace('_', ' ')}  \n"
+        if meta.get("severity"):
+            md += f"**Severity:** {meta['severity']}  \n"
+        if meta.get("component"):
+            md += f"**Component:** {meta['component']}  \n"
+        md += f"\n{f.content}\n\n---\n\n"
+
+    safe_name = re.sub(r'[^\w\-.]', '_', file.filename or "findings")
+    filename = f"findings_{safe_name}_{datetime.utcnow().strftime('%Y%m%d')}.md"
+
+    return {"success": True, "filename": filename, "content": md}
+
+
 @router.get("/findings/{file_id}", response_model=SavedFindingsListResponse)
 def get_findings(
     file_id: int,
@@ -2019,6 +2501,10 @@ def get_kb_sources(
     kb_articles = db.query(KBArticle).filter(KBArticle.source == "kb_article").count()
     markdown = db.query(KBArticle).filter(KBArticle.source == "markdown").count()
     indexed = db.query(KBArticle).filter(KBArticle.status == "indexed").count()
+
+    # Release notes stats from JSON cache
+    rn_cache = _load_release_notes_cache()
+    rn_count = rn_cache.get("total_entries", 0) if rn_cache else 0
     
     import math
     total_pages = math.ceil(total_count / page_size) if page_size > 0 else 1
@@ -2045,9 +2531,179 @@ def get_kb_sources(
             "total": total,
             "kb_articles": kb_articles,
             "markdown": markdown,
-            "indexed": indexed
+            "indexed": indexed,
+            "release_notes": rn_count,
         }
     )
+
+
+@router.get("/kb/release-notes-index")
+def get_release_notes_index():
+    """Return release notes grouped by version for the Sources tab."""
+    rn_cache = _load_release_notes_cache()
+    if not rn_cache:
+        return {"versions": [], "total_entries": 0, "total_eol": 0}
+
+    versions_map: dict[str, dict] = {}
+    for entry in rn_cache.get("entries", []):
+        ver = entry.get("version", "Unknown")
+        if ver not in versions_map:
+            versions_map[ver] = {
+                "version": ver,
+                "url": entry.get("url", ""),
+                "entry_count": 0,
+                "components": set(),
+            }
+        versions_map[ver]["entry_count"] += 1
+        comp = entry.get("component", "")
+        if comp:
+            versions_map[ver]["components"].add(comp)
+
+    month_order = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+
+    def sort_key(v):
+        parsed = _parse_version_date(v["version"])
+        return parsed if parsed else (0, 0)
+
+    versions = sorted(versions_map.values(), key=sort_key, reverse=True)
+    for v in versions:
+        v["components"] = sorted(v["components"])
+
+    return {
+        "versions": versions,
+        "total_entries": rn_cache.get("total_entries", 0),
+        "total_eol": rn_cache.get("total_eol", 0),
+    }
+
+
+class AddReleaseNoteURLRequest(BaseModel):
+    url: str
+    version: Optional[str] = None
+
+
+@router.post("/kb/release-notes-url")
+def add_release_notes_url(request: AddReleaseNoteURLRequest):
+    """Fetch a community release notes page and add its entries to the cache."""
+    import requests as http_requests
+    from bs4 import BeautifulSoup
+
+    global _RELEASE_NOTES_CACHE
+
+    url = request.url.strip()
+    if "community.qlik.com" not in url and "qlik.com" not in url:
+        raise HTTPException(status_code=400, detail="URL must be from qlik.com")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    try:
+        resp = http_requests.get(url, headers=headers, timeout=25)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch URL (HTTP {resp.status_code})")
+        if len(resp.text) < 500:
+            raise HTTPException(status_code=502, detail="Page content too small")
+    except http_requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Network error: {e}")
+
+    try:
+        soup = BeautifulSoup(resp.text, "lxml")
+    except Exception:
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+    content_elem = None
+    for sel in [".lia-message-body-content", ".lia-message-body",
+                ".lia-tkb-article-body-content", ".MessageBody"]:
+        content_elem = soup.select_one(sel)
+        if content_elem and len(content_elem.get_text(strip=True)) > 200:
+            break
+
+    if not content_elem:
+        raise HTTPException(status_code=422, detail="Could not find release notes content on this page")
+
+    raw_text = content_elem.get_text(separator="\n", strip=True)
+    raw_text = re.sub(r"\n{3,}", "\n\n", raw_text)
+
+    # Extract version from title
+    title = ""
+    for sel in ["h1.lia-message-subject", "h2.lia-message-subject", ".page-header h1"]:
+        el = soup.select_one(sel)
+        if el:
+            title = el.get_text(strip=True)
+            break
+    if not title:
+        te = soup.find("title")
+        if te:
+            title = re.sub(r"\s*[-|]\s*Qlik Community.*$", "", te.get_text(strip=True))
+
+    version = request.version
+    if not version:
+        m = re.search(
+            r"(January|February|March|April|May|June|July|August|September|"
+            r"October|November|December)\s+\d{4}",
+            title or "", re.IGNORECASE,
+        )
+        version = m.group(0) if m else "Custom"
+
+    # Parse RECOB entries and EOL (unfiltered for indexing)
+    new_entries = _parse_recob_entries(raw_text)
+    eol_items = _parse_all_eol_entries(raw_text)
+
+    # Load existing cache and merge
+    cache_path = Path(__file__).resolve().parent.parent.parent / "data" / "release_notes_cache.json"
+    cache_path.parent.mkdir(exist_ok=True)
+
+    existing: dict = {}
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {"entries": [], "eol_entries": [], "total_entries": 0, "total_eol": 0}
+    else:
+        existing = {"entries": [], "eol_entries": [], "total_entries": 0, "total_eol": 0}
+
+    existing_ids = {e.get("fix_id") for e in existing.get("entries", []) if e.get("fix_id")}
+    added = 0
+    for entry in new_entries:
+        if entry["fix_id"] not in existing_ids:
+            entry["version"] = version
+            entry["url"] = url
+            existing["entries"].append(entry)
+            existing_ids.add(entry["fix_id"])
+            added += 1
+
+    eol_added = 0
+    for eol in eol_items:
+        eol["version"] = version
+        eol["url"] = url
+        existing["eol_entries"].append(eol)
+        eol_added += 1
+
+    existing["total_entries"] = len(existing["entries"])
+    existing["total_eol"] = len(existing["eol_entries"])
+
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(existing, f, ensure_ascii=False, indent=2)
+
+    # Invalidate in-memory cache
+    _RELEASE_NOTES_CACHE = None
+
+    logger.info(f"Added release notes from {url}: {added} RECOB, {eol_added} EOL entries (version: {version})")
+    return {
+        "success": True,
+        "version": version,
+        "title": title,
+        "entries_added": added,
+        "eol_added": eol_added,
+        "total_entries": existing["total_entries"],
+    }
 
 
 @router.post("/kb/markdown")

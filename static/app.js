@@ -55,11 +55,41 @@ document.addEventListener("DOMContentLoaded", () => {
   const threadLogView = document.getElementById("threadLogView");
   const componentInfo = document.getElementById("componentInfo");
   
-  // Placeholder handling for log area (show image until a file loads)
+  // Placeholder handling for log area (welcome screen until a file loads)
   function showLogPlaceholder() {
     if (logPreview) {
       logPreview.classList.add('log-placeholder');
-      logPreview.innerHTML = '';
+      logPreview.innerHTML = `
+        <div class="log-welcome">
+          <p class="log-welcome-kicker">Welcome to</p>
+          <div class="log-welcome-image-wrap">
+            <img src="/static/new_welcome_screen.png" alt="">
+          </div>
+          <div class="log-welcome-section">
+            <h2 class="log-welcome-heading">Getting Started</h2>
+            <div class="log-welcome-cta-row">
+              <button type="button" id="welcomeOpenLogBtn" class="btn log-welcome-open-btn">Open log file</button>
+            </div>
+            <p class="log-welcome-getting-started">To start you need to open a log file. Once it loads here, you can search, filter by thread, and inspect errors and performance.</p>
+            <p class="log-welcome-hint">If the AI API key has not been configured yet, click the <span class="log-welcome-inline-ai-wrap"><button type="button" id="welcomeAiSettingsBtn" class="ai-settings-btn" title="AI Settings" aria-label="AI Settings"><svg width="18" height="18" viewBox="0 0 512 512" fill="currentColor"><path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240zM384 384l-56.5 21.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 448l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 448l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 384l-21.2-56.5c-1.7-4.5-6-7.5-10.8-7.5s-9.1 3-10.8 7.5L384 384z"/></svg><span class="ai-settings-indicator"></span></button></span> in the top-right corner of the header.</p>
+          </div>
+        </div>`;
+      const welcomeOpenBtn = logPreview.querySelector('#welcomeOpenLogBtn');
+      if (welcomeOpenBtn) {
+        welcomeOpenBtn.addEventListener('click', () => {
+          if (window.pywebview && window.pywebview.api && nativeOpenBtn) {
+            nativeOpenBtn.click();
+          } else if (logFileInput) {
+            logFileInput.click();
+          }
+        });
+      }
+      const welcomeAiBtn = logPreview.querySelector('#welcomeAiSettingsBtn');
+      const mainAiBtn = document.getElementById('aiSettingsBtn');
+      if (welcomeAiBtn && mainAiBtn) {
+        welcomeAiBtn.addEventListener('click', () => mainAiBtn.click());
+      }
+      updateAISettingsIndicator();
     }
   }
 
@@ -206,6 +236,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const closeLogFileBtn = document.getElementById('closeLogFileBtn');
+  if (closeLogFileBtn) {
+    closeLogFileBtn.addEventListener('click', () => closeLogFile());
+  }
+
   // Tabs
   window.analysisTabFirstClick = true;
   tabBtns.forEach(btn => {
@@ -226,6 +261,24 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   });
+
+  // Latency graph collapse/expand toggle
+  const graphHeaderToggle = document.getElementById('graphHeaderToggle');
+  if (graphHeaderToggle) {
+    graphHeaderToggle.addEventListener('click', () => {
+      const section = document.getElementById('graphSection');
+      if (section) {
+        section.classList.toggle('collapsed');
+        // Resize Plotly chart when expanding
+        if (!section.classList.contains('collapsed')) {
+          const graphDiv = document.getElementById('latencyGraph');
+          if (graphDiv && graphDiv.data) {
+            setTimeout(() => Plotly.Plots.resize(graphDiv), 50);
+          }
+        }
+      }
+    });
+  }
 
   // Left Panel Tabs (Files/Search)
   const leftPanelTabs = document.querySelectorAll('.left-panel-tab');
@@ -495,26 +548,39 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   
   // Back to Bulk Map notification handlers
+  let _bulkMapNotifTimer = null;
+  
+  function dismissBulkMapNotification() {
+    if (backToBulkMapNotification) backToBulkMapNotification.style.display = 'none';
+    if (_bulkMapNotifTimer) { clearTimeout(_bulkMapNotifTimer); _bulkMapNotifTimer = null; }
+  }
+  
+  function showBulkMapNotification() {
+    if (!backToBulkMapNotification) return;
+    backToBulkMapNotification.style.display = 'block';
+    if (_bulkMapNotifTimer) clearTimeout(_bulkMapNotifTimer);
+    _bulkMapNotifTimer = setTimeout(dismissBulkMapNotification, 10000);
+  }
+  
   if (backToBulkMapBtn) {
     backToBulkMapBtn.addEventListener('click', () => {
-      // Switch to Analysis tab
       const analysisTab = document.querySelector('.tab-btn[data-tab="analysis-tab"]');
       if (analysisTab) analysisTab.click();
-      
-      // Show bulk map view
       setTimeout(() => {
         showBulkMapInMain();
-        // Hide notification
-        backToBulkMapNotification.style.display = 'none';
+        dismissBulkMapNotification();
       }, 100);
     });
   }
   
   if (closeBulkMapNotification) {
-    closeBulkMapNotification.addEventListener('click', () => {
-      backToBulkMapNotification.style.display = 'none';
-    });
+    closeBulkMapNotification.addEventListener('click', dismissBulkMapNotification);
   }
+  
+  // Dismiss notification on any tab navigation
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', dismissBulkMapNotification);
+  });
   
   function applyHighlightFilter() {
     const checkboxes = document.querySelectorAll('#highlightFilterDropdown input[type="checkbox"]');
@@ -1611,6 +1677,9 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedFileId = null; // Clear selection since file is now loaded
     hideFileMetadataPanel();
     
+    // Show file-dependent tabs
+    document.querySelectorAll('.file-dependent-tab').forEach(t => t.style.display = '');
+    
     // Dispatch fileLoaded event for components that need to know
     document.dispatchEvent(new CustomEvent('fileLoaded', { 
       detail: { fileId: id } 
@@ -1688,12 +1757,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
-  // Clear all data when loading a new file
-  function clearAllFileData() {
+  // Clear all data when loading a new file (or closing the log when showWelcomeAfter is true)
+  function clearAllFileData(options = {}) {
+    const { showWelcomeAfter = false } = options;
     // Clear log preview
     if (logPreview) {
-      hideLogPlaceholder();
-      logPreview.innerHTML = '<div class="log-line">Loading...</div>';
+      if (showWelcomeAfter) {
+        showLogPlaceholder();
+      } else {
+        hideLogPlaceholder();
+        logPreview.innerHTML = '<div class="log-line">Loading...</div>';
+      }
     }
     
     // Clear compact stats panel
@@ -1780,10 +1854,10 @@ document.addEventListener("DOMContentLoaded", () => {
       latencyGraph.innerHTML = '<p class="placeholder-text">Loading latency data...</p>';
     }
     
-    // Reset graph section collapsed state
+    // Reset graph section to collapsed (will expand when data loads)
     const graphSection = document.querySelector('#log-tab .graph-section');
     if (graphSection) {
-      graphSection.classList.remove('collapsed');
+      graphSection.classList.add('collapsed');
     }
     
     // Hide time range notification if visible
@@ -1803,6 +1877,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (fileOperationsLink) fileOperationsLink.style.display = 'none';
     if (issuesLink) issuesLink.style.display = 'none';
     if (logSummaryLink) logSummaryLink.style.display = 'none';
+    const logSummaryNewBadge = document.getElementById('logSummaryNewBadge');
+    if (logSummaryNewBadge) logSummaryNewBadge.style.display = 'none';
     const performanceCockpitLink = document.getElementById('performanceCockpitLink');
     if (performanceCockpitLink) performanceCockpitLink.style.display = 'none';
     
@@ -1857,6 +1933,38 @@ document.addEventListener("DOMContentLoaded", () => {
     // Clear active report link styling
     const reportLinks = document.querySelectorAll('.report-link');
     reportLinks.forEach(link => link.classList.remove('active'));
+
+    if (showWelcomeAfter && loadedCountSpan) {
+      loadedCountSpan.textContent = '0';
+    }
+  }
+
+  function closeLogFile() {
+    if (!currentFileId) return;
+    if (window.pollInterval) {
+      clearInterval(window.pollInterval);
+      window.pollInterval = null;
+    }
+    isFetchingLog = false;
+    currentFileId = null;
+    currentFileName = '';
+    selectedFileId = null;
+    const fileInfoBar = document.getElementById('fileInfoBar');
+    if (fileInfoBar) fileInfoBar.style.display = 'none';
+    if (fileStatusDiv) fileStatusDiv.textContent = '';
+    hideFileMetadataPanel();
+    document.querySelectorAll('.file-dependent-tab').forEach((t) => {
+      t.style.display = 'none';
+    });
+    if (window.aiAssistant) window.aiAssistant.setFileId(null);
+    if (window.aiReportManager && typeof window.aiReportManager.setFileId === 'function') {
+      window.aiReportManager.setFileId(null);
+    }
+    document.dispatchEvent(new CustomEvent('fileClosed'));
+    clearAllFileData({ showWelcomeAfter: true });
+    fetchFileList();
+    const logTabBtn = document.querySelector('.tab-btn[data-tab="log-tab"]');
+    if (logTabBtn) logTabBtn.click();
   }
 
   function fetchLogLines(start, limit, append, direction = 'down') {
@@ -2676,6 +2784,9 @@ document.addEventListener("DOMContentLoaded", () => {
       // Fetch Performance Cockpit data to check if there's anything to show
       fetchPerformanceCockpitCheck();
       
+      // Populate unavailable reports after all async fetches settle
+      setTimeout(updateUnavailableReports, 4000);
+
       // Render threads in Log View panel
       renderLogViewThreads(data);
       
@@ -2798,12 +2909,7 @@ document.addEventListener("DOMContentLoaded", () => {
       console.log('loadComponentActivity called - Component:', component, 'Thread:', thread);
       
       // Hide ALL other views first
-      document.getElementById('bulkMapMainView').style.display = 'none';
-      document.getElementById('bulkActivityMainView').style.display = 'none';
-      document.getElementById('fileOperationsMainView').style.display = 'none';
-      document.getElementById('issuesMainView').style.display = 'none';
-      document.getElementById('logSummaryMainView').style.display = 'none';
-      document.getElementById('performanceCockpitMainView').style.display = 'none';
+      document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
       
       // Show thread log view
       document.getElementById('threadLogView').style.display = 'block';
@@ -3046,7 +3152,6 @@ document.addEventListener("DOMContentLoaded", () => {
             ];
             
             const layout = {
-                title: 'Latency Over Time (drag to select time range)',
                 xaxis: { 
                     title: 'Timestamp',
                     type: 'date'
@@ -3054,9 +3159,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 yaxis: { 
                     title: 'Latency (seconds)'
                 },
-                margin: { t: 40, r: 20, b: 60, l: 60 },
+                margin: { t: 10, r: 20, b: 50, l: 60 },
                 hovermode: 'closest',
-                dragmode: 'select'  // Enable box selection
+                dragmode: 'select',
+                autosize: true
             };
             
             const config = { 
@@ -3066,6 +3172,12 @@ document.addEventListener("DOMContentLoaded", () => {
             };
             
             Plotly.newPlot('latencyGraph', traces, layout, config);
+            
+            // Ensure chart fits after rendering
+            setTimeout(() => {
+                const gd = document.getElementById('latencyGraph');
+                if (gd) Plotly.Plots.resize(gd);
+            }, 100);
             
             const graphDiv = document.getElementById('latencyGraph');
             
@@ -3190,12 +3302,11 @@ document.addEventListener("DOMContentLoaded", () => {
       // Store the target element for line-specific operations
       contextMenuTargetElement = targetElement || e.target.closest('.log-line');
       
-      // Add to Findings
+      // Add to Findings (save via API)
       const addFindingBtn = document.getElementById("ctx-add-finding");
-      addFindingBtn.onclick = () => {
-          findings.push(text);
-          renderFindings();
+      addFindingBtn.onclick = async () => {
           contextMenu.style.display = "none";
+          await saveLogLineToFindings(text, contextMenuTargetElement);
       };
       
       // Highlight with color picker
@@ -3282,6 +3393,282 @@ document.addEventListener("DOMContentLoaded", () => {
           contextMenu.style.display = "none";
       };
   }
+
+  // Save a log line or text to findings via API
+  async function saveLogLineToFindings(text, targetElement) {
+    if (!currentFileId) return;
+    
+    let lineNumber = null;
+    if (targetElement) {
+      const idx = parseInt(targetElement.dataset.idx);
+      if (!isNaN(idx)) lineNumber = idx;
+    }
+    
+    try {
+      const resp = await fetch('/api/llm/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: currentFileId,
+          finding_type: 'log_line',
+          title: text.slice(0, 120),
+          content: text,
+          line_number: lineNumber,
+          metadata: { source: 'context_menu' }
+        })
+      });
+      
+      if (resp.ok) {
+        if (window.savedFindingsManager) {
+          window.savedFindingsManager.loadFindings();
+        }
+        showToast('Added to Findings');
+      }
+    } catch (e) {
+      console.error('Failed to save finding:', e);
+    }
+  }
+  window.saveLogLineToFindings = saveLogLineToFindings;
+  
+  // Save an issue to findings
+  window.saveIssueFinding = async function(issueIdx) {
+    if (!currentFileId || !window.issuesData || !window.issuesData.issues) return;
+    const issue = window.issuesData.issues[issueIdx];
+    if (!issue) return;
+    
+    const lineNumber = issue.occurrences[0]?.line_number || null;
+    const content = `**[${issue.severity.toUpperCase()}]** [${issue.component}] ${issue.message_summary}\n\nOccurrences: ${issue.occurrences.length}`;
+    
+    try {
+      const resp = await fetch('/api/llm/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: currentFileId,
+          finding_type: 'log_line',
+          title: `${issue.severity.toUpperCase()}: ${issue.message_summary}`.slice(0, 120),
+          content,
+          line_number: lineNumber,
+          metadata: { source: 'issues_view', severity: issue.severity, component: issue.component }
+        })
+      });
+      if (resp.ok) {
+        if (window.savedFindingsManager) window.savedFindingsManager.loadFindings();
+        showToast('Issue added to Findings');
+      }
+    } catch (e) {
+      console.error('Failed to save issue finding:', e);
+    }
+  };
+  
+  // Save a Log Summary section to findings
+  window.saveSectionToFindings = async function(btn) {
+    if (!currentFileId) return;
+    const section = btn.closest('.ai-insight-section');
+    if (!section) return;
+    
+    const titleEl = section.querySelector('h3');
+    const contentEl = section.querySelector('.ai-insight-section-content');
+    const title = titleEl ? titleEl.textContent.trim() : 'Log Summary Section';
+    const content = contentEl ? contentEl.innerText.trim() : '';
+    
+    try {
+      const resp = await fetch('/api/llm/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: currentFileId,
+          finding_type: 'custom',
+          title: `Summary: ${title}`.slice(0, 120),
+          content: `**${title}**\n\n${content}`,
+          metadata: { source: 'log_summary_section' }
+        })
+      });
+      if (resp.ok) {
+        btn.style.color = '#10b981';
+        if (window.savedFindingsManager) window.savedFindingsManager.loadFindings();
+        showToast('Section added to Findings');
+      }
+    } catch (e) {
+      console.error('Failed to save section to findings:', e);
+    }
+  };
+  
+  // ── Universal "Add to Findings" context menu for analysis reports ──
+  (function initReportContextMenu() {
+    const menu = document.createElement('div');
+    menu.id = 'reportCtxMenu';
+    menu.className = 'report-context-menu';
+    menu.style.display = 'none';
+    menu.innerHTML = `
+      <button id="reportCtxAddFinding" class="report-ctx-item">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2zm2-1a1 1 0 00-1 1v12.566l4.723-2.482a.5.5 0 01.554 0L13 14.566V2a1 1 0 00-1-1H4z"/></svg>
+        Add to Findings
+      </button>
+    `;
+    document.body.appendChild(menu);
+    
+    let _ctxPayload = null;
+    
+    const addBtn = menu.querySelector('#reportCtxAddFinding');
+    addBtn.addEventListener('click', async () => {
+      menu.style.display = 'none';
+      if (!_ctxPayload || !currentFileId) return;
+      try {
+        const resp = await fetch('/api/llm/findings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_id: currentFileId,
+            finding_type: 'custom',
+            title: _ctxPayload.title.slice(0, 120),
+            content: _ctxPayload.content,
+            line_number: _ctxPayload.line || null,
+            metadata: { source: _ctxPayload.source }
+          })
+        });
+        if (resp.ok) {
+          if (window.savedFindingsManager) window.savedFindingsManager.loadFindings();
+          showToast('Added to Findings');
+        }
+      } catch (e) {
+        console.error('Failed to save report finding:', e);
+        showToast('Failed to save finding', 'error');
+      }
+    });
+    
+    document.addEventListener('click', () => { menu.style.display = 'none'; });
+    
+    function extractRowText(tr) {
+      return Array.from(tr.cells).map(c => c.innerText.trim()).join(' | ');
+    }
+    
+    function extractTableHeaders(tr) {
+      const table = tr.closest('table');
+      if (!table) return null;
+      const ths = table.querySelectorAll('thead th');
+      if (ths.length === 0) return null;
+      return Array.from(ths).map(th => th.innerText.trim());
+    }
+    
+    function formatRowWithHeaders(tr) {
+      const headers = extractTableHeaders(tr);
+      const cells = Array.from(tr.cells).map(c => c.innerText.trim());
+      if (headers && headers.length === cells.length) {
+        return cells.map((v, i) => `**${headers[i]}**: ${v}`).join('\n');
+      }
+      return cells.join(' | ');
+    }
+    
+    function showReportCtx(e, payload) {
+      e.preventDefault();
+      e.stopPropagation();
+      _ctxPayload = payload;
+      menu.style.display = 'block';
+      const x = Math.min(e.clientX, window.innerWidth - 180);
+      const y = Math.min(e.clientY, window.innerHeight - 40);
+      menu.style.left = x + 'px';
+      menu.style.top = y + 'px';
+    }
+    
+    // Delegate on analysis tab – catch right-click on table rows, cockpit sections, insights
+    const analysisTab = document.getElementById('analysis-tab');
+    if (analysisTab) {
+      analysisTab.addEventListener('contextmenu', (e) => {
+        // 1) Table rows in any report (bulk map, bulk activity, file ops, pain tables…)
+        const tr = e.target.closest('tr[data-line], tr');
+        if (tr && tr.closest('table') && tr.closest('thead') === null) {
+          const viewEl = tr.closest('.analysis-view');
+          const source = viewEl ? viewEl.id : 'analysis_report';
+          const line = tr.dataset.line ? parseInt(tr.dataset.line) : null;
+          const formatted = formatRowWithHeaders(tr);
+          const shortTitle = extractRowText(tr).slice(0, 100);
+          showReportCtx(e, { title: shortTitle, content: formatted, line, source });
+          return;
+        }
+        // 2) Cockpit sections (latency cards, spikes, bottleneck, recommendations…)
+        const cockpitSection = e.target.closest('.cockpit-section');
+        if (cockpitSection) {
+          const heading = cockpitSection.querySelector('h3');
+          const sTitle = heading ? heading.textContent.trim() : 'Performance Data';
+          const text = cockpitSection.innerText.trim();
+          showReportCtx(e, { title: sTitle.slice(0, 120), content: `**${sTitle}**\n\n${text}`, line: null, source: 'performance_cockpit' });
+          return;
+        }
+        // 3) Latency cards
+        const latencyCard = e.target.closest('.latency-card');
+        if (latencyCard) {
+          const text = latencyCard.innerText.trim();
+          showReportCtx(e, { title: text.slice(0, 100), content: text, line: null, source: 'latency_profile' });
+          return;
+        }
+        // 4) Insight notices (border-left styled blocks in bulk reports)
+        const notice = e.target.closest('[style*="border-left"]');
+        if (notice) {
+          const text = notice.innerText.trim();
+          showReportCtx(e, { title: text.slice(0, 100), content: text, line: null, source: 'analysis_insight' });
+        }
+      });
+    }
+    
+    // Delegate on log-tab for compact-stats, graph data points
+    const logTab = document.getElementById('log-tab');
+    if (logTab) {
+      logTab.addEventListener('contextmenu', (e) => {
+        // Check for stat items in compact stats panel or graph stats
+        const statItem = e.target.closest('.compact-stat-item, .stat-card');
+        if (statItem) {
+          const text = statItem.innerText.trim();
+          showReportCtx(e, { title: text.slice(0, 100), content: text, line: null, source: 'log_stats' });
+          return;
+        }
+      });
+    }
+    
+    // Delegate on the log summary view inside analysis-tab
+    const logSummaryMain = document.getElementById('logSummaryMainContent');
+    if (logSummaryMain) {
+      logSummaryMain.addEventListener('contextmenu', (e) => {
+        // Right-click on any paragraph, list item, or block within a section's content
+        const sectionContent = e.target.closest('.ai-insight-section-content');
+        if (!sectionContent) return;
+        
+        // Find the closest meaningful block
+        const block = e.target.closest('p, li, tr, blockquote, .highlight-box, pre');
+        if (block) {
+          e.preventDefault();
+          e.stopPropagation();
+          const text = block.innerText.trim();
+          const section = sectionContent.closest('.ai-insight-section');
+          const sectionTitle = section ? section.querySelector('h3')?.textContent.trim() || '' : '';
+          showReportCtx(e, {
+            title: `${sectionTitle}: ${text}`.slice(0, 120),
+            content: `**${sectionTitle}**\n${text}`,
+            line: null,
+            source: 'log_summary_detail'
+          });
+        }
+      });
+    }
+  })();
+  
+  // Lightweight toast notification
+  function showToast(message, type = 'info') {
+    const existing = document.querySelector('.app-toast');
+    if (existing) existing.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = `app-toast app-toast-${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => toast.classList.add('visible'), 10);
+    setTimeout(() => {
+      toast.classList.remove('visible');
+      setTimeout(() => toast.remove(), 300);
+    }, 2000);
+  }
+  window.showToast = showToast;
 
   function renderFindings() {
       findingsList.innerHTML = "";
@@ -3902,11 +4289,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const logViewTab = document.querySelector('.tab-btn[data-tab="log-tab"]');
         if (logViewTab) logViewTab.click();
         
-        // Show back to bulk map notification
-        if (backToBulkMapNotification) {
-          backToBulkMapNotification.style.display = 'block';
-        }
-        
+        showBulkMapNotification();
+
         // Jump to the line
         setTimeout(() => {
           jumpToLineAndHighlight(lineNum, '');
@@ -3917,7 +4301,7 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Helper to set active report link
   function setActiveReportLink(activeId) {
-    const reportLinks = ['logSummaryLink', 'bulkMapLink', 'bulkActivityLink', 'fileOperationsLink', 'issuesLink', 'performanceCockpitLink'];
+    const reportLinks = ['logSummaryLink', 'bulkMapLink', 'bulkActivityLink', 'fileOperationsLink', 'issuesLink', 'performanceCockpitLink', 'releaseNotesLink'];
     reportLinks.forEach(id => {
       const link = document.getElementById(id);
       if (link) {
@@ -3933,13 +4317,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Switch to bulk map view in main area
   window.showBulkMapInMain = function() {
     // Hide all analysis views
-    document.getElementById('threadLogView').style.display = 'none';
-    document.getElementById('bulkActivityMainView').style.display = 'none';
-    document.getElementById('fileOperationsMainView').style.display = 'none';
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
     document.getElementById('threadActivityControls').style.display = 'none';
-    document.getElementById('issuesMainView').style.display = 'none';
-    document.getElementById('logSummaryMainView').style.display = 'none';
-    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show bulk map view
     const bulkMapView = document.getElementById('bulkMapMainView');
@@ -4420,11 +4799,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const logViewTab = document.querySelector('.tab-btn[data-tab="log-tab"]');
         if (logViewTab) logViewTab.click();
         
-        // Show back to bulk map notification
-        if (backToBulkMapNotification) {
-          backToBulkMapNotification.style.display = 'block';
-        }
-        
+        showBulkMapNotification();
+
         // Jump to the line
         setTimeout(() => {
           jumpToLineAndHighlight(lineNum, '');
@@ -4492,13 +4868,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Switch to bulk activity view in main area
   window.showBulkActivityInMain = function() {
     // Hide all analysis views
-    document.getElementById('threadLogView').style.display = 'none';
-    document.getElementById('bulkMapMainView').style.display = 'none';
-    document.getElementById('fileOperationsMainView').style.display = 'none';
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
     document.getElementById('threadActivityControls').style.display = 'none';
-    document.getElementById('issuesMainView').style.display = 'none';
-    document.getElementById('logSummaryMainView').style.display = 'none';
-    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show bulk activity view
     const bulkActivityView = document.getElementById('bulkActivityMainView');
@@ -4516,13 +4887,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Switch to file operations view in main area
   window.showFileOperationsInMain = function() {
     // Hide all analysis views
-    document.getElementById('threadLogView').style.display = 'none';
-    document.getElementById('bulkMapMainView').style.display = 'none';
-    document.getElementById('bulkActivityMainView').style.display = 'none';
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
     document.getElementById('threadActivityControls').style.display = 'none';
-    document.getElementById('issuesMainView').style.display = 'none';
-    document.getElementById('logSummaryMainView').style.display = 'none';
-    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show file operations view
     const fileOpsView = document.getElementById('fileOperationsMainView');
@@ -4687,13 +5053,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show issues in main view
   window.showIssuesInMain = function() {
     // Hide ALL other views
-    document.getElementById('threadLogView').style.display = 'none';
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
     document.getElementById('threadActivityControls').style.display = 'none';
-    document.getElementById('bulkMapMainView').style.display = 'none';
-    document.getElementById('bulkActivityMainView').style.display = 'none';
-    document.getElementById('fileOperationsMainView').style.display = 'none';
-    document.getElementById('logSummaryMainView').style.display = 'none';
-    document.getElementById('performanceCockpitMainView').style.display = 'none';
     
     // Show issues view (uses flexbox layout)
     document.getElementById('issuesMainView').style.display = 'flex';
@@ -4879,6 +5240,11 @@ document.addEventListener("DOMContentLoaded", () => {
             <span class="issue-message" title="${escapeHtml(issue.message_summary)}">${escapeHtml(issue.message_summary)}</span>
             <span class="issue-timestamp">${formatTimelineTime(firstTimestamp)}</span>
             <span class="issue-count">${issue.occurrences.length}x</span>
+            <button class="issue-resolve-icon-btn" onclick="event.stopPropagation(); window.saveIssueFinding(${idx});" title="Add to Findings">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2zm2-1a1 1 0 00-1 1v12.566l4.723-2.482a.5.5 0 01.554 0L13 14.566V2a1 1 0 00-1-1H4z"/>
+              </svg>
+            </button>
             <button class="issue-resolve-icon-btn" onclick="event.stopPropagation(); window.openIssueResolution(${idx});" title="Get Resolution">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
@@ -5218,8 +5584,8 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Go to AI Report tab
   window.goToAIReport = function() {
-    // Switch to Findings tab and select AI Insights subtab
-    document.querySelector('[data-tab="findings-tab"]')?.click();
+    // Switch to Resources tab and select AI Insights subtab
+    document.querySelector('[data-tab="resources-tab"]')?.click();
     setTimeout(() => {
       document.querySelector('[data-subtab="insights-subtab"]')?.click();
     }, 100);
@@ -5735,21 +6101,18 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show log summary in main view
   window.showLogSummaryInMain = function() {
     // Hide ALL other views
-    document.getElementById('threadLogView').style.display = 'none';
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
     document.getElementById('threadActivityControls').style.display = 'none';
-    document.getElementById('bulkMapMainView').style.display = 'none';
-    document.getElementById('bulkActivityMainView').style.display = 'none';
-    document.getElementById('fileOperationsMainView').style.display = 'none';
-    document.getElementById('issuesMainView').style.display = 'none';
-    document.getElementById('performanceCockpitMainView').style.display = 'none';
-    const releaseNotesView = document.getElementById('releaseNotesMainView');
-    if (releaseNotesView) releaseNotesView.style.display = 'none';
     
     // Show log summary view
     document.getElementById('logSummaryMainView').style.display = 'block';
     
     // Set active report link
     setActiveReportLink('logSummaryLink');
+    
+    // Clear "NEW" badge when viewing
+    const newBadge = document.getElementById('logSummaryNewBadge');
+    if (newBadge) newBadge.style.display = 'none';
     
     if (window.logSummaryData) {
       renderLogSummary(window.logSummaryData);
@@ -5807,7 +6170,7 @@ document.addEventListener("DOMContentLoaded", () => {
           .then(res => res.json())
           .then(report => {
             if (report && report.report_content && report.exists !== false) {
-              renderAiInsightsSummary(summaryContent, summaryData, report.report_content);
+              renderAiInsightsSummary(summaryContent, summaryData, report.report_content, report.chart_image_base64, report);
             } else if (window.aiReportManager && window.aiReportManager.isGenerating) {
               renderGeneratingSummary(summaryContent, summaryData);
             } else {
@@ -5822,7 +6185,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   // Render AI insights with collapsible sections
-  function renderAiInsightsSummary(container, summaryData, reportContent) {
+  function renderAiInsightsSummary(container, summaryData, reportContent, chartImageBase64, reportObj) {
     const sections = parseMarkdownIntoSections(reportContent);
     
     // Filter out empty sections more aggressively
@@ -5863,9 +6226,41 @@ document.addEventListener("DOMContentLoaded", () => {
       if (isFirst) classes += ' expanded';
       if (highlightClass) classes += ' ' + highlightClass;
       
-      html += `<div class="${classes}" data-section-idx="${idx}"><div class="ai-insight-section-header" onclick="toggleInsightSection(this)"><span class="ai-insight-section-toggle">▶</span><h3>${escapeHtml(section.title)}</h3></div><div class="ai-insight-section-content">${section.content}</div></div>`;
+      html += `<div class="${classes}" data-section-idx="${idx}"><div class="ai-insight-section-header" onclick="toggleInsightSection(this)"><span class="ai-insight-section-toggle">▶</span><h3>${escapeHtml(section.title)}</h3><button class="save-section-btn" onclick="event.stopPropagation(); window.saveSectionToFindings(this)" title="Add section to Findings"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2zm2-1a1 1 0 00-1 1v12.566l4.723-2.482a.5.5 0 01.554 0L13 14.566V2a1 1 0 00-1-1H4z"/></svg></button></div><div class="ai-insight-section-content">${section.content}</div></div>`;
     });
     
+    // Latency chart as collapsed section
+    if (chartImageBase64) {
+      html += '<div class="ai-insight-section" data-section-idx="chart"><div class="ai-insight-section-header" onclick="toggleInsightSection(this)"><span class="ai-insight-section-toggle">▶</span><h3>Latency Chart (sent to model)</h3></div><div class="ai-insight-section-content"><img src="data:image/png;base64,' + chartImageBase64 + '" alt="Latency Over Time" style="width:100%;border-radius:6px;border:1px solid #374151" /></div></div>';
+    }
+
+    // Sources / references as collapsed section
+    if (reportObj && ((reportObj.kb_references && reportObj.kb_references.length > 0) || (reportObj.release_notes_references && reportObj.release_notes_references.length > 0))) {
+      const dbIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#10b981" stroke-width="1.3" title="Indexed (ChromaDB)"><ellipse cx="8" cy="3" rx="6" ry="2.5"/><path d="M2 3v10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V3"/><path d="M2 8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/></svg>';
+      const webIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#60a5fa" stroke-width="1.3" title="Web search"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2.2 3 4.8 3 6.5s-1 4.3-3 6.5c-2-2.2-3-4.8-3-6.5s1-4.3 3-6.5"/></svg>';
+      let refsHtml = '';
+      if (reportObj.kb_references && reportObj.kb_references.length > 0) {
+        refsHtml += '<div style="margin-bottom:8px"><div style="font-size:0.7rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;font-weight:600">Knowledge Base</div>';
+        for (const kb of reportObj.kb_references) {
+          const icon = kb.source === 'web' ? webIcon : dbIcon;
+          const link = kb.url ? '<a href="' + kb.url + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:0.78rem">' + escapeHtml(kb.title) + '</a>' : '<span style="color:#e5e7eb;font-size:0.78rem">' + escapeHtml(kb.title) + '</span>';
+          refsHtml += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0">' + icon + ' ' + link + '</div>';
+        }
+        refsHtml += '</div>';
+      }
+      if (reportObj.release_notes_references && reportObj.release_notes_references.length > 0) {
+        refsHtml += '<div><div style="font-size:0.7rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;font-weight:600">Release Notes</div>';
+        for (const rn of reportObj.release_notes_references) {
+          const icon = rn.source === 'web' ? webIcon : dbIcon;
+          const fixTag = rn.fix_id ? ' <span style="padding:1px 3px;background:#06b6d4;color:#111827;border-radius:2px;font-size:0.6rem;font-weight:bold">' + rn.fix_id + '</span>' : '';
+          const link = rn.url ? '<a href="' + rn.url + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:0.78rem">' + escapeHtml(rn.title) + '</a>' : '<span style="color:#e5e7eb;font-size:0.78rem">' + escapeHtml(rn.title) + '</span>';
+          refsHtml += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0">' + icon + ' ' + link + fixTag + '</div>';
+        }
+        refsHtml += '</div>';
+      }
+      html += '<div class="ai-insight-section" data-section-idx="refs"><div class="ai-insight-section-header" onclick="toggleInsightSection(this)"><span class="ai-insight-section-toggle">▶</span><h3>Sources</h3></div><div class="ai-insight-section-content">' + refsHtml + '</div></div>';
+    }
+
     html += '</div>';
     container.innerHTML = html;
   }
@@ -6021,22 +6416,27 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Go to full AI report in Findings tab
   window.goToFullReport = function() {
-    // Click on Findings tab
-    const findingsTab = document.querySelector('[data-tab="findings-tab"]');
-    if (findingsTab) {
-      findingsTab.click();
+    // Click on Resources tab
+    const resourcesTab = document.querySelector('[data-tab="resources-tab"]');
+    if (resourcesTab) {
+      resourcesTab.click();
     }
   };
   
   // Listen for AI report completion to refresh Log Summary
   window.addEventListener('aiReportReady', (event) => {
-    const { fileId } = event.detail;
+    const { fileId, manual } = event.detail;
     // Only refresh if we're viewing the same file and Log Summary is visible
     if (fileId === currentFileId) {
       const logSummaryView = document.getElementById('logSummaryMainView');
       if (logSummaryView && logSummaryView.style.display !== 'none') {
-        // Refresh the Log Summary with new AI insights
         loadAiInsightsForLogSummary(window.logSummaryData);
+      }
+      
+      // Show "NEW" badge on Log Summary when a manual report is generated
+      if (manual) {
+        const badge = document.getElementById('logSummaryNewBadge');
+        if (badge) badge.style.display = 'inline-flex';
       }
     }
   });
@@ -6805,34 +7205,26 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   
   // Parse Qlik Replicate version to get release month
-  // Format: YYYY.M.X.XXX where M maps to month (5 = November based on Qlik's release cycle)
+  // Format: YYYY.MM.X.XXX where MM is the month number directly (11 = November)
   function parseReplicateVersion(version) {
     if (!version) return { version: 'Unknown', releaseDate: null, releaseMonth: null };
     
-    const match = version.match(/^(\d{4})\.(\d+)/);
+    const match = version.match(/^(\d{4})\.(\d{1,2})/);
     if (!match) return { version, releaseDate: null, releaseMonth: null };
     
     const year = parseInt(match[1]);
-    const releaseNum = parseInt(match[2]);
+    const month = parseInt(match[2]);
     
-    // Qlik Replicate release mapping: release number to month
-    // Based on user info: 5 = November, so working backwards:
-    // 1 = July, 2 = August, 3 = September, 4 = October, 5 = November, 6 = December
-    // Then wrapping: 7 = January (next year), etc.
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
                         'July', 'August', 'September', 'October', 'November', 'December'];
     
-    // Map release number to month (1=May, 2=June, 3=July, 4=Aug, 5=Sep, 6=Oct, 7=Nov)
-    // Actually based on "2025.5 = November 2025", let's use: releaseNum + 6 = month
-    // 5 + 6 = 11 (November) ✓
-    const monthIndex = ((releaseNum + 5) % 12); // 0-indexed
-    const releaseYear = releaseNum > 6 ? year : year; // Adjust if needed
+    if (month < 1 || month > 12) return { version, releaseDate: null, releaseMonth: null };
     
     return {
       version,
-      releaseMonth: monthNames[monthIndex],
-      releaseYear: releaseYear,
-      releaseDate: `${monthNames[monthIndex]} ${releaseYear}`
+      releaseMonth: monthNames[month - 1],
+      releaseYear: year,
+      releaseDate: `${monthNames[month - 1]} ${year}`
     };
   }
   
@@ -6849,12 +7241,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const releaseLabel = versionInfo.releaseDate ? 
       '<span style="color:#10b981;font-size:0.7rem;margin-left:8px;">(' + versionInfo.releaseDate + ' Release)</span>' : '';
     
-    // Build HTML without newlines to avoid whitespace gaps
     let h = '<div style="max-width:900px;margin:0 auto;padding:16px">';
     h += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">';
     h += '<svg width="28" height="28" viewBox="0 0 16 16" fill="#06b6d4"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>';
     h += '<div><h2 style="margin:0;font-size:1.1rem">Qlik Replicate Release Notes</h2>';
     h += '<p style="margin:2px 0 0;font-size:0.75rem;color:#9ca3af">Find relevant fixes and enhancements for your configuration</p></div></div>';
+
+    // Configuration card
     h += '<div style="background:#1f2937;border-radius:8px;padding:16px;margin-bottom:20px">';
     h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">Your Configuration</h3>';
     h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
@@ -6868,55 +7261,325 @@ document.addEventListener("DOMContentLoaded", () => {
     h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Target Endpoint</div>';
     h += '<div style="font-size:0.85rem;color:#f59e0b">' + targetEndpoint + '</div></div></div></div>';
 
-    h += '<div style="background:linear-gradient(135deg,#1e3a5f,#1e1b4b);border:1px solid #3b82f6;border-radius:8px;padding:16px;margin-bottom:20px">';
+    // Indexed release notes results placeholder
+    h += '<div id="releaseNotesResults" style="margin-bottom:20px">';
+    h += '<div style="text-align:center;padding:24px;color:#9ca3af;font-size:0.8rem">';
+    h += '<div class="loading-spinner" style="margin:0 auto 8px;width:24px;height:24px;border:2px solid #374151;border-top-color:#06b6d4;border-radius:50%;animation:spin 1s linear infinite"></div>';
+    h += 'Searching indexed release notes...</div></div>';
+
+    // Search on community fallback
+    h += '<div style="background:linear-gradient(135deg,#1e3a5f,#1e1b4b);border:1px solid #3b82f6;border-radius:8px;padding:16px">';
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">';
-    h += '<div><h3 style="margin:0 0 6px;font-size:0.9rem;color:#e5e7eb">📚 Official Release Notes</h3>';
-    h += '<p style="margin:0;font-size:0.75rem;color:#9ca3af">Access the Qlik Community Release Notes knowledge base</p></div>';
+    h += '<div><h3 style="margin:0 0 6px;font-size:0.9rem;color:#e5e7eb">Search on Qlik Community</h3>';
+    h += '<p style="margin:0;font-size:0.75rem;color:#9ca3af">Browse the official release notes knowledge base</p></div>';
     h += '<a href="' + releaseNotesUrl + '" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;background:#3b82f6;color:white;text-decoration:none;border-radius:6px;font-size:0.85rem;font-weight:600">Open Release Notes <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path fill-rule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg></a></div></div>';
-    h += '<div style="background:#1f2937;border-radius:8px;padding:16px;margin-bottom:20px">';
-    h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">🔍 Search for Relevant Fixes</h3>';
-    h += '<p style="margin:0 0 12px;font-size:0.75rem;color:#9ca3af">Select your source and target components to find potentially relevant release notes:</p>';
-    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">';
-    h += '<div><label style="display:block;font-size:0.7rem;color:#9ca3af;margin-bottom:4px">Source Component</label>';
-    h += '<select id="releaseNotesSource" style="width:100%;padding:8px 10px;background:#111827;border:1px solid #374151;border-radius:4px;color:#e5e7eb;font-size:0.8rem">';
-    h += '<option value="">Auto-detected: ' + sourceEndpoint + '</option>';
-    h += '<option value="Oracle">Oracle</option><option value="SQL Server">Microsoft SQL Server</option><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option>';
-    h += '<option value="IBM DB2">IBM DB2</option><option value="IBM DB2 for i">IBM DB2 for i</option><option value="SAP HANA">SAP HANA</option><option value="SAP">SAP Applications</option>';
-    h += '<option value="MongoDB">MongoDB</option><option value="Salesforce">Salesforce</option><option value="File">File Sources</option></select></div>';
-    h += '<div><label style="display:block;font-size:0.7rem;color:#9ca3af;margin-bottom:4px">Target Component</label>';
-    h += '<select id="releaseNotesTarget" style="width:100%;padding:8px 10px;background:#111827;border:1px solid #374151;border-radius:4px;color:#e5e7eb;font-size:0.8rem">';
-    h += '<option value="">Auto-detected: ' + targetEndpoint + '</option>';
-    h += '<option value="Databricks">Databricks Lakehouse</option><option value="Snowflake">Snowflake</option><option value="BigQuery">Google Cloud BigQuery</option>';
-    h += '<option value="Redshift">Amazon Redshift</option><option value="Azure Synapse">Azure Synapse Analytics</option><option value="S3">Amazon S3</option>';
-    h += '<option value="Azure Data Lake">Azure Data Lake</option><option value="Google Cloud Storage">Google Cloud Storage</option><option value="Kafka">Apache Kafka</option>';
-    h += '<option value="Oracle">Oracle</option><option value="SQL Server">Microsoft SQL Server</option><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option></select></div></div>';
-    h += '<button id="searchReleaseNotesBtn" style="width:100%;padding:10px;background:#10b981;color:#111827;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer">Search Release Notes on Qlik Community</button></div>';
-    h += '<div style="background:#111827;border-radius:8px;padding:16px">';
-    h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">💡 Example Relevant Fix</h3>';
-    h += '<div style="background:#1f2937;border-radius:6px;padding:12px;border-left:3px solid #06b6d4">';
-    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
-    h += '<span style="padding:2px 8px;background:#06b6d4;color:#111827;border-radius:3px;font-size:0.65rem;font-weight:bold">RECOB-9349</span>';
-    h += '<span style="padding:2px 8px;background:#374151;color:#9ca3af;border-radius:3px;font-size:0.65rem">Enhancement</span></div>';
-    h += '<p style="margin:0 0 6px;font-size:0.8rem;color:#e5e7eb;font-weight:500">Added support for the JSON data type (subtype) during CDC</p>';
-    h += '<p style="margin:0 0 8px;font-size:0.7rem;color:#9ca3af">Component/Process: <span style="color:#f59e0b">Google Cloud BigQuery Target</span></p>';
-    h += '<p style="margin:0;font-size:0.65rem;color:#6b7280">This enhancement requires a feature flag to be turned on in Replicate.</p></div>';
-    h += '<p style="margin:12px 0 0;font-size:0.7rem;color:#6b7280"><strong>Note:</strong> This is an example of how release notes can help identify relevant fixes. Browse the Qlik Community Release Notes for the complete list.</p></div></div>';
-    
+
+    h += '</div>';
     content.innerHTML = h;
-    
-    // Add event listener for the search button
-    const searchBtn = document.getElementById('searchReleaseNotesBtn');
-    if (searchBtn) {
-      searchBtn.addEventListener('click', () => {
-        const sourceSelect = document.getElementById('releaseNotesSource');
-        const targetSelect = document.getElementById('releaseNotesTarget');
-        const source = sourceSelect.value || sourceEndpoint;
-        const target = targetSelect.value || targetEndpoint;
-        const searchQuery = encodeURIComponent(`Qlik Replicate ${source} ${target}`);
-        const searchUrl = `https://community.qlik.com/t5/forums/searchpage/tab/message?advanced=false&allow_hierarchical_checkbox_filter=false&filter=labels&q=${searchQuery}`;
-        window.open(searchUrl, '_blank');
-      });
+
+    // Fetch release notes, filtered by detected version and endpoints
+    if (currentFileId) {
+      const rnParams = new URLSearchParams();
+      if (versionInfo.releaseMonth && versionInfo.releaseYear) {
+        rnParams.set('release_version', versionInfo.releaseMonth + ' ' + versionInfo.releaseYear);
+      }
+      if (sourceEndpoint && sourceEndpoint !== 'Unknown') {
+        rnParams.set('source_endpoint', sourceEndpoint);
+      }
+      if (targetEndpoint && targetEndpoint !== 'Unknown') {
+        rnParams.set('target_endpoint', targetEndpoint);
+      }
+      const rnQuery = rnParams.toString();
+      let rnUrl = `/api/llm/release-notes/${currentFileId}` + (rnQuery ? '?' + rnQuery : '');
+      fetch(rnUrl)
+        .then(res => res.json())
+        .then(data => {
+          window._rnData = data;
+          window._rnActiveFilters = new Set();
+          _renderReleaseNotesEntries();
+        })
+        .catch(err => {
+          console.error('Failed to fetch release notes:', err);
+          const container = document.getElementById('releaseNotesResults');
+          if (container) {
+            container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
+              + '<p style="margin:0;font-size:0.8rem;color:#f38ba8">Failed to load release notes: ' + err.message + '</p></div>';
+          }
+        });
     }
+  }
+
+  // ============================================================
+  // RELEASE NOTES FILTER + RENDERING
+  // ============================================================
+
+  const _rnComponentGroups = {
+    'Endpoint-Specific': comp => false,
+    'Server / Engine': comp => ['server', 'engine', 'common', 'general', 'setup'].includes(comp),
+    'Security': comp => comp === 'security',
+    'Sorter': comp => comp === 'sorter',
+    'Logging': comp => ['logging', 'log stream'].includes(comp),
+    'Apply / Load': comp => ['batch optimized apply', 'transactional apply', 'full load'].includes(comp),
+    'Metadata': comp => ['metadata manager', 'metadata'].includes(comp),
+  };
+
+  function _classifyComponent(comp, isEndpointSpecific) {
+    if (!comp) return 'Other';
+    if (isEndpointSpecific) return 'Endpoint-Specific';
+    const lower = comp.toLowerCase();
+    for (const [group, testFn] of Object.entries(_rnComponentGroups)) {
+      if (group === 'Endpoint-Specific') continue;
+      if (testFn(lower)) return group;
+    }
+    return 'Other';
+  }
+
+  function _renderReleaseNotesEntries() {
+    const data = window._rnData;
+    const activeFilters = window._rnActiveFilters;
+    const container = document.getElementById('releaseNotesResults');
+    if (!container || !data) return;
+
+    if (data.indexed_count === 0) {
+      container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:20px;text-align:center">'
+        + '<svg width="32" height="32" viewBox="0 0 16 16" fill="#6b7280" style="margin-bottom:8px"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>'
+        + '<p style="margin:0 0 4px;font-size:0.85rem;color:#e5e7eb">No release notes indexed</p>'
+        + '<p style="margin:0;font-size:0.75rem;color:#9ca3af">Run the release notes loader (<code style="background:#374151;padding:2px 4px;border-radius:3px;font-size:0.7rem">python kb-assistant/build_release_notes_cache.py</code>) to index Qlik Replicate release notes for correlation analysis.</p></div>';
+      return;
+    }
+
+    const allResults = data.results || [];
+    const hasEol = data.eol_warnings && data.eol_warnings.length > 0;
+
+    // Build group counts from all results
+    const groupCounts = {};
+    for (const rn of allResults) {
+      const g = _classifyComponent(rn.component, rn.endpoint_specific);
+      groupCounts[g] = (groupCounts[g] || 0) + 1;
+    }
+
+    // Determine visible results (if no filters active, show all)
+    const noFilter = activeFilters.size === 0;
+    const filtered = noFilter ? allResults : allResults.filter(rn => {
+      const g = _classifyComponent(rn.component, rn.endpoint_specific);
+      return activeFilters.has(g);
+    });
+
+    if (!filtered.length && !hasEol) {
+      container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
+        + '<p style="margin:0;font-size:0.8rem;color:#9ca3af">No matching release notes found for this log file\'s configuration. '
+        + data.indexed_count + ' entries are indexed.</p></div>';
+      return;
+    }
+
+    let rh = '';
+
+    // Filter chips
+    const groupOrder = ['Endpoint-Specific', 'Server / Engine', 'Security', 'Sorter', 'Logging', 'Apply / Load', 'Metadata', 'Other'];
+    const presentGroups = groupOrder.filter(g => groupCounts[g]);
+    if (presentGroups.length > 1) {
+      rh += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">';
+      for (const g of presentGroups) {
+        const isActive = activeFilters.has(g);
+        const count = groupCounts[g] || 0;
+        const bgActive = g === 'Endpoint-Specific' ? '#78350f' : '#1e3a5f';
+        const bgInactive = '#1f2937';
+        const colorActive = g === 'Endpoint-Specific' ? '#fcd34d' : '#93c5fd';
+        const colorInactive = '#6b7280';
+        const border = isActive ? (g === 'Endpoint-Specific' ? '#f59e0b' : '#3b82f6') : '#374151';
+        rh += '<button class="rn-filter-chip" data-group="' + g + '" style="'
+            + 'background:' + (isActive ? bgActive : bgInactive) + ';'
+            + 'color:' + (isActive ? colorActive : colorInactive) + ';'
+            + 'border:1px solid ' + border + ';'
+            + 'border-radius:12px;padding:2px 10px;font-size:0.65rem;cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all 0.15s">'
+            + g + ' <span style="opacity:0.7">(' + count + ')</span></button>';
+      }
+      if (!noFilter) {
+        rh += '<button class="rn-filter-chip" data-group="__clear__" style="'
+            + 'background:transparent;color:#9ca3af;border:1px solid #374151;'
+            + 'border-radius:12px;padding:2px 10px;font-size:0.65rem;cursor:pointer">Clear filters</button>';
+      }
+      rh += '</div>';
+    }
+
+    // EOL warnings
+    if (hasEol) {
+      rh += '<div style="background:#451a03;border:1px solid #92400e;border-radius:8px;padding:14px;margin-bottom:14px">';
+      rh += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">';
+      rh += '<svg width="16" height="16" viewBox="0 0 16 16" fill="#f59e0b"><path d="M8 1L1 14h14L8 1zm0 4v4m0 2v1"/></svg>';
+      rh += '<h3 style="margin:0;font-size:0.85rem;color:#fbbf24">End of Support Warnings</h3></div>';
+      for (const eol of data.eol_warnings) {
+        const vBadge = eol.version ? '<span style="padding:1px 5px;background:#78350f;color:#fcd34d;border-radius:3px;font-size:0.6rem">' + eol.version + '</span> ' : '';
+        const eolLink = eol.url
+          ? '<a href="' + eol.url + '" target="_blank" title="View source release notes" style="color:#fbbf24;text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'
+            + '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>'
+            + 'Source</a>'
+          : '';
+        rh += '<div style="background:#78350f;border-radius:5px;padding:8px 10px;margin-bottom:5px;border-left:3px solid #f59e0b">';
+        rh += '<div style="display:flex;align-items:center;gap:5px;margin-bottom:2px">';
+        rh += '<span style="padding:1px 5px;background:#dc2626;color:#fff;border-radius:3px;font-size:0.6rem;font-weight:600">End of Support</span>' + vBadge + eolLink + '</div>';
+        rh += '<p style="margin:0;font-size:0.78rem;color:#fef3c7;line-height:1.4">' + eol.description + '</p>';
+        rh += '</div>';
+      }
+      rh += '</div>';
+    }
+
+    // RECOB entries
+    if (filtered.length > 0) {
+      rh += '<div style="background:#1f2937;border-radius:8px;padding:16px">';
+      rh += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">';
+      rh += '<h3 style="margin:0;font-size:0.85rem;color:#e5e7eb">Resolved Issues & Enhancements</h3>';
+      rh += '<span style="font-size:0.7rem;color:#6b7280">' + filtered.length + (noFilter ? '' : ' / ' + allResults.length) + ' entries</span></div>';
+
+      for (const rn of filtered) {
+        const isRecob = rn.fix_id && rn.fix_id.startsWith('RECOB-');
+        const isFuture = rn.future_release;
+        const isEndpointSpecific = rn.endpoint_specific === true;
+        const borderColor = isFuture ? '#7c3aed' : isEndpointSpecific ? '#f59e0b' : (rn.entry_type === 'Enhancement' ? '#10b981' : '#374151');
+        const typeBadgeBg = rn.entry_type === 'Enhancement' ? '#10b981' : (rn.entry_type === 'Issue' ? '#ef4444' : '#6b7280');
+        const typeBadge = rn.entry_type ? '<span style="padding:1px 5px;background:' + typeBadgeBg + ';color:#fff;border-radius:3px;font-size:0.6rem;font-weight:600">' + rn.entry_type + '</span>' : '';
+        const fixBadge = rn.fix_id ? '<span style="padding:1px 5px;background:#06b6d4;color:#111827;border-radius:3px;font-size:0.65rem;font-weight:bold;font-family:monospace">' + rn.fix_id + '</span>' : '';
+        const futureBadge = isFuture ? '<span style="padding:1px 5px;background:#7c3aed;color:#e9d5ff;border-radius:3px;font-size:0.6rem;font-weight:600">Future Release</span>' : '';
+        const versionBadge = rn.version ? '<span style="padding:1px 5px;background:#374151;color:#9ca3af;border-radius:3px;font-size:0.6rem">' + rn.version + '</span>' : '';
+        const compBadge = rn.component ? '<span style="padding:1px 5px;background:' + (isEndpointSpecific ? '#78350f' : '#1e3a5f') + ';color:' + (isEndpointSpecific ? '#fcd34d' : '#93c5fd') + ';border-radius:3px;font-size:0.6rem">' + rn.component + '</span>' : '';
+
+        rh += '<div style="background:' + (isFuture ? '#1a1033' : '#111827') + ';border-radius:6px;padding:10px 12px;margin-bottom:6px;border-left:3px solid ' + borderColor + '">';
+        rh += '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:4px">' + fixBadge + typeBadge + compBadge + futureBadge + versionBadge + '</div>';
+
+        const srcLink = rn.url
+          ? '<a href="' + rn.url + '" target="_blank" title="View source release notes" style="color:#60a5fa;text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'
+            + '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>'
+            + 'Source</a>'
+          : '';
+
+        if (isRecob && rn.description) {
+          rh += '<p style="margin:0;font-size:0.78rem;color:#d1d5db;line-height:1.45">' + rn.description + '</p>';
+        } else if (rn.title) {
+          const titleLink = rn.url ? '<a href="' + rn.url + '" target="_blank" style="color:#e5e7eb;text-decoration:none;font-size:0.78rem;font-weight:500">' + rn.title + '</a>' : '<span style="color:#e5e7eb;font-size:0.78rem;font-weight:500">' + rn.title + '</span>';
+          rh += '<div>' + titleLink + '</div>';
+          if (rn.description) {
+            rh += '<p style="margin:4px 0 0;font-size:0.72rem;color:#9ca3af;line-height:1.4">' + rn.description.substring(0, 200) + (rn.description.length > 200 ? '...' : '') + '</p>';
+          }
+        }
+
+        const rnTitle = (rn.fix_id || '') + ' ' + (rn.title || rn.description || '');
+        const rnSaveBtn = '<button class="rn-save-finding-btn" data-rn-title="' + escapeHtml(rnTitle.trim()).replace(/"/g, '&quot;') + '" data-rn-url="' + (rn.url || '') + '" data-rn-version="' + (rn.version || '') + '" title="Add to Findings" style="background:none;border:1px solid #374151;border-radius:3px;padding:2px 5px;cursor:pointer;color:#9ca3af;font-size:0.6rem;display:inline-flex;align-items:center;gap:3px;transition:all 0.15s">'
+          + '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2zm2-1a1 1 0 00-1 1v12.566l4.723-2.482a.5.5 0 01.554 0L13 14.566V2a1 1 0 00-1-1H4z"/></svg>'
+          + 'Save</button>';
+
+        rh += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
+        if (rn.salesforce_case && rn.salesforce_case !== 'N/A') {
+          rh += '<span style="font-size:0.6rem;color:#6b7280">SF Case: ' + rn.salesforce_case + '</span>';
+        }
+        rh += rnSaveBtn + srcLink + '</div>';
+        rh += '</div>';
+      }
+      rh += '</div>';
+    }
+
+    container.innerHTML = rh;
+
+    // Bind filter chip clicks
+    container.querySelectorAll('.rn-filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const group = chip.dataset.group;
+        if (group === '__clear__') {
+          window._rnActiveFilters.clear();
+        } else if (window._rnActiveFilters.has(group)) {
+          window._rnActiveFilters.delete(group);
+        } else {
+          window._rnActiveFilters.add(group);
+        }
+        _renderReleaseNotesEntries();
+      });
+    });
+    
+    // Bind release note "Save to Findings" buttons
+    container.querySelectorAll('.rn-save-finding-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!currentFileId) return;
+        const title = btn.dataset.rnTitle || 'Release Note';
+        const url = btn.dataset.rnUrl || '';
+        const version = btn.dataset.rnVersion || '';
+        const content = `**Release Note:** ${title}` + (version ? `\n**Version:** ${version}` : '') + (url ? `\n**URL:** ${url}` : '');
+        
+        try {
+          const resp = await fetch('/api/llm/findings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              file_id: currentFileId,
+              finding_type: 'custom',
+              title: title.slice(0, 120),
+              content,
+              metadata: { source: 'release_notes', url, version }
+            })
+          });
+          if (resp.ok) {
+            btn.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" fill="#10b981"><path d="M13.854 3.646a.5.5 0 010 .708l-7 7a.5.5 0 01-.708 0l-3.5-3.5a.5.5 0 11.708-.708L6.5 10.293l6.646-6.647a.5.5 0 01.708 0z"/></svg> Saved';
+            btn.style.color = '#10b981';
+            btn.style.borderColor = '#10b981';
+            if (window.savedFindingsManager) window.savedFindingsManager.loadFindings();
+          }
+        } catch (err) {
+          console.error('Failed to save release note finding:', err);
+        }
+      });
+    });
+  }
+
+  // ============================================================
+  // UNAVAILABLE REPORTS
+  // ============================================================
+
+  const unavailableReportDefs = {
+    logSummaryLink:          { name: 'Log Summary',   reason: 'Log summary data could not be extracted from this log file' },
+    performanceCockpitLink:  { name: 'Performance',   reason: 'No performance or latency data was found in this log file' },
+    bulkMapLink:             { name: 'Bulk Map',      reason: 'No bulk-map (Full Load table mapping) operations were detected in this log' },
+    bulkActivityLink:        { name: 'Bulk Activity',  reason: 'No bulk-load activity was detected in this log file' },
+    fileOperationsLink:      { name: 'File Ops',      reason: 'No file-transfer operations were found in this log file' },
+    issuesLink:              { name: 'Issues',        reason: 'No issues were detected, or the log has not been fully analyzed yet' },
+    releaseNotesLink:        { name: 'Release Notes', reason: 'Task version could not be detected from the log, so release notes cannot be matched' },
+  };
+
+  function updateUnavailableReports() {
+    const section = document.getElementById('unavailableReportsSection');
+    const list = document.getElementById('unavailableReportsList');
+    if (!section || !list) return;
+
+    let html = '';
+    let count = 0;
+    for (const [id, def] of Object.entries(unavailableReportDefs)) {
+      const el = document.getElementById(id);
+      if (el && el.style.display === 'none') {
+        count++;
+        html += '<div class="unavailable-report-item" style="padding:5px 8px 5px 24px;cursor:default" title="' + def.reason + '">';
+        html += '<span style="font-size:0.75rem;color:#4b5563">' + def.name + '</span>';
+        html += '<p style="margin:2px 0 0;font-size:0.65rem;color:#374151;line-height:1.3">' + def.reason + '</p>';
+        html += '</div>';
+      }
+    }
+
+    if (count > 0) {
+      list.innerHTML = html;
+      section.style.display = 'block';
+    } else {
+      section.style.display = 'none';
+    }
+  }
+
+  // Toggle unavailable reports section
+  const unavailToggle = document.getElementById('unavailableReportsToggle');
+  if (unavailToggle) {
+    unavailToggle.addEventListener('click', () => {
+      const list = document.getElementById('unavailableReportsList');
+      const arrow = document.getElementById('unavailableReportsArrow');
+      if (!list) return;
+      const isOpen = list.style.display !== 'none';
+      list.style.display = isOpen ? 'none' : 'block';
+      if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+    });
   }
 
   // ============================================================
@@ -6942,22 +7605,26 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Update AI settings indicator based on configuration status
   function updateAISettingsIndicator() {
-    const indicator = document.getElementById('aiSettingsIndicator');
-    if (!indicator) return;
-    
+    const indicators = document.querySelectorAll('.ai-settings-indicator');
+    if (!indicators.length) return;
+
     fetch('/api/llm/config')
       .then(res => res.json())
       .then(config => {
-        if (config.is_configured) {
-          indicator.classList.add('configured');
-          indicator.title = 'AI Configured';
-        } else {
-          indicator.classList.remove('configured');
-          indicator.title = 'AI Not Configured';
-        }
+        indicators.forEach((indicator) => {
+          if (config.is_configured) {
+            indicator.classList.add('configured');
+            indicator.title = 'AI Configured';
+          } else {
+            indicator.classList.remove('configured');
+            indicator.title = 'AI Not Configured';
+          }
+        });
       })
       .catch(() => {
-        indicator.classList.remove('configured');
+        indicators.forEach((indicator) => {
+          indicator.classList.remove('configured');
+        });
       });
   }
   
@@ -6974,11 +7641,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
-  // Hook into tab switching for findings tab
+  // Hook into tab switching for resources tab
   tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.tab === 'findings-tab') {
-        // Render AI report section when findings tab is clicked
+      if (btn.dataset.tab === 'resources-tab') {
+        // Render AI report section when resources tab is clicked
         setTimeout(renderAIReportSection, 50);
       }
     });
@@ -6988,11 +7655,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const originalLoadFile = loadFile;
   loadFile = function(id) {
     originalLoadFile(id);
-    
-    // Always render the AI report container
-    setTimeout(renderAIReportSection, 100);
-    
-    // Update AI report manager's file ID - this triggers auto-generation
+    // Mount AI Insights markup before setFileId so container exists when auto-generate updates the UI
+    renderAIReportSection();
     if (window.aiReportManager) {
       window.aiReportManager.setFileId(id);
     }

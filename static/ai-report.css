@@ -209,6 +209,14 @@
     font-size: 0.9rem;
 }
 
+.ai-report-loading .ai-generation-timer {
+    margin-top: 10px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent-color, #89b4fa);
+    font-variant-numeric: tabular-nums;
+}
+
 .ai-report-loading .cost-estimate {
     margin-top: 8px;
     font-size: 0.8rem;

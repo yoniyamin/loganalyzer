@@ -64,12 +64,6 @@ class AIConfigModal {
                             </svg>
                             Configuration
                         </button>
-                        <button class="ai-modal-tab" data-tab="routing">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                            </svg>
-                            Routing History
-                        </button>
                         <button class="ai-modal-tab" data-tab="sanitization">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                                 <path d="M12 1l3 5 5 3-5 3-3 5-3-5-5-3 5-3z"/>
@@ -231,64 +225,6 @@ class AIConfigModal {
                         </div>
                         </div><!-- End Config Tab -->
                         
-                        <!-- Routing History Tab Content -->
-                        <div class="ai-tab-content" data-tab-content="routing">
-                            <div class="ai-routing-history-header">
-                                <h3>Routing Feedback History</h3>
-                                <p class="ai-routing-history-desc">
-                                    Track how questions were routed and provide feedback to improve future routing decisions.
-                                </p>
-                            </div>
-                            
-                            <div class="ai-routing-history-filters">
-                                <label class="ai-routing-filter-checkbox">
-                                    <input type="checkbox" id="routingMismatchOnly">
-                                    <span>Show mismatches only</span>
-                                </label>
-                                <button class="ai-btn ai-btn-secondary ai-btn-sm" id="routingExportBtn">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                        <polyline points="7 10 12 15 17 10"/>
-                                        <line x1="12" y1="15" x2="12" y2="3"/>
-                                    </svg>
-                                    Export CSV
-                                </button>
-                                <button class="ai-btn ai-btn-secondary ai-btn-sm" id="routingRefreshBtn">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                        <polyline points="23 4 23 10 17 10"/>
-                                        <polyline points="1 20 1 14 7 14"/>
-                                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                                    </svg>
-                                    Refresh
-                                </button>
-                            </div>
-                            
-                            <div class="ai-routing-history-table-wrapper">
-                                <table class="ai-routing-history-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Question</th>
-                                            <th>Actual</th>
-                                            <th>Suggested</th>
-                                            <th>Comment</th>
-                                            <th>Date</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="routingHistoryBody">
-                                        <tr>
-                                            <td colspan="5" class="ai-routing-history-empty">
-                                                No routing feedback yet. Rate answers in the AI Assistant to build history.
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            
-                            <div class="ai-routing-stats" id="routingStats">
-                                <!-- Stats will be populated by JS -->
-                            </div>
-                        </div><!-- End Routing Tab -->
-
                         <!-- Sanitization Tab Content -->
                         <div class="ai-tab-content" data-tab-content="sanitization">
                             <div class="ai-sanitization-header">
@@ -381,19 +317,6 @@ class AIConfigModal {
             });
         });
         
-        // Routing history filters and actions
-        document.getElementById('routingMismatchOnly')?.addEventListener('change', () => {
-            this.loadRoutingHistory();
-        });
-        
-        document.getElementById('routingRefreshBtn')?.addEventListener('click', () => {
-            this.loadRoutingHistory();
-        });
-        
-        document.getElementById('routingExportBtn')?.addEventListener('click', () => {
-            this.exportRoutingHistory();
-        });
-
         // Sanitization preview
         document.getElementById('aiSanitizePreviewBtn')?.addEventListener('click', () => {
             this.previewSanitization();
@@ -897,143 +820,6 @@ class AIConfigModal {
         this.overlay.querySelectorAll('.ai-tab-content').forEach(content => {
             content.classList.toggle('active', content.dataset.tabContent === tabName);
         });
-        
-        // Load routing history when switching to that tab
-        if (tabName === 'routing') {
-            this.loadRoutingHistory();
-        }
-    }
-    
-    async loadRoutingHistory() {
-        const mismatchOnly = document.getElementById('routingMismatchOnly')?.checked || false;
-        const tbody = document.getElementById('routingHistoryBody');
-        
-        if (!tbody) return;
-        
-        // Show loading
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="5" class="ai-routing-history-loading">
-                    Loading...
-                </td>
-            </tr>
-        `;
-        
-        try {
-            const url = `/api/llm/routing/feedback?mismatch_only=${mismatchOnly}&limit=50`;
-            const response = await fetch(url);
-            
-            if (!response.ok) {
-                throw new Error('Failed to load routing history');
-            }
-            
-            const data = await response.json();
-            
-            if (data.items.length === 0) {
-                tbody.innerHTML = `
-                    <tr>
-                        <td colspan="5" class="ai-routing-history-empty">
-                            ${mismatchOnly 
-                                ? 'No mismatches found. All routing decisions match user feedback!' 
-                                : 'No routing feedback yet. Rate answers in Smart Search to build history.'}
-                        </td>
-                    </tr>
-                `;
-                this.updateRoutingStats(data);
-                return;
-            }
-            
-            // Build table rows
-            tbody.innerHTML = data.items.map(item => {
-                const suggested = [];
-                if (item.should_use_local) suggested.push('⚡ Local');
-                if (item.should_use_kb) suggested.push('📚 KB');
-                if (item.should_use_report) suggested.push('📄 Report');
-                
-                const actualIcon = item.actual_source === 'local' ? '⚡' : 
-                                   item.actual_source === 'kb' ? '📚' : '📄';
-                
-                const mismatchClass = item.mismatch ? 'mismatch' : '';
-                const dateStr = new Date(item.created_at).toLocaleDateString();
-                
-                return `
-                    <tr class="${mismatchClass}">
-                        <td class="ai-routing-question" title="${this.escapeHtml(item.question)}">
-                            ${this.escapeHtml(item.question.slice(0, 60))}${item.question.length > 60 ? '...' : ''}
-                        </td>
-                        <td class="ai-routing-actual">
-                            ${actualIcon} ${item.actual_source}
-                        </td>
-                        <td class="ai-routing-suggested">
-                            ${suggested.join(', ') || '-'}
-                        </td>
-                        <td class="ai-routing-comment" title="${this.escapeHtml(item.comment || '')}">
-                            ${item.comment ? this.escapeHtml(item.comment.slice(0, 30)) + (item.comment.length > 30 ? '...' : '') : '-'}
-                        </td>
-                        <td class="ai-routing-date">${dateStr}</td>
-                    </tr>
-                `;
-            }).join('');
-            
-            this.updateRoutingStats(data);
-            
-        } catch (error) {
-            console.error('Failed to load routing history:', error);
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="5" class="ai-routing-history-error">
-                        Failed to load routing history: ${error.message}
-                    </td>
-                </tr>
-            `;
-        }
-    }
-    
-    updateRoutingStats(data) {
-        const statsEl = document.getElementById('routingStats');
-        if (!statsEl) return;
-        
-        const total = data.items.length;
-        const mismatches = data.items.filter(i => i.mismatch).length;
-        const matchRate = total > 0 ? Math.round(((total - mismatches) / total) * 100) : 0;
-        
-        statsEl.innerHTML = `
-            <div class="ai-routing-stat">
-                <span class="ai-routing-stat-value">${total}</span>
-                <span class="ai-routing-stat-label">Total Feedback</span>
-            </div>
-            <div class="ai-routing-stat">
-                <span class="ai-routing-stat-value">${mismatches}</span>
-                <span class="ai-routing-stat-label">Mismatches</span>
-            </div>
-            <div class="ai-routing-stat">
-                <span class="ai-routing-stat-value">${matchRate}%</span>
-                <span class="ai-routing-stat-label">Match Rate</span>
-            </div>
-        `;
-    }
-    
-    async exportRoutingHistory() {
-        try {
-            const response = await fetch('/api/llm/routing/feedback/export');
-            if (!response.ok) {
-                throw new Error('Export failed');
-            }
-            
-            // Download the CSV file
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'routing_feedback.csv';
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            a.remove();
-        } catch (error) {
-            console.error('Failed to export routing history:', error);
-            alert('Failed to export routing history');
-        }
     }
     
     renderSanitizationEntities() {

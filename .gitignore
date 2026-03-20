@@ -18,3 +18,4 @@ kb-assistant/logs/
 chroma_db
 *.log
 .venv_new/Lib/site-packages/bottle.py
+data/release_notes_cache.json

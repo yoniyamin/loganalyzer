@@ -33,6 +33,18 @@ COLLECTION_SUMMARIES = "log_summaries"
 COLLECTION_ERRORS = "error_contexts"
 COLLECTION_ANOMALIES = "anomaly_sections"
 COLLECTION_KB = "qlik_replicate_kb"  # KB articles from kb-assistant
+COLLECTION_RELEASE_NOTES = "qlik_replicate_release_notes"  # Release notes from kb-assistant
+
+
+def _version_sort_key(v: str):
+    """Convert 'November 2024' to (2024, 11) for sorting."""
+    import re
+    _M = {"january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
+          "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+    m = re.search(r'(\w+)\s+(\d{4})', v)
+    if m:
+        return (int(m.group(2)), _M.get(m.group(1).lower(), 0))
+    return (0, 0)
 
 
 class LogVectorStore:
@@ -526,6 +538,149 @@ Relevant lines: {line_numbers or []}
             }
         except Exception:
             return {"kb_documents": 0, "collection_name": COLLECTION_KB}
+
+    def query_release_notes(
+        self,
+        query: str,
+        n_results: int = 5,
+        endpoint_filter: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Query release notes for fixes relevant to a given query.
+        
+        Args:
+            query: Query text (e.g., error message, endpoint type, symptom)
+            n_results: Number of results to return
+            endpoint_filter: Optional filter by endpoint type (e.g. 'Oracle', 'Snowflake')
+        
+        Returns:
+            List of matching release note entries with metadata and relevance score
+        """
+        try:
+            rn_collection = self.client.get_or_create_collection(
+                name=COLLECTION_RELEASE_NOTES,
+                metadata={"description": "Qlik Replicate release notes and fixes"}
+            )
+
+            where_filter = None
+            if endpoint_filter:
+                where_filter = {"endpoint_types": {"$contains": endpoint_filter.lower()}}
+
+            results = rn_collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where=where_filter
+            )
+
+            formatted = []
+            if results and results['documents'] and results['documents'][0]:
+                for i, doc in enumerate(results['documents'][0]):
+                    distance = results['distances'][0][i] if results.get('distances') else 0
+                    similarity = max(0, 1 - distance)
+                    meta = results['metadatas'][0][i] if results['metadatas'] else {}
+
+                    fix_ids_str = meta.get("fix_ids", "") or meta.get("fix_id", "")
+                    formatted.append({
+                        "content": doc,
+                        "metadata": meta,
+                        "distance": distance,
+                        "similarity": similarity,
+                        "title": meta.get("title", "Unknown"),
+                        "url": meta.get("url", ""),
+                        "version": meta.get("version", ""),
+                        "fix_id": fix_ids_str.split(",")[0] if fix_ids_str else "",
+                    })
+
+            return formatted
+
+        except Exception:
+            return []
+
+    def get_release_notes_by_version(
+        self,
+        version_prefix: str,
+    ) -> List[Dict[str, Any]]:
+        """Get ALL release note chunks whose version metadata matches the prefix.
+
+        Args:
+            version_prefix: e.g. "May 2024" - matched with $contains
+
+        Returns:
+            List of all matching chunks with their documents and metadata.
+        """
+        try:
+            rn_collection = self.client.get_or_create_collection(
+                name=COLLECTION_RELEASE_NOTES,
+                metadata={"description": "Qlik Replicate release notes and fixes"}
+            )
+            results = rn_collection.get(
+                where={"version": version_prefix},
+                include=["documents", "metadatas"],
+            )
+            formatted = []
+            if results and results["documents"]:
+                for i, doc in enumerate(results["documents"]):
+                    meta = results["metadatas"][i] if results["metadatas"] else {}
+                    formatted.append({
+                        "content": doc,
+                        "metadata": meta,
+                        "version": meta.get("version", ""),
+                        "url": meta.get("url", ""),
+                        "title": meta.get("title", ""),
+                    })
+            return formatted
+        except Exception:
+            return []
+
+    def get_all_release_note_versions(self) -> List[str]:
+        """Return the distinct version strings in the release notes collection."""
+        try:
+            rn_collection = self.client.get_or_create_collection(
+                name=COLLECTION_RELEASE_NOTES,
+                metadata={"description": "Qlik Replicate release notes and fixes"}
+            )
+            results = rn_collection.get(include=["metadatas"], limit=500)
+            versions = sorted(
+                {m.get("version", "") for m in (results["metadatas"] or []) if m.get("version")},
+                key=lambda v: _version_sort_key(v),
+                reverse=True,
+            )
+            return versions
+        except Exception:
+            return []
+
+    def get_all_release_note_chunks(self) -> List[Dict[str, Any]]:
+        """Get ALL release note chunks in one call (fast, no embeddings needed)."""
+        try:
+            rn_collection = self.client.get_or_create_collection(
+                name=COLLECTION_RELEASE_NOTES,
+                metadata={"description": "Qlik Replicate release notes and fixes"}
+            )
+            results = rn_collection.get(include=["documents", "metadatas"], limit=1000)
+            out = []
+            if results and results["documents"]:
+                for i, doc in enumerate(results["documents"]):
+                    meta = results["metadatas"][i] if results["metadatas"] else {}
+                    out.append({"content": doc, "metadata": meta})
+            return out
+        except Exception:
+            return []
+
+    def get_release_notes_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the release notes collection.
+        
+        Returns:
+            Dictionary with release notes stats
+        """
+        try:
+            rn_collection = self.client.get_or_create_collection(name=COLLECTION_RELEASE_NOTES)
+            return {
+                "release_notes_documents": rn_collection.count(),
+                "collection_name": COLLECTION_RELEASE_NOTES
+            }
+        except Exception:
+            return {"release_notes_documents": 0, "collection_name": COLLECTION_RELEASE_NOTES}
 
 
 # Singleton instance for easy access
