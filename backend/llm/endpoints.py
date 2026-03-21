@@ -16,11 +16,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy import text
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 
 from backend.database import get_db, LLMConfig, LLMReport, LogFile, KBArticle
 from backend.llm.client import get_llm_client, set_api_key, DEFAULT_MODEL
@@ -175,6 +175,16 @@ class EmbeddingStatsResponse(BaseModel):
     errors: int
     anomalies: int
     total: int
+
+
+class FindingsExportRequest(BaseModel):
+    """Options for exporting saved findings as Markdown or AI-compiled email text."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    finding_ids: Optional[List[int]] = None
+    compile_with_ai: bool = Field(default=False, alias="compile")
+    audience: str = "technical"
+    additional_observations: str = ""
 
 
 # ============================================================
@@ -2286,6 +2296,179 @@ def save_finding(
     )
 
 
+def _finding_meta_dict(f) -> dict:
+    if not getattr(f, "metadata_json", None):
+        return {}
+    try:
+        return json.loads(f.metadata_json) if isinstance(f.metadata_json, str) else {}
+    except Exception:
+        return {}
+
+
+def _is_visible_saved_finding(f) -> bool:
+    return not bool(_finding_meta_dict(f).get("auto_saved"))
+
+
+def _order_findings_for_export(
+    findings: list,
+    finding_ids: Optional[List[int]],
+) -> list:
+    """Apply saved order from UI (finding_ids); append any new items by created_at."""
+    if not findings:
+        return []
+    visible = [f for f in findings if _is_visible_saved_finding(f)]
+    if not finding_ids:
+        return sorted(visible, key=lambda f: f.created_at)
+    by_id = {f.id: f for f in visible}
+    ordered = []
+    seen = set()
+    for fid in finding_ids:
+        if fid in by_id and fid not in seen:
+            ordered.append(by_id[fid])
+            seen.add(fid)
+    for f in sorted(visible, key=lambda x: x.created_at):
+        if f.id not in seen:
+            ordered.append(f)
+    return ordered
+
+
+def _build_findings_markdown(
+    file,
+    ordered_findings: list,
+    extra_observations: str = "",
+) -> str:
+    """Build Markdown string from ordered SavedFinding rows."""
+    md = (
+        f"# Analysis Findings\n\n**File:** {file.filename}\n"
+        f"**Exported:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+    )
+    for i, f in enumerate(ordered_findings, 1):
+        meta = _finding_meta_dict(f)
+        title = f.title or f.finding_type or "Finding"
+        md += f"## {i}. {title}\n\n"
+        md += f"**Type:** {f.finding_type}  \n"
+        md += f"**Date:** {f.created_at.strftime('%Y-%m-%d %H:%M')}  \n"
+        if f.line_number:
+            md += f"**Line:** {f.line_number}  \n"
+        src = meta.get("source", "")
+        if src:
+            md += f"**Source:** {src.replace('_', ' ')}  \n"
+        if meta.get("severity"):
+            md += f"**Severity:** {meta['severity']}  \n"
+        if meta.get("component"):
+            md += f"**Component:** {meta['component']}  \n"
+        md += f"\n{f.content}\n\n---\n\n"
+    if extra_observations and extra_observations.strip():
+        md += "## Additional observations\n\n\n"
+        md += extra_observations.strip() + "\n\n"
+    return md
+
+
+def _findings_export_audience_guidance(audience: str) -> str:
+    a = (audience or "technical").lower().strip()
+    guides = {
+        "technical": (
+            "Technical audience. Preserve log line references, error codes, component names, and precise terminology. "
+            "Structure with clear sections and bullets where helpful."
+        ),
+        "business": (
+            "Business / non-technical audience. Focus on impact, risk, timeline, and recommended actions. "
+            "Avoid deep jargon; briefly explain necessary terms."
+        ),
+        "mixed": (
+            "Mixed audience. Start with a short executive summary, then a structured technical section with details."
+        ),
+        "executive": (
+            "Executive audience. Be very concise: outcomes, decisions needed, and risk level. Use bullets."
+        ),
+    }
+    return guides.get(a, guides["technical"])
+
+
+def _compile_findings_email_with_llm(
+    db: Session,
+    raw_markdown: str,
+    filename_label: str,
+    audience: str,
+    additional_observations: str,
+) -> dict:
+    """Call configured LLM to produce email-ready text. Returns dict with content and usage."""
+    config = db.query(LLMConfig).first()
+    if not config:
+        raise HTTPException(status_code=400, detail="LLM not configured. Add Insights API keys in Settings.")
+
+    provider = (config.provider or PROVIDER_GEMINI).lower()
+    if provider == PROVIDER_GEMINI:
+        if not config.gemini_api_key_encrypted:
+            raise HTTPException(status_code=400, detail="Gemini API key not configured.")
+        _ensure_gemini_configured(db)
+        client = get_gemini_client()
+        if not client.is_configured:
+            raise HTTPException(status_code=400, detail="Gemini API key not configured.")
+        model = config.default_model or DEFAULT_GEMINI_MODEL
+        use_gemini = True
+    else:
+        if not config.api_key_encrypted:
+            raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
+        _ensure_client_configured(db)
+        client = get_llm_client()
+        if not client.is_configured:
+            raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
+        model = config.default_model or DEFAULT_MODEL
+        use_gemini = False
+
+    audience_guide = _findings_export_audience_guidance(audience)
+
+    system_prompt = (
+        "You compile findings from log analysis into a single email-ready message. "
+        "Output plain text suitable for pasting into an email body. Do not include a Subject line unless the user "
+        "explicitly asked for one. Use clear headings (e.g. plain lines in CAPS or **bold** markdown). "
+        "Do not invent facts beyond the provided material. If information is missing, say so briefly."
+    )
+
+    user_parts = [
+        f"Log file: {filename_label}",
+        f"Target audience: {audience}",
+        f"Audience guidance: {audience_guide}",
+    ]
+    if additional_observations.strip():
+        user_parts.append(
+            "Analyst additional context (weave in prominently):\n" + additional_observations.strip()
+        )
+    user_parts.append("Source material (Markdown):\n\n" + raw_markdown)
+    user_prompt = "\n\n".join(user_parts)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    max_tokens = 4096
+    if use_gemini:
+        result = client.complete(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=0.3,
+            web_search=False,
+        )
+    else:
+        result = client.complete(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=0.3,
+            web_search=False,
+        )
+
+    return {
+        "content": (result.content or "").strip(),
+        "model_used": result.model,
+        "prompt_tokens": result.prompt_tokens,
+        "completion_tokens": result.completion_tokens,
+        "cost_usd": result.cost_usd,
+    }
+
+
 @router.post("/findings/from-thread/{thread_id}", response_model=SavedFindingResponse)
 def save_finding_from_thread(
     thread_id: int,
@@ -2332,12 +2515,22 @@ def save_finding_from_thread(
 
 
 @router.post("/findings/{file_id}/export")
-def export_findings(
+async def export_findings(
     file_id: int,
+    request: Request,
     db: Session = Depends(get_db)
 ):
-    """Export findings — returns markdown content for the native save dialog."""
+    """Export findings as Markdown and optionally compile email-ready text with the configured LLM."""
     from backend.database import SavedFinding
+
+    raw = await request.body()
+    if raw:
+        try:
+            body = FindingsExportRequest.model_validate_json(raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body for export")
+    else:
+        body = FindingsExportRequest()
 
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not file:
@@ -2347,31 +2540,53 @@ def export_findings(
         SavedFinding.file_id == file_id
     ).order_by(SavedFinding.created_at.desc()).all()
 
-    md = f"# Analysis Findings\n\n**File:** {file.filename}\n**Exported:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+    ids = body.finding_ids if body.finding_ids else None
+    ordered = _order_findings_for_export(findings, ids)
+    if not ordered:
+        raise HTTPException(status_code=400, detail="No findings to export")
 
-    for i, f in enumerate(findings, 1):
-        meta = json.loads(f.metadata_json) if f.metadata_json else {}
-        if meta.get("auto_saved"):
-            continue
-        title = f.title or f.finding_type or "Finding"
-        md += f"## {i}. {title}\n\n"
-        md += f"**Type:** {f.finding_type}  \n"
-        md += f"**Date:** {f.created_at.strftime('%Y-%m-%d %H:%M')}  \n"
-        if f.line_number:
-            md += f"**Line:** {f.line_number}  \n"
-        src = meta.get("source", "")
-        if src:
-            md += f"**Source:** {src.replace('_', ' ')}  \n"
-        if meta.get("severity"):
-            md += f"**Severity:** {meta['severity']}  \n"
-        if meta.get("component"):
-            md += f"**Component:** {meta['component']}  \n"
-        md += f"\n{f.content}\n\n---\n\n"
+    extra_obs = body.additional_observations or ""
+    md = _build_findings_markdown(file, ordered, extra_observations=extra_obs)
 
     safe_name = re.sub(r'[^\w\-.]', '_', file.filename or "findings")
-    filename = f"findings_{safe_name}_{datetime.utcnow().strftime('%Y%m%d')}.md"
+    date_sfx = datetime.utcnow().strftime('%Y%m%d')
 
-    return {"success": True, "filename": filename, "content": md}
+    if body.compile_with_ai:
+        try:
+            compiled = _compile_findings_email_with_llm(
+                db,
+                raw_markdown=md,
+                filename_label=file.filename or "",
+                audience=body.audience or "technical",
+                additional_observations=extra_obs,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Findings compile failed: {e}\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to compile export: {str(e)}")
+
+        email_fn = f"findings_email_{safe_name}_{date_sfx}.txt"
+        return {
+            "success": True,
+            "filename": email_fn,
+            "content": compiled["content"],
+            "format": "compiled_email",
+            "raw_markdown": md,
+            "model_used": compiled["model_used"],
+            "prompt_tokens": compiled["prompt_tokens"],
+            "completion_tokens": compiled["completion_tokens"],
+            "cost_usd": compiled["cost_usd"],
+        }
+
+    filename = f"findings_{safe_name}_{date_sfx}.md"
+    return {
+        "success": True,
+        "filename": filename,
+        "content": md,
+        "format": "markdown",
+        "raw_markdown": None,
+    }
 
 
 @router.get("/findings/{file_id}", response_model=SavedFindingsListResponse)

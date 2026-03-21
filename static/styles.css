@@ -2929,6 +2929,67 @@ body {
     color: #60a5fa;
 }
 
+/* Rich HTML (log summary section / bulk row) — mirrors source views */
+.finding-content-html {
+    margin-top: 2px;
+}
+.finding-content-html.finding-content-html-rich {
+    padding: 10px 12px;
+    background: #111827;
+    border-radius: 6px;
+    border: 1px solid #374151;
+}
+.finding-content-html.finding-content-html-rich p {
+    margin: 0 0 8px 0;
+}
+.finding-content-html.finding-content-html-rich p:last-child {
+    margin-bottom: 0;
+}
+.finding-content-html.finding-content-html-rich ul,
+.finding-content-html.finding-content-html-rich ol {
+    margin: 0 0 8px 0;
+    padding-left: 20px;
+}
+.finding-content-html.finding-content-html-rich li {
+    margin: 3px 0;
+}
+.finding-content-html.finding-content-html-rich code {
+    background: #1f2937;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: #f38ba8;
+}
+.finding-content-html .finding-html-block {
+    display: block;
+}
+
+.finding-content-html-bulk {
+    padding: 0;
+    overflow-x: auto;
+    border-radius: 6px;
+    border: 1px solid #374151;
+    background: #1f2937;
+}
+.finding-content-html-bulk .finding-bulk-inline {
+    width: 100%;
+    margin: 0;
+    font-size: 0.68rem;
+}
+.finding-content-html-bulk .finding-bulk-inline thead {
+    position: static;
+}
+.finding-content-html-bulk .finding-bulk-inline tbody tr {
+    cursor: default;
+}
+.finding-content-html-bulk .finding-bulk-inline tbody tr:hover {
+    background: inherit;
+}
+.finding-content-bulk.finding-content-html {
+    font-family: inherit;
+}
+
 /* Meta row (line number, severity, component) */
 .finding-meta {
     display: flex;
@@ -3072,6 +3133,17 @@ body {
 }
 .export-preview-close:hover { color: #ef4444; }
 
+.export-preview-sentiment {
+    padding: 0 18px 10px;
+    font-size: 0.78rem;
+    color: #9ca3af;
+    line-height: 1.45;
+    border-bottom: 1px solid #2d3548;
+}
+.export-preview-sentiment span {
+    color: #d1d5db;
+}
+
 .export-preview-tabs {
     display: flex;
     gap: 0;
@@ -3185,6 +3257,136 @@ body {
     color: #fff;
 }
 .export-save-btn:hover { background: #2563eb; }
+
+/* Export options (before preview) */
+.export-options-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10002;
+    animation: fadeIn .15s ease;
+}
+.export-options-dialog {
+    background: #1a1f2e;
+    border: 1px solid #374151;
+    border-radius: 10px;
+    width: 480px;
+    max-width: 92vw;
+    padding: 18px 20px 16px;
+    box-shadow: 0 16px 48px rgba(0,0,0,.55);
+}
+.export-options-title {
+    margin: 0 0 8px;
+    font-size: 1rem;
+    color: #e5e7eb;
+}
+.export-options-hint {
+    margin: 0 0 14px;
+    font-size: 0.78rem;
+    color: #9ca3af;
+    line-height: 1.5;
+}
+.export-options-label {
+    display: block;
+    font-size: 0.75rem;
+    color: #d1d5db;
+    margin-bottom: 6px;
+}
+.export-options-optional {
+    color: #6b7280;
+    font-weight: normal;
+}
+.export-options-select {
+    width: 100%;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid #374151;
+    background: #111827;
+    color: #e5e7eb;
+    font-size: 0.8rem;
+}
+.export-options-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid #374151;
+    background: #111827;
+    color: #e5e7eb;
+    font-size: 0.8rem;
+    font-family: inherit;
+    line-height: 1.45;
+    resize: vertical;
+    min-height: 72px;
+}
+.export-options-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.export-options-cancel {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #374151;
+    color: #d1d5db;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+.export-options-cancel:hover { background: #4b5563; }
+.export-options-md {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #4b5563;
+    color: #f3f4f6;
+    font-size: 0.78rem;
+    cursor: pointer;
+    font-weight: 500;
+}
+.export-options-md:hover { background: #6b7280; }
+.export-options-email {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #3b82f6;
+    color: #fff;
+    font-size: 0.78rem;
+    cursor: pointer;
+    font-weight: 500;
+}
+.export-options-email:hover { background: #2563eb; }
+
+.export-loading-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.45);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 10005;
+}
+.export-loading-box {
+    background: #1a1f2e;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    padding: 16px 28px;
+    color: #e5e7eb;
+    font-size: 0.85rem;
+}
+
+.export-email-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.84rem;
+    line-height: 1.65;
+}
 
 /* Modal Styles */
 .modal-overlay {

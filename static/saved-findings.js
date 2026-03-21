@@ -5,9 +5,42 @@
  * - Load and display findings from the API
  * - Drag-and-drop reordering
  * - Delete findings with centered modal confirmation
- * - Export findings as Markdown
+ * - Export findings as Markdown or AI-compiled email (export options modal)
  * - Source-aware formatting
+ * - Optional rich HTML (log summary sections, bulk table rows) stored in metadata
  */
+
+/**
+ * Strip unsafe tags/attributes from HTML stored with findings before innerHTML display.
+ */
+function sanitizeFindingHtml(html) {
+    if (!html || typeof html !== 'string') return '';
+    try {
+        const doc = new DOMParser().parseFromString(`<div id="__sf_root">${html}</div>`, 'text/html');
+        const root = doc.getElementById('__sf_root');
+        if (!root) return '';
+        const walk = (node) => {
+            if (!node) return;
+            if (node.nodeType === 1) {
+                const tag = node.tagName.toLowerCase();
+                if (['script', 'iframe', 'object', 'embed', 'form', 'style'].includes(tag)) {
+                    node.remove();
+                    return;
+                }
+                [...node.attributes].forEach(attr => {
+                    const n = attr.name.toLowerCase();
+                    if (n.startsWith('on') || n === 'srcdoc') node.removeAttribute(attr.name);
+                    if (n === 'href' && /^\s*javascript:/i.test(attr.value)) node.removeAttribute(attr.name);
+                });
+            }
+            [...node.childNodes].forEach(walk);
+        };
+        walk(root);
+        return root.innerHTML;
+    } catch {
+        return '';
+    }
+}
 
 class SavedFindingsManager {
     constructor() {
@@ -188,7 +221,7 @@ class SavedFindingsManager {
                             </button>
                         </div>
                         ${finding.title ? `<div class="finding-title">${this.escapeHtml(finding.title)}</div>` : ''}
-                        <div class="finding-content ${this._getContentClass(finding)}">${this.formatContent(finding.content, finding)}</div>
+                        ${this._renderFindingBody(finding)}
                         ${this._renderMeta(finding)}
                     </div>
                 </div>
@@ -259,8 +292,22 @@ class SavedFindingsManager {
         const src = meta.source || '';
         if (src.includes('log_summary')) return 'finding-content-summary';
         if (src.includes('performance') || src.includes('latency')) return 'finding-content-perf';
+        if (src.includes('bulk') || src.includes('Bulk')) return 'finding-content-bulk';
         if (src === 'context_menu' || finding.finding_type === 'log_line') return 'finding-content-logline';
         return '';
+    }
+    
+    _renderFindingBody(finding) {
+        const meta = finding.metadata || {};
+        if (meta.content_format === 'html' && meta.content_html) {
+            const safe = sanitizeFindingHtml(meta.content_html);
+            if (safe) {
+                const bulk = meta.source && (meta.source.includes('bulk') || meta.source.includes('Bulk'));
+                const htmlMod = bulk ? ' finding-content-html-bulk' : ' finding-content-html-rich';
+                return `<div class="finding-content ${this._getContentClass(finding)} finding-content-html${htmlMod}">${safe}</div>`;
+            }
+        }
+        return `<div class="finding-content ${this._getContentClass(finding)}">${this.formatContent(finding.content, finding)}</div>`;
     }
     
     _renderMeta(finding) {
@@ -425,53 +472,163 @@ class SavedFindingsManager {
     
     // ── Export ───────────────────────────────────────────────
     
-    async exportFindings() {
+    exportFindings() {
         const ordered = this._getOrderedFindings();
         if (ordered.length === 0) {
             if (window.showToast) window.showToast('No findings to export', 'error');
             return;
         }
-        
         if (!this.currentFileId) return;
+        this._showExportOptionsModal();
+    }
+    
+    _showExportOptionsModal() {
+        const existing = document.getElementById('exportOptionsOverlay');
+        if (existing) existing.remove();
+        
+        const overlay = document.createElement('div');
+        overlay.id = 'exportOptionsOverlay';
+        overlay.className = 'export-options-overlay';
+        overlay.innerHTML = `
+            <div class="export-options-dialog">
+                <h3 class="export-options-title">Export findings</h3>
+                <p class="export-options-hint">Choose how to share your findings. Audience and notes are used when compiling an email-style summary.</p>
+                <label class="export-options-label" for="exportAudience">Audience</label>
+                <select id="exportAudience" class="export-options-select">
+                    <option value="technical">Technical — detail, codes, line refs</option>
+                    <option value="business">Business — impact, risk, actions</option>
+                    <option value="mixed">Mixed — summary + technical detail</option>
+                    <option value="executive">Executive — brief bullets, decisions</option>
+                </select>
+                <label class="export-options-label" for="exportObservations">Additional observations <span class="export-options-optional">(optional)</span></label>
+                <textarea id="exportObservations" class="export-options-textarea" rows="4" placeholder="Context for recipients, caveats, next steps…"></textarea>
+                <div class="export-options-actions">
+                    <button type="button" class="export-options-cancel">Cancel</button>
+                    <button type="button" class="export-options-md">Export Markdown</button>
+                    <button type="button" class="export-options-email">Compile email…</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        
+        const close = () => overlay.remove();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('.export-options-cancel').addEventListener('click', close);
+        
+        const getPayload = () => ({
+            finding_ids: this._getOrderedFindings().map(f => f.id),
+            audience: overlay.querySelector('#exportAudience').value,
+            additional_observations: overlay.querySelector('#exportObservations').value.trim()
+        });
+        
+        overlay.querySelector('.export-options-md').addEventListener('click', async () => {
+            const payload = { ...getPayload(), compile: false };
+            close();
+            await this._runExport(payload);
+        });
+        
+        overlay.querySelector('.export-options-email').addEventListener('click', async () => {
+            const payload = { ...getPayload(), compile: true };
+            close();
+            await this._runExport(payload);
+        });
+    }
+    
+    async _runExport(payload) {
+        if (!this.currentFileId) return;
+        const loadingId = 'exportLoadingOverlay';
+        let loading = document.getElementById(loadingId);
+        if (!loading) {
+            loading = document.createElement('div');
+            loading.id = loadingId;
+            loading.className = 'export-loading-overlay';
+            loading.innerHTML = '<div class="export-loading-box">Compiling email...</div>';
+            document.body.appendChild(loading);
+        }
+        loading.style.display = payload.compile ? 'flex' : 'none';
         
         try {
             const resp = await fetch(`/api/llm/findings/${this.currentFileId}/export`, {
-                method: 'POST'
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
-            if (!resp.ok) throw new Error('Export failed');
-            const data = await resp.json();
+            const errText = await resp.text();
+            let data;
+            try {
+                data = JSON.parse(errText);
+            } catch {
+                throw new Error(errText || 'Export failed');
+            }
+            if (!resp.ok) {
+                const detail = data.detail;
+                const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg || d).join(' ') : (data.message || errText));
+                throw new Error(msg || 'Export failed');
+            }
             
-            this._showExportPreview(data.filename, data.content);
+            if (data.format === 'compiled_email') {
+                this._showExportPreview(data.filename, data.content, {
+                    format: 'compiled_email',
+                    rawMarkdown: data.raw_markdown || '',
+                    modelUsed: data.model_used,
+                    audience: payload.audience
+                });
+            } else {
+                this._showExportPreview(data.filename, data.content, { format: 'markdown' });
+            }
         } catch (e) {
             console.error('Export failed:', e);
-            if (window.showToast) window.showToast('Export failed', 'error');
+            if (window.showToast) window.showToast(e.message || 'Export failed', 'error');
+        } finally {
+            if (loading) loading.style.display = 'none';
         }
     }
     
-    _showExportPreview(filename, markdown) {
+    _showExportPreview(filename, primaryText, options = {}) {
         const existing = document.getElementById('exportPreviewOverlay');
         if (existing) existing.remove();
+        
+        const format = options.format || 'markdown';
+        const rawMd = options.rawMarkdown != null ? options.rawMarkdown : primaryText;
+        const isEmail = format === 'compiled_email';
         
         const overlay = document.createElement('div');
         overlay.id = 'exportPreviewOverlay';
         overlay.className = 'export-preview-overlay';
         
-        const rendered = this._renderMarkdown(markdown);
+        const title = isEmail ? 'Compiled email' : 'Export preview';
+        const sub = isEmail && options.modelUsed
+            ? `${this.escapeHtml(filename)} · ${this.escapeHtml(options.modelUsed)}`
+            : this.escapeHtml(filename);
+        
+        const renderedPrimary = isEmail
+            ? `<div class="export-email-body">${this._renderMarkdownPlain(primaryText)}</div>`
+            : this._renderMarkdown(primaryText);
+        
+        const tabsHtml = isEmail
+            ? `<button class="export-preview-tab active" data-view="primary">Email body</button>
+               <button class="export-preview-tab" data-view="raw">Source (Markdown)</button>`
+            : `<button class="export-preview-tab active" data-view="primary">Preview</button>
+               <button class="export-preview-tab" data-view="raw">Markdown</button>`;
+        
+        const audienceRow = isEmail && options.audience
+            ? `<div class="export-preview-sentiment">Requested audience: <span>${this.escapeHtml(this._audienceLabel(options.audience))}</span></div>`
+            : '';
         
         overlay.innerHTML = `
             <div class="export-preview-dialog">
                 <div class="export-preview-header">
-                    <h3>Export Preview</h3>
-                    <span class="export-preview-filename">${this.escapeHtml(filename)}</span>
+                    <h3>${this.escapeHtml(title)}</h3>
+                    <span class="export-preview-filename">${sub}</span>
                     <button class="export-preview-close" title="Close">×</button>
                 </div>
+                ${audienceRow}
                 <div class="export-preview-tabs">
-                    <button class="export-preview-tab active" data-view="rendered">Preview</button>
-                    <button class="export-preview-tab" data-view="raw">Markdown</button>
+                    ${tabsHtml}
                 </div>
                 <div class="export-preview-body">
-                    <div class="export-preview-rendered active" data-view="rendered">${rendered}</div>
-                    <div class="export-preview-raw" data-view="raw"><pre>${this.escapeHtml(markdown)}</pre></div>
+                    <div class="export-preview-rendered active" data-view="primary">${renderedPrimary}</div>
+                    <div class="export-preview-raw" data-view="raw"><pre>${this.escapeHtml(rawMd)}</pre></div>
                 </div>
                 <div class="export-preview-actions">
                     <button class="export-action-btn export-copy-btn">Copy to Clipboard</button>
@@ -481,30 +638,33 @@ class SavedFindingsManager {
         `;
         document.body.appendChild(overlay);
         
-        // Close
+        const getActiveText = () => {
+            const rawEl = overlay.querySelector('.export-preview-raw');
+            const rawActive = rawEl && rawEl.classList.contains('active');
+            return rawActive ? rawMd : primaryText;
+        };
+        
         overlay.querySelector('.export-preview-close').addEventListener('click', () => overlay.remove());
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
         
-        // Tab switching
         overlay.querySelectorAll('.export-preview-tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 overlay.querySelectorAll('.export-preview-tab').forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
                 const view = tab.dataset.view;
-                overlay.querySelector('.export-preview-rendered').classList.toggle('active', view === 'rendered');
+                overlay.querySelector('.export-preview-rendered').classList.toggle('active', view === 'primary');
                 overlay.querySelector('.export-preview-raw').classList.toggle('active', view === 'raw');
             });
         });
         
-        // Copy
         overlay.querySelector('.export-copy-btn').addEventListener('click', async () => {
+            const text = getActiveText();
             try {
-                await navigator.clipboard.writeText(markdown);
+                await navigator.clipboard.writeText(text);
                 if (window.showToast) window.showToast('Copied to clipboard');
             } catch {
-                // Fallback
                 const ta = document.createElement('textarea');
-                ta.value = markdown;
+                ta.value = text;
                 ta.style.cssText = 'position:fixed;left:-9999px';
                 document.body.appendChild(ta);
                 ta.select();
@@ -514,18 +674,48 @@ class SavedFindingsManager {
             }
         });
         
-        // Save
         overlay.querySelector('.export-save-btn').addEventListener('click', async () => {
+            const text = getActiveText();
+            const saveName = filename;
             if (window.pywebview && window.pywebview.api && window.pywebview.api.save_file) {
-                const saved = await window.pywebview.api.save_file(filename, markdown);
+                const saved = await window.pywebview.api.save_file(saveName, text);
                 if (saved) {
                     if (window.showToast) window.showToast('File saved');
                     overlay.remove();
                 }
             } else {
-                if (window.showToast) window.showToast('Save dialog not available in browser mode', 'error');
+                const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = saveName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                if (window.showToast) window.showToast('Download started');
+                overlay.remove();
             }
         });
+    }
+    
+    _audienceLabel(value) {
+        const map = {
+            technical: 'Technical — detail, codes, line refs',
+            business: 'Business — impact, risk, actions',
+            mixed: 'Mixed — summary + technical detail',
+            executive: 'Executive — brief bullets, decisions'
+        };
+        if (!value) return '';
+        return map[value] || String(value);
+    }
+    
+    _renderMarkdownPlain(text) {
+        if (!text) return '';
+        let html = this.escapeHtml(text);
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\n/g, '<br>');
+        return html;
     }
     
     _renderMarkdown(md) {
@@ -660,3 +850,4 @@ class SavedFindingsManager {
 // Initialize
 const savedFindingsManager = new SavedFindingsManager();
 window.savedFindingsManager = savedFindingsManager;
+window.sanitizeFindingHtml = sanitizeFindingHtml;

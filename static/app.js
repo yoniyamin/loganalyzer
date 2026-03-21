@@ -3471,6 +3471,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const contentEl = section.querySelector('.ai-insight-section-content');
     const title = titleEl ? titleEl.textContent.trim() : 'Log Summary Section';
     const content = contentEl ? contentEl.innerText.trim() : '';
+    let metadata = { source: 'log_summary_section' };
+    if (contentEl && window.sanitizeFindingHtml) {
+      const contentHtml = window.sanitizeFindingHtml(contentEl.innerHTML);
+      if (contentHtml) {
+        metadata.content_format = 'html';
+        metadata.content_html = contentHtml;
+      }
+    }
     
     try {
       const resp = await fetch('/api/llm/findings', {
@@ -3481,7 +3489,7 @@ document.addEventListener("DOMContentLoaded", () => {
           finding_type: 'custom',
           title: `Summary: ${title}`.slice(0, 120),
           content: `**${title}**\n\n${content}`,
-          metadata: { source: 'log_summary_section' }
+          metadata
         })
       });
       if (resp.ok) {
@@ -3510,11 +3518,25 @@ document.addEventListener("DOMContentLoaded", () => {
     
     let _ctxPayload = null;
     
+    function buildBulkMapRowFindingHtml(tr) {
+      const table = tr.closest('table');
+      if (!table || !table.classList.contains('bulk-map-table')) return null;
+      const theadRow = table.querySelector('thead tr');
+      if (!theadRow) return null;
+      const html = `<table class="bulk-map-table finding-bulk-inline"><thead><tr>${theadRow.innerHTML}</tr></thead><tbody>${tr.outerHTML}</tbody></table>`;
+      return window.sanitizeFindingHtml ? window.sanitizeFindingHtml(html) : null;
+    }
+    
     const addBtn = menu.querySelector('#reportCtxAddFinding');
     addBtn.addEventListener('click', async () => {
       menu.style.display = 'none';
       if (!_ctxPayload || !currentFileId) return;
       try {
+        const meta = { source: _ctxPayload.source };
+        if (_ctxPayload.content_html) {
+          meta.content_format = 'html';
+          meta.content_html = _ctxPayload.content_html;
+        }
         const resp = await fetch('/api/llm/findings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3524,7 +3546,7 @@ document.addEventListener("DOMContentLoaded", () => {
             title: _ctxPayload.title.slice(0, 120),
             content: _ctxPayload.content,
             line_number: _ctxPayload.line || null,
-            metadata: { source: _ctxPayload.source }
+            metadata: meta
           })
         });
         if (resp.ok) {
@@ -3583,7 +3605,11 @@ document.addEventListener("DOMContentLoaded", () => {
           const line = tr.dataset.line ? parseInt(tr.dataset.line) : null;
           const formatted = formatRowWithHeaders(tr);
           const shortTitle = extractRowText(tr).slice(0, 100);
-          showReportCtx(e, { title: shortTitle, content: formatted, line, source });
+          let contentHtml = null;
+          if (tr.closest('.bulk-map-table')) {
+            contentHtml = buildBulkMapRowFindingHtml(tr);
+          }
+          showReportCtx(e, { title: shortTitle, content: formatted, line, source, content_html: contentHtml });
           return;
         }
         // 2) Cockpit sections (latency cards, spikes, bottleneck, recommendations…)
@@ -3641,11 +3667,17 @@ document.addEventListener("DOMContentLoaded", () => {
           const text = block.innerText.trim();
           const section = sectionContent.closest('.ai-insight-section');
           const sectionTitle = section ? section.querySelector('h3')?.textContent.trim() || '' : '';
+          let contentHtml = null;
+          if (window.sanitizeFindingHtml) {
+            const raw = window.sanitizeFindingHtml(block.outerHTML);
+            if (raw) contentHtml = `<div class="finding-html-block">${raw}</div>`;
+          }
           showReportCtx(e, {
             title: `${sectionTitle}: ${text}`.slice(0, 120),
             content: `**${sectionTitle}**\n${text}`,
             line: null,
-            source: 'log_summary_detail'
+            source: 'log_summary_detail',
+            content_html: contentHtml
           });
         }
       });
