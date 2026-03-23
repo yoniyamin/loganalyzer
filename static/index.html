@@ -260,6 +260,12 @@
                   <input type="checkbox" id="showTimeGaps" style="cursor: pointer;">
                   <span>Show Time Gaps</span>
                 </label>
+                <label
+                  style="display: flex; align-items: center; gap: 4px; font-size: 0.75rem; color: #9ca3af; cursor: pointer;"
+                  title="Hide consecutive lines with identical messages (ignoring timestamps and thread IDs) to reduce noise from repeating log entries like heartbeats or status polls">
+                  <input type="checkbox" id="hideNoise" style="cursor: pointer;">
+                  <span>Hide Noise</span>
+                </label>
                 <div class="highlight-filter-container">
                   <button id="highlightFilterBtn" class="icon-btn" title="Filter highlights">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

@@ -1633,6 +1633,23 @@ body {
     padding-left: 4px;
 }
 
+.noise-collapse-indicator {
+    display: flex;
+    align-items: center;
+    padding: 2px 12px 2px 42px;
+    font-size: 0.72rem;
+    color: #6b7280;
+    background: rgba(107, 114, 128, 0.08);
+    border-left: 2px dashed #4b5563;
+    user-select: none;
+    transition: background 0.15s;
+}
+
+.noise-collapse-indicator:hover {
+    background: rgba(107, 114, 128, 0.18);
+    color: #9ca3af;
+}
+
 .log-line.selected-line {
     background: #fbbf24 !important;
     color: #111827 !important;

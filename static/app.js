@@ -323,35 +323,48 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastFetchDirection = null;
   
   // Infinite Scroll - bidirectional, only active when viewing "All Lines"
+  // Throttled via requestAnimationFrame to avoid excessive DOM reads
+  let scrollRafPending = false;
   if (logPreview) {
     logPreview.addEventListener("scroll", () => {
-      // Don't load more lines when viewing search results
-      if (currentView !== 'all') return;
-      if (isFetchingLog) return;
-      
-      // Load more lines when scrolling DOWN (near bottom)
-      if (logPreview.scrollTop + logPreview.clientHeight >= logPreview.scrollHeight - 50) {
-        // Only fetch if we have more lines to load AND we haven't just fetched this range
-        if (loadedLinesEnd < totalLogLines) {
-          if (lastFetchStart !== loadedLinesEnd || lastFetchDirection !== 'down') {
-            lastFetchStart = loadedLinesEnd;
-            lastFetchDirection = 'down';
-            fetchLogLines(loadedLinesEnd, 100, true, 'down');
+      if (scrollRafPending) return;
+      scrollRafPending = true;
+      requestAnimationFrame(() => {
+        scrollRafPending = false;
+        if (currentView !== 'all') return;
+        if (isFetchingLog) return;
+
+        const { scrollTop, clientHeight, scrollHeight } = logPreview;
+
+        if (scrollTop + clientHeight >= scrollHeight - 50) {
+          if (loadedLinesEnd < totalLogLines) {
+            if (lastFetchStart !== loadedLinesEnd || lastFetchDirection !== 'down') {
+              lastFetchStart = loadedLinesEnd;
+              lastFetchDirection = 'down';
+              fetchLogLines(loadedLinesEnd, 100, true, 'down');
+            }
           }
         }
-      }
-      
-      // Load more lines when scrolling UP (near top)
-      if (logPreview.scrollTop <= 50) {
-        if (loadedLinesStart > 0) {
-          const newStart = Math.max(0, loadedLinesStart - 100);
-          const count = loadedLinesStart - newStart;
-          if (count > 0 && (lastFetchStart !== newStart || lastFetchDirection !== 'up')) {
-            lastFetchStart = newStart;
-            lastFetchDirection = 'up';
-            fetchLogLines(newStart, count, true, 'up');
+
+        if (scrollTop <= 50) {
+          if (loadedLinesStart > 0) {
+            const newStart = Math.max(0, loadedLinesStart - 100);
+            const count = loadedLinesStart - newStart;
+            if (count > 0 && (lastFetchStart !== newStart || lastFetchDirection !== 'up')) {
+              lastFetchStart = newStart;
+              lastFetchDirection = 'up';
+              fetchLogLines(newStart, count, true, 'up');
+            }
           }
         }
+      });
+    });
+
+    // Delegated contextmenu for all log lines inside logPreview
+    logPreview.addEventListener("contextmenu", (e) => {
+      const logLine = e.target.closest('.log-line');
+      if (logLine && logLine.dataset.originalText) {
+        showContextMenu(e, logLine.dataset.originalText, logLine);
       }
     });
   }
@@ -440,6 +453,14 @@ document.addEventListener("DOMContentLoaded", () => {
   if (showTimeGapsAnalysis) {
     showTimeGapsAnalysis.addEventListener('change', () => {
       applyTimeGapsDisplay();
+    });
+  }
+
+  // Hide Noise Checkbox
+  const hideNoiseCheckbox = document.getElementById('hideNoise');
+  if (hideNoiseCheckbox) {
+    hideNoiseCheckbox.addEventListener('change', () => {
+      applyHideNoise();
     });
   }
   
@@ -621,6 +642,59 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   
+  // Fast timestamp parser - avoids new Date() overhead for fixed-format timestamps
+  function parseTimestampFast(ts) {
+    // Format: "2025-10-20T18:34:12"
+    const y = ts.charCodeAt(0) * 1000 + ts.charCodeAt(1) * 100 + ts.charCodeAt(2) * 10 + ts.charCodeAt(3) - 53328;
+    const mo = (ts.charCodeAt(5) - 48) * 10 + ts.charCodeAt(6) - 48;
+    const d = (ts.charCodeAt(8) - 48) * 10 + ts.charCodeAt(9) - 48;
+    const h = (ts.charCodeAt(11) - 48) * 10 + ts.charCodeAt(12) - 48;
+    const mi = (ts.charCodeAt(14) - 48) * 10 + ts.charCodeAt(15) - 48;
+    const s = (ts.charCodeAt(17) - 48) * 10 + ts.charCodeAt(18) - 48;
+    return new Date(y, mo - 1, d, h, mi, s);
+  }
+
+  // Apply time-gap classes/indicators only to lines that have gap data in a container
+  function applyTimeGapsToLines(container, showGaps) {
+    const logLines = container.querySelectorAll('.log-line[data-time-gap]');
+    logLines.forEach(line => {
+      line.classList.remove('time-gap', 'time-gap-small', 'time-gap-medium', 'time-gap-large');
+      if (showGaps) {
+        const gapSize = line.dataset.gapSize;
+        const timeGap = parseFloat(line.dataset.timeGap);
+        line.classList.add('time-gap');
+        if (!line.querySelector('.time-gap-indicator')) {
+          const indicator = document.createElement('span');
+          indicator.className = 'time-gap-indicator';
+          indicator.textContent = `⏱ +${timeGap.toFixed(2)}s`;
+          const lineNumSpan = line.querySelector('.line-number');
+          if (lineNumSpan && lineNumSpan.nextSibling) {
+            line.insertBefore(indicator, lineNumSpan.nextSibling);
+          } else {
+            line.insertBefore(indicator, line.firstChild);
+          }
+        }
+        line.classList.add(gapSize === 'small' ? 'time-gap-small' : gapSize === 'medium' ? 'time-gap-medium' : 'time-gap-large');
+      } else {
+        const indicator = line.querySelector('.time-gap-indicator');
+        if (indicator) indicator.remove();
+      }
+    });
+  }
+
+  // Optimized: only apply search highlights to lines not already highlighted
+  function applySearchHighlightsToNewLines() {
+    if (lastSearchMatches.length === 0) return;
+    const matchLineNumbers = new Set(lastSearchMatches.map(m => m.line));
+    const logLines = logPreview.querySelectorAll('.log-line:not(.search-highlight-line)');
+    logLines.forEach(line => {
+      const idx = parseInt(line.dataset.idx);
+      if (matchLineNumbers.has(idx)) {
+        line.classList.add('search-highlight-line');
+      }
+    });
+  }
+
   function applyTimeGapsDisplay() {
     const showGapsMain = document.getElementById('showTimeGaps')?.checked || false;
     const showGapsAnalysis = document.getElementById('showTimeGapsAnalysis')?.checked || false;
@@ -700,6 +774,86 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
+  // Extract the "message body" from a log line, stripping thread ID, timestamp, and source ref
+  // so that lines differing only in those fields are treated as identical.
+  // Input: "00013552: 2025-10-20T18:34:12 [SORTER          ]I:  Task is running  (sorter.c:712)"
+  // Output: "[SORTER          ]I:  Task is running"
+  const noiseLineRegex = /^\d{8}:\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?::\d+)?\s+(.+?)(?:\s+\([a-zA-Z_]\w*\.\w+:\d+\))?\s*$/;
+
+  function getLineMessageKey(text) {
+    const m = text.match(noiseLineRegex);
+    return m ? m[1] : text;
+  }
+
+  function applyHideNoise() {
+    const hideNoise = document.getElementById('hideNoise')?.checked || false;
+
+    [logPreview, threadLogView].forEach(container => {
+      if (!container) return;
+      const logLines = container.querySelectorAll('.log-line');
+      if (logLines.length === 0) return;
+
+      // First, remove all existing noise-hidden state and collapse indicators
+      container.querySelectorAll('.noise-collapse-indicator').forEach(el => el.remove());
+      logLines.forEach(line => {
+        line.classList.remove('noise-hidden');
+        line.style.display = '';
+      });
+
+      if (!hideNoise) return;
+
+      // Identify runs of consecutive lines with the same message key
+      let i = 0;
+      const linesArr = Array.from(logLines);
+      while (i < linesArr.length) {
+        const currentKey = getLineMessageKey(linesArr[i].dataset.originalText || '');
+        let runEnd = i + 1;
+        while (runEnd < linesArr.length) {
+          const nextKey = getLineMessageKey(linesArr[runEnd].dataset.originalText || '');
+          if (nextKey !== currentKey) break;
+          runEnd++;
+        }
+
+        const runLength = runEnd - i;
+        if (runLength >= 3) {
+          const runStart = i;
+          const runStop = runEnd;
+          const hiddenCount = runLength - 2;
+
+          // Keep first and last, hide the middle ones
+          for (let j = runStart + 1; j < runStop - 1; j++) {
+            linesArr[j].classList.add('noise-hidden');
+            linesArr[j].style.display = 'none';
+          }
+
+          const indicator = document.createElement('div');
+          indicator.className = 'noise-collapse-indicator';
+          indicator.textContent = `⤵ ${hiddenCount} identical line${hiddenCount > 1 ? 's' : ''} hidden`;
+          indicator.title = `"${currentKey.substring(0, 80)}${currentKey.length > 80 ? '…' : ''}" repeated ${runLength} times`;
+          indicator.style.cursor = 'pointer';
+          indicator.addEventListener('click', () => {
+            const isExpanded = indicator.dataset.expanded === 'true';
+            for (let j = runStart + 1; j < runStop - 1; j++) {
+              linesArr[j].style.display = isExpanded ? 'none' : '';
+              if (isExpanded) {
+                linesArr[j].classList.add('noise-hidden');
+              } else {
+                linesArr[j].classList.remove('noise-hidden');
+              }
+            }
+            indicator.dataset.expanded = isExpanded ? 'false' : 'true';
+            indicator.textContent = isExpanded
+              ? `⤵ ${hiddenCount} identical line${hiddenCount > 1 ? 's' : ''} hidden`
+              : `⤴ ${hiddenCount} identical line${hiddenCount > 1 ? 's' : ''} shown`;
+          });
+          linesArr[runStart].after(indicator);
+        }
+
+        i = runEnd;
+      }
+    });
+  }
+
   function filterComponentThreadList() {
     const query = componentThreadSearch.value.toLowerCase().trim();
     const groups = threadListDiv.querySelectorAll('.component-group-container');
@@ -1760,6 +1914,15 @@ document.addEventListener("DOMContentLoaded", () => {
   // Clear all data when loading a new file (or closing the log when showWelcomeAfter is true)
   function clearAllFileData(options = {}) {
     const { showWelcomeAfter = false } = options;
+
+    // Reset toggle checkboxes
+    const showTimeGapsEl = document.getElementById('showTimeGaps');
+    if (showTimeGapsEl) showTimeGapsEl.checked = false;
+    const showTimeGapsAnalysisEl = document.getElementById('showTimeGapsAnalysis');
+    if (showTimeGapsAnalysisEl) showTimeGapsAnalysisEl.checked = false;
+    const hideNoiseEl = document.getElementById('hideNoise');
+    if (hideNoiseEl) hideNoiseEl.checked = false;
+
     // Clear log preview
     if (logPreview) {
       if (showWelcomeAfter) {
@@ -2073,42 +2236,35 @@ document.addEventListener("DOMContentLoaded", () => {
       
       // Calculate time gap
       const tsMatch = line.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-      if (tsMatch && lastTimestamp) {
-        const currentTimestamp = new Date(tsMatch[1]);
-        const timeDiff = (currentTimestamp - lastTimestamp) / 1000;
-        div.dataset.timeGap = timeDiff;
-        
-        if (timeDiff < 1) {
-          div.dataset.gapSize = 'small';
-        } else if (timeDiff < 10) {
-          div.dataset.gapSize = 'medium';
-        } else {
-          div.dataset.gapSize = 'large';
-        }
-      }
-      
       if (tsMatch) {
-        lastTimestamp = new Date(tsMatch[1]);
+        const currentTimestamp = parseTimestampFast(tsMatch[1]);
+        if (lastTimestamp) {
+          const timeDiff = (currentTimestamp - lastTimestamp) / 1000;
+          div.dataset.timeGap = timeDiff;
+          div.dataset.gapSize = timeDiff < 1 ? 'small' : timeDiff < 10 ? 'medium' : 'large';
+        }
+        lastTimestamp = currentTimestamp;
       }
-      
-      div.addEventListener("contextmenu", (e) => showContextMenu(e, line));
+
       fragment.appendChild(div);
     });
-    
-    // Insert at the beginning
+
     logPreview.insertBefore(fragment, logPreview.firstChild);
-    
-    // Restore scroll position so user doesn't jump
+
     const scrollHeightAfter = logPreview.scrollHeight;
     logPreview.scrollTop += (scrollHeightAfter - scrollHeightBefore);
-    
-    // Apply time gaps if checkbox is checked
-    applyTimeGapsDisplay();
-    
-    // Apply search highlights if there are any active search matches
-    applySearchHighlightsToAllLines();
+
+    if (document.getElementById('showTimeGaps')?.checked) {
+      applyTimeGapsToLines(logPreview, true);
+    }
+
+    applySearchHighlightsToNewLines();
+
+    if (document.getElementById('hideNoise')?.checked) {
+      applyHideNoise();
+    }
   }
-  
+
   // Load log lines within a specific range (for latency graph time selection)
   function loadLogLinesInRange(startLine, endLine) {
     if (!currentFileId || isFetchingLog) return;
@@ -2440,9 +2596,6 @@ document.addEventListener("DOMContentLoaded", () => {
       div.appendChild(lineNumSpan);
       div.appendChild(document.createTextNode(m.text));
       
-      // Right-click shows context menu
-      div.addEventListener("contextmenu", (e) => showContextMenu(e, m.text));
-      
       // Left-click: allow text selection, double-click navigates to line in All Lines
       div.addEventListener("dblclick", () => {
         // Switch back to all lines and jump to this line
@@ -2590,17 +2743,18 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderLines(lines, append, startIdx) {
     hideLogPlaceholder();
     if (!append) logPreview.innerHTML = "";
-    
-    // Extract timestamps from existing lines if appending
+
     let lastTimestamp = null;
     if (append && logPreview.children.length > 0) {
       const lastLine = logPreview.children[logPreview.children.length - 1];
       const tsMatch = lastLine.textContent.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
       if (tsMatch) {
-        lastTimestamp = new Date(tsMatch[1]);
+        lastTimestamp = parseTimestampFast(tsMatch[1]);
       }
     }
-    
+
+    const fragment = document.createDocumentFragment();
+
     lines.forEach((line, idx) => {
       const div = document.createElement("div");
       div.className = "log-line";
@@ -2640,34 +2794,30 @@ document.addEventListener("DOMContentLoaded", () => {
       
       // Calculate time gap
       const tsMatch = line.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-      if (tsMatch && lastTimestamp) {
-        const currentTimestamp = new Date(tsMatch[1]);
-        const timeDiff = (currentTimestamp - lastTimestamp) / 1000; // in seconds
-        div.dataset.timeGap = timeDiff;
-        
-        // Classify gap size
-        if (timeDiff < 1) {
-          div.dataset.gapSize = 'small';
-        } else if (timeDiff < 10) {
-          div.dataset.gapSize = 'medium';
-        } else {
-          div.dataset.gapSize = 'large';
-        }
-      }
-      
       if (tsMatch) {
-        lastTimestamp = new Date(tsMatch[1]);
+        const currentTimestamp = parseTimestampFast(tsMatch[1]);
+        if (lastTimestamp) {
+          const timeDiff = (currentTimestamp - lastTimestamp) / 1000;
+          div.dataset.timeGap = timeDiff;
+          div.dataset.gapSize = timeDiff < 1 ? 'small' : timeDiff < 10 ? 'medium' : 'large';
+        }
+        lastTimestamp = currentTimestamp;
       }
-      
-      div.addEventListener("contextmenu", (e) => showContextMenu(e, line));
-      logPreview.appendChild(div);
+
+      fragment.appendChild(div);
     });
-    
-    // Apply time gaps if checkbox is checked
-    applyTimeGapsDisplay();
-    
-    // Apply search highlights if there are any active search matches
-    applySearchHighlightsToAllLines();
+
+    logPreview.appendChild(fragment);
+
+    if (document.getElementById('showTimeGaps')?.checked) {
+      applyTimeGapsToLines(logPreview, true);
+    }
+
+    applySearchHighlightsToNewLines();
+
+    if (document.getElementById('hideNoise')?.checked) {
+      applyHideNoise();
+    }
   }
   
   // Function to refresh log display (called when colors change)
