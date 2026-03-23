@@ -3,7 +3,9 @@ import threading
 import uvicorn
 import sys
 import os
+import time
 import logging
+import urllib.request
 from backend.main import app
 
 # Configure logging to avoid clutter in the console
@@ -54,27 +56,39 @@ def start_server():
     """Run uvicorn server."""
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
 
+def wait_for_server(timeout=15):
+    """Block until the FastAPI server is accepting connections."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f'http://{HOST}:{PORT}/api/files').read()
+            return True
+        except Exception:
+            time.sleep(0.1)
+    return False
+
+
 def main():
     api = Api()
-    
-    # Start the server in a separate thread
+
     t = threading.Thread(target=start_server, daemon=True)
     t.start()
 
-    # Create the window (maximized on startup)
+    wait_for_server()
+
     window = webview.create_window(
-        'Replicate Log Analyzer', 
+        'Replicate Log Analyzer',
         f'http://{HOST}:{PORT}',
         width=1200,
         height=800,
         js_api=api,
         maximized=True,
-        text_select=True  # Enable text selection and copying
+        text_select=True,
+        background_color='#0f172a'
     )
     api.set_window(window)
-    
-    # Start the GUI
-    webview.start(debug=True)
+
+    webview.start()
 
 if __name__ == '__main__':
     main()

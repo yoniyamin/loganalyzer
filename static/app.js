@@ -7844,4 +7844,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
+  // Dismiss splash screen and reveal the app
+  const appRoot = document.getElementById('app-root');
+  const splash = document.getElementById('splash-screen');
+  if (appRoot) appRoot.style.visibility = '';
+  if (splash) {
+    splash.classList.add('hidden');
+    splash.addEventListener('transitionend', () => splash.remove(), { once: true });
+  }
+
 });
