@@ -7,7 +7,7 @@ import os
 import uuid
 from datetime import datetime
 
-from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, UserSettings
+from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, LogOracleRedoRead, LogOracleRedoLogSession, UserSettings
 from backend.core.indexer import process_log_file
 from backend.core.reader import LogReader
 
@@ -1066,6 +1066,8 @@ async def reindex_file(
     # Clear existing indexes and stats
     db.query(LogIndex).filter(LogIndex.file_id == file_id).delete()
     db.query(LogPerformance).filter(LogPerformance.file_id == file_id).delete()
+    db.query(LogOracleRedoRead).filter(LogOracleRedoRead.file_id == file_id).delete()
+    db.query(LogOracleRedoLogSession).filter(LogOracleRedoLogSession.file_id == file_id).delete()
     db.query(LogStats).filter(LogStats.file_id == file_id).delete()
     db.query(LogError).filter(LogError.file_id == file_id).delete()
     db.commit()
@@ -1577,6 +1579,47 @@ def get_log_summary(file_id: int, db: Session = Depends(get_db)):
     if not summary['log_properly_closed']:
         summary['incomplete_log_warning'] = 'Log file may be incomplete or the process was aborted abnormally. No "Closing log file" message found at the end.'
     
+    # Oracle trace: only surface high-level flags for the summary view.
+    # Full per-session / per-read detail is in the Performance Cockpit.
+    from backend.core.analysis import summarize_oracle_redo_log_sessions, analyze_oracle_redo_read_variance
+    oracle_rows = db.query(LogOracleRedoRead).filter(LogOracleRedoRead.file_id == file_id).all()
+    oracle_reads = [
+        {
+            "timestamp": r.timestamp,
+            "line_number": r.line_number,
+            "thread_id": r.thread_id,
+            "bytes_read": r.bytes_read,
+            "read_ms": r.read_ms,
+            "source_location": r.source_location,
+        }
+        for r in oracle_rows
+    ]
+    full_read_analysis = analyze_oracle_redo_read_variance(oracle_reads)
+    summary["oracle_redo_read_analysis"] = {
+        "has_red_flags": full_read_analysis.get("has_red_flags", False),
+        "total_events_over_floor": full_read_analysis.get("total_events_over_floor", 0),
+        "high_variance_group_count": len(full_read_analysis.get("high_variance_groups", [])),
+    }
+
+    session_rows = db.query(LogOracleRedoLogSession).filter(LogOracleRedoLogSession.file_id == file_id).all()
+    oracle_sessions = [
+        {
+            "thread_id": s.thread_id,
+            "redo_path": s.redo_path,
+            "line_open": s.line_open,
+            "line_close": s.line_close,
+            "timestamp_open": s.timestamp_open,
+            "timestamp_close": s.timestamp_close,
+            "duration_seconds": s.duration_seconds,
+        }
+        for s in session_rows
+    ]
+    full_session_analysis = summarize_oracle_redo_log_sessions(oracle_sessions)
+    summary["oracle_redo_log_processing"] = {
+        "session_count": full_session_analysis.get("session_count", 0),
+        "duration_seconds_stats": full_session_analysis.get("duration_seconds_stats"),
+    }
+    
     return summary
 
 
@@ -1604,7 +1647,9 @@ def get_performance_cockpit(file_id: int, db: Session = Depends(get_db)):
         BULK_MAX_FILE_SIZE_RE, PARALLEL_APPLY_RE, SOURCE_ENDPOINT_RE,
         TARGET_ENDPOINT_RE, NO_PK_RE, START_APPLYING_RE,
         SORTER_MEMORY_WARNING_RE, TARGET_DISCONNECT_EVENT_RE,
-        SOURCE_RECONNECT_RE, NETWORK_ERROR_RE, RESOURCE_LIMIT_RE
+        SOURCE_RECONNECT_RE, NETWORK_ERROR_RE, RESOURCE_LIMIT_RE,
+        parse_oracle_archived_redo_read, parse_oracle_redo_log_open, parse_oracle_redo_log_close,
+        LINE_FULL_RE,
     )
     
     f = db.query(LogFile).filter(LogFile.id == file_id).first()
@@ -1669,6 +1714,9 @@ def get_performance_cockpit(file_id: int, db: Session = Depends(get_db)):
         # Sorter/CDC Pipeline event tracking
         sorter_events = []
         source_events = []
+        oracle_redo_reads = []
+        pending_redo_log_opens = {}
+        oracle_redo_log_sessions = []
         
         with open(f.file_path, "r", encoding="utf-8", errors="replace") as file:
             for line_num, line in enumerate(file):
@@ -1676,6 +1724,49 @@ def get_performance_cockpit(file_id: int, db: Session = Depends(get_db)):
                     break
                 
                 timestamp = extract_timestamp(line)
+                
+                parsed_redo = parse_oracle_archived_redo_read(line)
+                if parsed_redo and parsed_redo["read_ms"] > 200.0:
+                    tm = re.match(r"^\s*(\d+):", line)
+                    redo_thread = tm.group(1) if tm else None
+                    oracle_redo_reads.append({
+                        "line_number": line_num,
+                        "timestamp": timestamp,
+                        "thread_id": redo_thread,
+                        "bytes_read": parsed_redo["bytes_read"],
+                        "read_ms": parsed_redo["read_ms"],
+                        "source_location": parsed_redo.get("source_location"),
+                    })
+                
+                line_m = LINE_FULL_RE.match(line)
+                cap_thread = line_m.group(1) if line_m else None
+                if "SOURCE_CAPTURE" in line:
+                    o = parse_oracle_redo_log_open(line)
+                    if o and timestamp:
+                        tid = o.get("thread_id_in_message") or cap_thread or None
+                        pending_redo_log_opens[o["redo_path"]] = {
+                            "line_number": line_num,
+                            "timestamp": timestamp,
+                            "thread_id": tid,
+                        }
+                    cpath = parse_oracle_redo_log_close(line)
+                    if cpath and timestamp:
+                        if cpath in pending_redo_log_opens:
+                            open_info = pending_redo_log_opens.pop(cpath)
+                            t0, t1 = open_info["timestamp"], timestamp
+                            tid = open_info.get("thread_id") or cap_thread
+                            if t0 and t1:
+                                dur = (t1 - t0).total_seconds()
+                                if dur >= 0:
+                                    oracle_redo_log_sessions.append({
+                                        "thread_id": str(tid) if tid not in (None, "") else None,
+                                        "redo_path": cpath,
+                                        "line_open": open_info["line_number"],
+                                        "line_close": line_num,
+                                        "timestamp_open": t0,
+                                        "timestamp_close": t1,
+                                        "duration_seconds": dur,
+                                    })
                 
                 # === CONFIG EXTRACTION ===
                 if 'Set Bulk Timeout' in line and 'Min' not in line:
@@ -1920,7 +2011,9 @@ def get_performance_cockpit(file_id: int, db: Session = Depends(get_db)):
             errors=error_data,
             config=config,
             sorter_events=sorter_events,
-            source_events=source_events
+            source_events=source_events,
+            oracle_redo_reads=oracle_redo_reads,
+            oracle_redo_log_sessions=oracle_redo_log_sessions,
         )
         
         return cockpit.generate_summary()

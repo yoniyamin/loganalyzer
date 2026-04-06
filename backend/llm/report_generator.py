@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import (
     LogFile, LogPerformance, LogError, LogStats,
-    LogBatch, LogTableStats, LogTaskConfig, LogSorterEvent, LLMConfig
+    LogBatch, LogTableStats, LogTaskConfig, LogSorterEvent, LogOracleRedoRead, LogOracleRedoLogSession, LLMConfig
 )
 from backend.core.analysis import PerformanceCockpit
 from backend.llm.vectorstore import get_vector_store, LogVectorStore
@@ -197,15 +197,48 @@ class ReportGenerator:
                 "merge_enabled": config.merge_enabled
             }
         
+        oracle_rows = self.db.query(LogOracleRedoRead).filter(
+            LogOracleRedoRead.file_id == file_id
+        ).all()
+        oracle_redo_reads = [
+            {
+                "timestamp": r.timestamp,
+                "line_number": r.line_number,
+                "thread_id": r.thread_id,
+                "bytes_read": r.bytes_read,
+                "read_ms": r.read_ms,
+                "source_location": r.source_location,
+            }
+            for r in oracle_rows
+        ]
+        
+        session_rows = self.db.query(LogOracleRedoLogSession).filter(
+            LogOracleRedoLogSession.file_id == file_id
+        ).all()
+        oracle_redo_log_sessions = [
+            {
+                "thread_id": s.thread_id,
+                "redo_path": s.redo_path,
+                "line_open": s.line_open,
+                "line_close": s.line_close,
+                "timestamp_open": s.timestamp_open,
+                "timestamp_close": s.timestamp_close,
+                "duration_seconds": s.duration_seconds,
+            }
+            for s in session_rows
+        ]
+        
         # Build performance cockpit
-        if performance_data:
+        if performance_data or oracle_redo_reads or oracle_redo_log_sessions:
             cockpit = PerformanceCockpit(
                 performance_data=performance_data,
                 batches=batch_data,
                 table_stats=table_stats_data,
                 errors=error_data,
                 config=config_data,
-                sorter_events=sorter_data
+                sorter_events=sorter_data,
+                oracle_redo_reads=oracle_redo_reads,
+                oracle_redo_log_sessions=oracle_redo_log_sessions,
             )
             return cockpit.generate_summary()
         
@@ -217,7 +250,17 @@ class ReportGenerator:
             "plateaus": {"count": 0, "items": []},
             "batch_profile": {"total_batches": len(batch_data)},
             "error_summary": {"total": len(error_data)},
-            "recommendations": []
+            "recommendations": [],
+            "oracle_redo_read_analysis": {
+                "total_events": 0,
+                "has_red_flags": False,
+                "high_variance_groups": [],
+            },
+            "oracle_redo_log_processing": {
+                "session_count": 0,
+                "duration_seconds_stats": None,
+                "longest_sessions": [],
+            },
         }
     
     def embed_file_content(self, file_id: int) -> Dict[str, int]:

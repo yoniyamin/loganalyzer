@@ -25,6 +25,8 @@ class LogFile(Base):
 
     indexes = relationship("LogIndex", back_populates="file", cascade="all, delete-orphan")
     performance = relationship("LogPerformance", back_populates="file", cascade="all, delete-orphan")
+    oracle_redo_reads = relationship("LogOracleRedoRead", back_populates="file", cascade="all, delete-orphan")
+    oracle_redo_log_sessions = relationship("LogOracleRedoLogSession", back_populates="file", cascade="all, delete-orphan")
     stats = relationship("LogStats", back_populates="file", cascade="all, delete-orphan")
     errors = relationship("LogError", back_populates="file", cascade="all, delete-orphan")
 
@@ -51,6 +53,46 @@ class LogPerformance(Base):
     handling_latency = Column(Float)
 
     file = relationship("LogFile", back_populates="performance")
+
+
+class LogOracleRedoRead(Base):
+    """
+    Oracle archived redo log read completions from [PERFORMANCE] trace (e.g. oradcdc_redo).
+    Only persisted when read time exceeds 200 ms (see analysis thresholds).
+    """
+    __tablename__ = "oracle_redo_reads"
+
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    line_number = Column(Integer, index=True)
+    timestamp = Column(DateTime, nullable=True, index=True)
+    thread_id = Column(String, nullable=True)
+    bytes_read = Column(Integer, nullable=False)
+    read_ms = Column(Float, nullable=False)
+    source_location = Column(String, nullable=True)  # e.g. oradcdc_redo.c:1046
+
+    file = relationship("LogFile", back_populates="oracle_redo_reads")
+
+
+class LogOracleRedoLogSession(Base):
+    """
+    Time spent processing one archived redo log: paired 'Going to open Redo Log' → 'Close Redo log'
+    with the same path (Oracle SOURCE_CAPTURE trace).
+    """
+    __tablename__ = "oracle_redo_log_sessions"
+
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    thread_id = Column(String, nullable=True)
+    redo_path = Column(Text, nullable=False)
+    line_open = Column(Integer, index=True)
+    line_close = Column(Integer, index=True)
+    timestamp_open = Column(DateTime, nullable=True, index=True)
+    timestamp_close = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=False)
+
+    file = relationship("LogFile", back_populates="oracle_redo_log_sessions")
+
 
 class LogStats(Base):
     __tablename__ = "stats"

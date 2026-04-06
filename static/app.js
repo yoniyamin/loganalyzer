@@ -6385,6 +6385,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     
     let html = `<div class="log-summary-section" id="logSummarySection"><div class="summary-header-row"><div class="summary-title"><svg width="16" height="16" viewBox="0 0 512 512" fill="currentColor" style="color:#8b5cf6;"><path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/></svg><span>Log Summary</span></div><button class="view-full-report-btn" onclick="goToFullReport()" title="View full AI report in Findings tab"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 00-.5-.5H1.5A1.5 1.5 0 000 4.5v10A1.5 1.5 0 001.5 16h10a1.5 1.5 0 001.5-1.5V7.864a.5.5 0 00-1 0V14.5a.5.5 0 01-.5.5h-10a.5.5 0 01-.5-.5v-10a.5.5 0 01.5-.5h6.636a.5.5 0 00.5-.5z"/><path d="M16 .5a.5.5 0 00-.5-.5h-5a.5.5 0 000 1h3.793L6.146 9.146a.5.5 0 10.708.708L15 1.707V5.5a.5.5 0 001 0v-5z"/></svg>Full Report</button></div><div class="ai-disclaimer"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/><path d="M5.255 5.786a.237.237 0 00.241.247h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 00.25.246h.811a.25.25 0 00.25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286zm1.557 5.763c0 .533.425.927 1.01.927.609 0 1.028-.394 1.028-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94z"/></svg>AI-generated content may contain inaccuracies. Always verify important findings.</div>`;
+    html += renderOracleLogSummaryInsightOnly(summaryData);
     
     // Render only sections with actual content
     validSections.forEach((section, idx) => {
@@ -6623,6 +6624,129 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   
+  /** Redo log open→close times vary enough to mention in Log Summary (no raw rows). */
+  function oracleRedoLogSpreadNotable(olp) {
+    if (!olp || !(olp.session_count > 1)) return false;
+    const st = olp.duration_seconds_stats || {};
+    const max = st.max;
+    const min = st.min;
+    const p95 = st.p95;
+    const avg = st.avg;
+    if (max == null || min == null) return false;
+    const typical = p95 != null && p95 > 0 ? p95 : avg != null && avg > 0 ? avg : null;
+    if (typical != null && max >= typical * 2.5) return true;
+    if (min > 0 && max / min >= 5) return true;
+    return false;
+  }
+
+  function oracleTraceNotableForSummary(olp, ora) {
+    if (ora && ora.has_red_flags) return true;
+    return oracleRedoLogSpreadNotable(olp);
+  }
+
+  /** Log Summary: concise Oracle insight — full detail is in the Performance Cockpit only. */
+  function renderOracleLogSummaryInsightOnly(summaryData) {
+    if (!summaryData) return '';
+    const olp = summaryData.oracle_redo_log_processing || {};
+    const ora = summaryData.oracle_redo_read_analysis || {};
+    if (!oracleTraceNotableForSummary(olp, ora)) return '';
+    const st = olp.duration_seconds_stats || {};
+
+    let h =
+      '<div class="log-summary-oracle-insight" style="margin:12px 0;padding:12px 14px;border:1px solid rgba(251,191,36,0.35);border-radius:8px;background:rgba(120,53,15,0.15);">';
+    h +=
+      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">' +
+      '<span style="font-size:1rem;">⚠</span>' +
+      '<strong style="font-size:0.8rem;color:#fbbf24;">Oracle source — fluctuations detected</strong>' +
+      '</div>';
+
+    const bullets = [];
+
+    if (oracleRedoLogSpreadNotable(olp)) {
+      const typical = st.p95 != null && st.p95 > 0 ? st.p95 : st.avg != null ? st.avg : null;
+      let msg =
+        'Redo log hold times swing from <strong>' +
+        (st.min != null ? st.min : '—') + 's</strong> to <strong>' +
+        (st.max != null ? st.max : '—') + 's</strong>';
+      if (typical != null) {
+        msg += ' (typical ~' + (typeof typical === 'number' ? typical.toFixed(1) : typical) + 's)';
+      }
+      msg +=
+        '. This usually means intermittent storage or I/O pressure on archived redo logs — ' +
+        'not a steady bottleneck, but worth investigating if latency spikes correlate.';
+      bullets.push(msg);
+    }
+
+    if (ora.has_red_flags) {
+      const nGroups = ora.high_variance_group_count || 'multiple';
+      bullets.push(
+        '<strong>' + nGroups + '</strong> group(s) of similar redo block reads differ by ≥2× in duration. ' +
+        'This points to uneven disk I/O on the source — check storage latency and host load.'
+      );
+    }
+
+    h += '<ul style="margin:0;padding-left:18px;font-size:0.75rem;color:#d1d5db;line-height:1.5;">';
+    bullets.forEach(b => { h += '<li style="margin-bottom:4px;">' + b + '</li>'; });
+    h += '</ul>';
+
+    h +=
+      '<div style="margin-top:8px;font-size:0.7rem;color:#9ca3af;">' +
+      'See <strong style="color:#c4b5fd;cursor:pointer;" onclick="window.showPerformanceCockpitInMain()">Performance Cockpit</strong> ' +
+      'for per-session paths, line numbers, and drill-down detail.' +
+      '</div>';
+
+    h += '</div>';
+    return h;
+  }
+
+  /** Full Oracle trace tables and lists — only in Performance Cockpit. */
+  function renderOracleRedoCockpitSections(data) {
+    if (!data) return '';
+    const olp = data.oracle_redo_log_processing || {};
+    const ora = data.oracle_redo_read_analysis || {};
+    const hasOlp = (olp.session_count || 0) > 0;
+    const hasOra = (ora.total_events_over_floor || 0) > 0 || ora.has_red_flags;
+    if (!hasOlp && !hasOra) return '';
+    let h = '<div class="cockpit-section oracle-trace-section"><h3>Oracle source (trace)</h3>';
+    h +=
+      '<div style="background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.25);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:0.75rem;color:#d1d5db;line-height:1.45;">';
+    h +=
+      '<strong style="color:#c4b5fd;">What this shows:</strong> Each row is one archived redo log file from <code>Going to open Redo Log</code> through <code>Close Redo log</code> (same path). ';
+    h +=
+      'Duration is how long Replicate held that log open. Big swings vs typical times (p95/avg) often point to storage latency, ASM/archivelog load, or transient I/O contention—use the slowest rows below to correlate with wall-clock time.';
+    h += '</div>';
+    if (hasOlp) {
+      const st = olp.duration_seconds_stats || {};
+      h +=
+        '<p style="color:#9ca3af;font-size:0.75rem;margin:0 0 8px 0;">Time from <code>Going to open Redo Log</code> to <code>Close Redo log</code> (same path), from indexed log.</p>';
+      h += `<p><strong>${olp.session_count}</strong> archived redo log session(s)</p>`;
+      h += `<p style="font-size:0.8rem;">Duration per log (seconds): min <strong>${st.min != null ? st.min : '—'}</strong> · max <strong>${st.max != null ? st.max : '—'}</strong> · avg <strong>${st.avg != null ? st.avg : '—'}</strong> · p95 <strong>${st.p95 != null ? st.p95 : '—'}</strong></p>`;
+      h += '<p style="font-size:0.72rem;color:#9ca3af;margin:8px 0 4px 0;">Longest sessions (for investigation):</p>';
+      h += '<ul style="margin:8px 0 0 16px;font-size:0.75rem;color:#d1d5db;">';
+      (olp.longest_sessions || []).forEach((s) => {
+        h += `<li><strong>${s.duration_seconds}s</strong> — thread ${s.thread_id != null ? s.thread_id : '—'} — lines ${s.line_open}–${s.line_close}<br/><span style="color:#9ca3af;">${escapeHtml(s.redo_path_tail || '')}</span></li>`;
+      });
+      h += '</ul>';
+    }
+    if (hasOra) {
+      h += '<h4 style="margin-top:14px;font-size:0.85rem;">Archived redo reads (&gt;200 ms)</h4>';
+      h += `<p style="font-size:0.78rem;color:#9ca3af;margin:0 0 8px 0;">Per-block read times from trace. High variance between similar reads suggests uneven I/O.</p>`;
+      h += `<p style="font-size:0.8rem;">${ora.total_events_over_floor || 0} event(s) in index.`;
+      if (ora.has_red_flags) {
+        h +=
+          ' <span style="color:#f87171;">≥2× variance between similar reads (same size, thread, code path).</span>';
+      }
+      h += '</p><ul style="margin:8px 0 0 16px;font-size:0.75rem;">';
+      (ora.high_variance_groups || []).slice(0, 5).forEach((g) => {
+        const lines = (g.samples || []).map((x) => `L${x.line_number} (${x.read_ms} ms)`).join(', ');
+        h += `<li>${g.bytes} bytes · ${g.multiplier}× · ${lines}</li>`;
+      });
+      h += '</ul>';
+    }
+    h += '</div>';
+    return h;
+  }
+
   // Render fallback summary when AI is not available
   function renderFallbackSummary(container, summaryData, reason) {
     if (!container) return;
@@ -6712,6 +6836,7 @@ document.addEventListener("DOMContentLoaded", () => {
               <span style="font-size:0.7rem;color:${cdcC};">CDC ${data.cdc_started ? 'Started' : 'Not Started'}</span>
             </div>
           </div>
+          ${renderOracleLogSummaryInsightOnly(data)}
     `;
     
     // Key Events
@@ -6820,8 +6945,15 @@ document.addEventListener("DOMContentLoaded", () => {
         const hasPainTables = data.pain_tables?.length > 0;
         const hasFileOps = data.file_operations?.count > 0;
         const hasConfig = data.config && Object.keys(data.config).length > 0;
+        const olp = data.oracle_redo_log_processing || {};
+        const ora = data.oracle_redo_read_analysis || {};
+        const hasOracleTrace =
+          (olp.session_count || 0) > 0 ||
+          (ora.total_events_over_floor || 0) > 0 ||
+          ora.has_red_flags;
         
-        const hasMeaningfulData = hasLatencyData || hasBatchData || hasPainTables || hasFileOps || hasConfig;
+        const hasMeaningfulData =
+          hasLatencyData || hasBatchData || hasPainTables || hasFileOps || hasConfig || hasOracleTrace;
         
         if (hasMeaningfulData) {
           window.performanceCockpitData = data;
@@ -6893,6 +7025,8 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Spikes & Plateaus
     parts.push(`<div class="cockpit-row"><div class="cockpit-section half"><h3>Latency Spikes <span class="badge">${data.spikes?.count || 0}</span></h3>${renderSpikes(data.spikes)}</div><div class="cockpit-section half"><h3>Latency Plateaus <span class="badge">${data.plateaus?.count || 0}</span></h3>${renderPlateaus(data.plateaus)}</div></div>`);
+    
+    parts.push(renderOracleRedoCockpitSections(data));
     
     // Batch Analysis
     const batchIssuesHtml = renderBatchIssues(data.batch_issues);

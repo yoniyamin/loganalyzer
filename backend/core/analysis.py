@@ -11,7 +11,7 @@ Provides calculations for:
 
 import statistics
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 import json
 
@@ -576,6 +576,146 @@ class CDCPipelineAnalyzer:
         }
 
 
+# Oracle archived redo trace: only analyze reads strictly slower than this (ms)
+ORACLE_REDO_MIN_MS = 200.0
+# Flag when max duration is at least this multiple of min (e.g. 200 ms vs 400 ms)
+ORACLE_REDO_MULTIPLIER_THRESHOLD = 2.0
+
+
+def analyze_oracle_redo_read_variance(
+    events: List[Dict],
+    min_ms: float = ORACLE_REDO_MIN_MS,
+    multiplier_threshold: float = ORACLE_REDO_MULTIPLIER_THRESHOLD,
+) -> Dict[str, Any]:
+    """
+    Group similar archived redo reads (same byte size, thread, source location) and
+    flag high variance when the slowest read is at least ``multiplier_threshold`` × the
+    fastest, using only reads with duration strictly greater than ``min_ms``.
+    """
+    filtered = [e for e in events if float(e.get("read_ms") or 0) > min_ms]
+    if not filtered:
+        return {
+            "min_read_ms_floor": min_ms,
+            "multiplier_threshold": multiplier_threshold,
+            "total_events": len(events),
+            "total_events_over_floor": 0,
+            "high_variance_groups": [],
+            "has_red_flags": False,
+        }
+
+    groups: Dict[Tuple[Any, str, str], List[Dict]] = defaultdict(list)
+    for e in filtered:
+        key = (
+            e.get("bytes_read"),
+            str(e.get("thread_id") or ""),
+            e.get("source_location") or "",
+        )
+        groups[key].append(e)
+
+    high_variance_groups: List[Dict[str, Any]] = []
+    for key, items in groups.items():
+        if len(items) < 2:
+            continue
+        ms_sorted = sorted(float(x.get("read_ms") or 0) for x in items)
+        min_v, max_v = ms_sorted[0], ms_sorted[-1]
+        if min_v <= 0:
+            continue
+        ratio = max_v / min_v
+        if ratio < multiplier_threshold:
+            continue
+        bytes_read, thread_id, source_location = key
+        samples = []
+        for e in sorted(items, key=lambda x: float(x.get("read_ms") or 0)):
+            ts = e.get("timestamp")
+            if hasattr(ts, "isoformat"):
+                ts_iso = ts.isoformat()
+            else:
+                ts_iso = str(ts) if ts is not None else None
+            samples.append({
+                "line_number": e.get("line_number"),
+                "read_ms": round(float(e.get("read_ms") or 0), 1),
+                "timestamp": ts_iso,
+            })
+        high_variance_groups.append({
+            "bytes": bytes_read,
+            "thread_id": thread_id or None,
+            "source_location": source_location or None,
+            "count": len(items),
+            "min_ms": round(min_v, 1),
+            "max_ms": round(max_v, 1),
+            "multiplier": round(ratio, 2),
+            "red_flag": True,
+            "samples": samples,
+        })
+
+    high_variance_groups.sort(key=lambda g: g["multiplier"], reverse=True)
+
+    return {
+        "min_read_ms_floor": min_ms,
+        "multiplier_threshold": multiplier_threshold,
+        "total_events": len(events),
+        "total_events_over_floor": len(filtered),
+        "high_variance_groups": high_variance_groups[:15],
+        "has_red_flags": len(high_variance_groups) > 0,
+    }
+
+
+def summarize_oracle_redo_log_sessions(sessions: List[Dict]) -> Dict[str, Any]:
+    """
+    Aggregate statistics for paired Oracle redo log open→close sessions (seconds per log).
+    """
+    if not sessions:
+        return {
+            "session_count": 0,
+            "duration_seconds_stats": None,
+            "longest_sessions": [],
+        }
+
+    durations = [float(s["duration_seconds"]) for s in sessions]
+    sorted_d = sorted(durations)
+    n = len(sorted_d)
+
+    def pct(p: float) -> float:
+        if n == 0:
+            return 0.0
+        return sorted_d[min(int(n * p), n - 1)]
+
+    duration_seconds_stats = {
+        "min": round(min(durations), 3),
+        "max": round(max(durations), 3),
+        "avg": round(statistics.mean(durations), 3),
+        "p95": round(pct(0.95), 3) if n > 1 else round(sorted_d[0], 3),
+    }
+
+    def path_tail(p: Optional[str]) -> str:
+        if not p:
+            return ""
+        if len(p) <= 80:
+            return p
+        return "..." + p[-77:]
+
+    longest = sorted(
+        sessions,
+        key=lambda x: float(x.get("duration_seconds") or 0),
+        reverse=True,
+    )[:5]
+    longest_sessions = []
+    for s in longest:
+        longest_sessions.append({
+            "duration_seconds": round(float(s.get("duration_seconds", 0)), 3),
+            "line_open": s.get("line_open"),
+            "line_close": s.get("line_close"),
+            "thread_id": s.get("thread_id"),
+            "redo_path_tail": path_tail(s.get("redo_path")),
+        })
+
+    return {
+        "session_count": len(sessions),
+        "duration_seconds_stats": duration_seconds_stats,
+        "longest_sessions": longest_sessions,
+    }
+
+
 class SourceAnalyzer:
     """Analyze source-side metrics."""
     
@@ -632,7 +772,9 @@ class PerformanceCockpit:
         errors: List[Dict] = None,
         config: Dict = None,
         sorter_events: List[Dict] = None,
-        source_events: List[Dict] = None
+        source_events: List[Dict] = None,
+        oracle_redo_reads: List[Dict] = None,
+        oracle_redo_log_sessions: List[Dict] = None,
     ):
         self.performance_data = performance_data
         self.latency_analyzer = LatencyAnalyzer(performance_data)
@@ -645,6 +787,8 @@ class PerformanceCockpit:
         self.file_operations = file_operations or []
         self.errors = errors or []
         self.config = config or {}
+        self.oracle_redo_reads = oracle_redo_reads or []
+        self.oracle_redo_log_sessions = oracle_redo_log_sessions or []
     
     def generate_summary(self) -> Dict[str, Any]:
         """Generate the complete performance cockpit summary."""
@@ -688,6 +832,26 @@ class PerformanceCockpit:
         # Add source/pipeline recommendations
         recommendations = self._add_pipeline_recommendations(recommendations, cdc_pipeline, source_analysis)
         
+        oracle_redo_log_processing = summarize_oracle_redo_log_sessions(self.oracle_redo_log_sessions)
+
+        oracle_redo_read_analysis = analyze_oracle_redo_read_variance(self.oracle_redo_reads)
+        if oracle_redo_read_analysis.get("has_red_flags"):
+            recommendations.append({
+                "priority": "high",
+                "area": "Source",
+                "title": "Oracle archived redo read time spread (trace)",
+                "description": (
+                    "Similar archived redo reads (same size, thread, and code path) show at least "
+                    f"{ORACLE_REDO_MULTIPLIER_THRESHOLD:.0f}× difference in duration among reads slower than "
+                    f"{ORACLE_REDO_MIN_MS:.0f} ms. Investigate source I/O, storage latency, and system load."
+                ),
+                "actions": [
+                    "Review storage and redo log volume performance on the Oracle host",
+                    "Check for concurrent I/O or CPU contention during slow reads",
+                    "Compare slow vs fast sample line numbers in the log for timing correlation",
+                ],
+            })
+        
         return {
             "latency_profile": latency_profile,
             "bottleneck": {
@@ -716,7 +880,9 @@ class PerformanceCockpit:
             "error_correlation": error_correlation,
             "merge_analysis": merge_breakdown,
             "cdc_pipeline": cdc_pipeline,
-            "source_analysis": source_analysis
+            "source_analysis": source_analysis,
+            "oracle_redo_read_analysis": oracle_redo_read_analysis,
+            "oracle_redo_log_processing": oracle_redo_log_processing,
         }
     
     def _summarize_file_operations(self) -> Dict[str, Any]:

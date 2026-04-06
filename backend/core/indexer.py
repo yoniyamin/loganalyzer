@@ -2,8 +2,13 @@ import os
 import logging
 from datetime import datetime
 from sqlalchemy.orm import Session
-from backend.database import LogFile, LogIndex, LogPerformance, LogStats, LogError
-from backend.core.patterns import LINE_FULL_RE, LINE_START_RE, PERF_RE, ERR_RE
+from backend.database import (
+    LogFile, LogIndex, LogPerformance, LogOracleRedoRead, LogOracleRedoLogSession, LogStats, LogError,
+)
+from backend.core.patterns import (
+    LINE_FULL_RE, LINE_START_RE, PERF_RE, ERR_RE,
+    parse_oracle_archived_redo_read, parse_oracle_redo_log_open, parse_oracle_redo_log_close,
+)
 from backend.core.reader import clear_file_cache
 
 logger = logging.getLogger(__name__)
@@ -31,10 +36,21 @@ def process_log_file(db: Session, file_id: int):
 
         logger.info(f"Starting indexing for {log_file.filename}...")
         
+        db.query(LogOracleRedoRead).filter(LogOracleRedoRead.file_id == file_id).delete(
+            synchronize_session=False
+        )
+        db.query(LogOracleRedoLogSession).filter(LogOracleRedoLogSession.file_id == file_id).delete(
+            synchronize_session=False
+        )
+        db.commit()
+        
         # Temp storage for batch inserts
         perf_batch = []
+        redo_batch = []
+        session_batch = []
         error_batch = []
         index_batch = []
+        pending_redo_log_opens = {}
         
         # Aggregation stats: (component, thread) -> {count, first_ts, last_ts}
         stats_map = {}
@@ -141,6 +157,49 @@ def process_log_file(db: Session, file_id: int):
                             target_latency=float(lat_m.group(2)),
                             handling_latency=float(lat_m.group(3))
                         ))
+                    else:
+                        parsed = parse_oracle_archived_redo_read(line)
+                        if parsed and parsed["read_ms"] > 200.0:
+                            redo_batch.append(LogOracleRedoRead(
+                                file_id=file_id,
+                                line_number=line_count,
+                                timestamp=timestamp,
+                                thread_id=thread_id,
+                                bytes_read=parsed["bytes_read"],
+                                read_ms=parsed["read_ms"],
+                                source_location=parsed.get("source_location"),
+                            ))
+
+                if component == "SOURCE_CAPTURE" and timestamp:
+                    o = parse_oracle_redo_log_open(line)
+                    if o:
+                        tid = o.get("thread_id_in_message") or thread_id or None
+                        pending_redo_log_opens[o["redo_path"]] = {
+                            "line_number": line_count,
+                            "timestamp": timestamp,
+                            "thread_id": tid,
+                        }
+                    cpath = parse_oracle_redo_log_close(line)
+                    if cpath and timestamp:
+                        if cpath in pending_redo_log_opens:
+                            open_info = pending_redo_log_opens.pop(cpath)
+                            t0 = open_info["timestamp"]
+                            t1 = timestamp
+                            tid = open_info.get("thread_id") or thread_id
+                            if t0 and t1:
+                                dur = (t1 - t0).total_seconds()
+                                if dur >= 0:
+                                    tid_s = str(tid) if tid not in (None, "") else None
+                                    session_batch.append(LogOracleRedoLogSession(
+                                        file_id=file_id,
+                                        thread_id=tid_s,
+                                        redo_path=cpath,
+                                        line_open=open_info["line_number"],
+                                        line_close=line_count,
+                                        timestamp_open=t0,
+                                        timestamp_close=t1,
+                                        duration_seconds=dur,
+                                    ))
 
                 # 3. Aggregates
                 if thread_id and component:
@@ -175,16 +234,22 @@ def process_log_file(db: Session, file_id: int):
                 if line_count % BATCH_SIZE == 0:
                     db.bulk_save_objects(index_batch)
                     db.bulk_save_objects(perf_batch)
+                    db.bulk_save_objects(redo_batch)
+                    db.bulk_save_objects(session_batch)
                     db.bulk_save_objects(error_batch)
                     db.commit()
                     
                     index_batch = []
                     perf_batch = []
+                    redo_batch = []
+                    session_batch = []
                     error_batch = []
 
         # Final Commit
         if index_batch: db.bulk_save_objects(index_batch)
         if perf_batch: db.bulk_save_objects(perf_batch)
+        if redo_batch: db.bulk_save_objects(redo_batch)
+        if session_batch: db.bulk_save_objects(session_batch)
         if error_batch: db.bulk_save_objects(error_batch)
         
         # Save Stats

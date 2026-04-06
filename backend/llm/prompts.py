@@ -283,6 +283,13 @@ def build_analysis_prompt(
             critical_section.append(f"- **Problematic table**: {worst_table.get('table_name', 'Unknown')} showing severe issues")
             has_critical = True
     
+    ora = summary_data.get("oracle_redo_read_analysis") or {}
+    if ora.get("has_red_flags"):
+        critical_section.append(
+            "- **Oracle archived redo read variance**: Similar redo reads (>200 ms) differ by ≥2× in duration — review source I/O and storage"
+        )
+        has_critical = True
+    
     if has_critical:
         sections.append("\n".join(critical_section) + "\n")
     
@@ -347,6 +354,49 @@ Detected **{plateaus['count']} sustained high-latency periods**:""")
             for plateau in plateaus.get("items", [])[:3]:
                 sections.append(f"- Lines {plateau.get('start_line', '?')}-{plateau.get('end_line', '?')}: "
                               f"avg {plateau.get('avg_latency', 0):.1f}s for {plateau.get('duration_points', 0)} readings")
+    
+    # Oracle trace: only surface notable findings — full per-session / per-read
+    # detail lives in the Performance Cockpit UI and must NOT appear in the report.
+    ora = summary_data.get("oracle_redo_read_analysis") or {}
+    olp = summary_data.get("oracle_redo_log_processing") or {}
+    oracle_findings = []
+
+    if ora.get("has_red_flags"):
+        n_groups = len(ora.get("high_variance_groups", []))
+        oracle_findings.append(
+            f"Archived redo block reads show **high variance** — {n_groups} group(s) of "
+            f"similar-sized reads (same thread & code path) differ by ≥{ora.get('multiplier_threshold', 2):.0f}× "
+            f"in duration. This points to **intermittent storage or I/O contention** on the source host."
+        )
+
+    if olp.get("session_count", 0) > 0:
+        st = olp.get("duration_seconds_stats") or {}
+        mn, mx = st.get("min"), st.get("max")
+        avg, p95 = st.get("avg"), st.get("p95")
+        typical = p95 if (p95 is not None and p95 > 0) else avg
+        notable_spread = False
+        if mx is not None and typical not in (None, 0) and mx >= float(typical) * 2.5:
+            notable_spread = True
+        if mn not in (None, 0) and mx is not None and mx / float(mn) >= 5:
+            notable_spread = True
+        if notable_spread:
+            oracle_findings.append(
+                f"Redo log hold times (open→close) **fluctuate sharply**: "
+                f"min {mn}s → max {mx}s (typical ~{typical}s). "
+                f"Large swings usually indicate occasional storage pressure or archivelog "
+                f"contention rather than a steady bottleneck."
+            )
+
+    if oracle_findings:
+        sections.append("\n### Oracle Source — Notable Findings")
+        for finding in oracle_findings:
+            sections.append(f"- {finding}")
+        sections.append(
+            "\n> Mention these findings naturally in the Executive Summary and "
+            "Performance Analysis — do NOT enumerate individual redo log sessions, "
+            "file paths, or per-read samples. The Performance Cockpit provides "
+            "line-level detail for the user to drill into."
+        )
     
     # Batch Analysis - focus on efficiency issues
     if "batch_profile" in summary_data:
@@ -547,6 +597,17 @@ def build_quick_summary_prompt(summary_data: Dict[str, Any]) -> str:
         "cdc_health": summary_data.get("cdc_pipeline", {}).get("health_status", "unknown"),
         "source_health": summary_data.get("source_analysis", {}).get("health_status", "unknown"),
     }
+    ora_q = summary_data.get("oracle_redo_read_analysis") or {}
+    if ora_q.get("total_events_over_floor", 0) or ora_q.get("has_red_flags"):
+        metrics["oracle_redo_reads_over_200ms"] = ora_q.get("total_events_over_floor", 0)
+        metrics["oracle_redo_high_variance"] = ora_q.get("has_red_flags", False)
+    olp_q = summary_data.get("oracle_redo_log_processing") or {}
+    if olp_q.get("session_count", 0):
+        metrics["oracle_redo_log_sessions"] = olp_q.get("session_count", 0)
+        stq = olp_q.get("duration_seconds_stats") or {}
+        if stq:
+            metrics["oracle_redo_log_avg_seconds"] = stq.get("avg", 0)
+            metrics["oracle_redo_log_max_seconds"] = stq.get("max", 0)
     
     # Latency stats
     lp = summary_data.get("latency_profile", {})

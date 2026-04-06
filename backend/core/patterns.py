@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 COMPONENT_DESCRIPTIONS = {
@@ -40,6 +40,61 @@ PERF_RE = re.compile(
     r'Handling latency ([0-9.]+) seconds',
     re.MULTILINE
 )
+
+# Oracle: "Completed to read from archived Redo log" with byte size and read time (ms)
+ORACLE_ARCHIVED_REDO_READ_RE = re.compile(
+    r'Completed to read from archived Redo log.*?(\d+)\s+bytes.*?Read [Tt]ime:\s*(\d+)\s*ms',
+    re.IGNORECASE | re.DOTALL,
+)
+ORACLE_REDO_SOURCE_LOC_RE = re.compile(r'([a-zA-Z0-9_]+\.c:\d+)')
+
+
+# Oracle SOURCE_CAPTURE: open/close archived redo log (pair by path + thread for duration)
+ORACLE_OPEN_REDO_LOG_RE = re.compile(
+    r"Going to open Redo Log with original name '([^']+)'",
+    re.IGNORECASE,
+)
+ORACLE_OPEN_REDO_THREAD_RE = re.compile(r"thread id ['\"](\d+)['\"]", re.IGNORECASE)
+ORACLE_CLOSE_REDO_LOG_RE = re.compile(
+    r"Close Redo log '([^']+)'",
+    re.IGNORECASE,
+)
+
+
+def parse_oracle_redo_log_open(line: str) -> Optional[Dict[str, Any]]:
+    """Parse 'Going to open Redo Log with original name ...' (SOURCE_CAPTURE trace)."""
+    m = ORACLE_OPEN_REDO_LOG_RE.search(line)
+    if not m:
+        return None
+    path = m.group(1)
+    tm = ORACLE_OPEN_REDO_THREAD_RE.search(line)
+    thread_in_msg = tm.group(1) if tm else None
+    return {"redo_path": path, "thread_id_in_message": thread_in_msg}
+
+
+def parse_oracle_redo_log_close(line: str) -> Optional[str]:
+    """Parse 'Close Redo log ...' and return the redo path, or None."""
+    m = ORACLE_CLOSE_REDO_LOG_RE.search(line)
+    return m.group(1) if m else None
+
+
+def parse_oracle_archived_redo_read(line: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract byte count, read time (ms), and optional source file:line from a log line.
+    Returns None if the line does not match an archived redo read completion.
+    """
+    m = ORACLE_ARCHIVED_REDO_READ_RE.search(line)
+    if not m:
+        return None
+    bytes_read = int(m.group(1))
+    read_ms = float(m.group(2))
+    loc_m = ORACLE_REDO_SOURCE_LOC_RE.search(line)
+    source_location = loc_m.group(1) if loc_m else None
+    return {
+        "bytes_read": bytes_read,
+        "read_ms": read_ms,
+        "source_location": source_location,
+    }
 
 # Matches: ThreadID: Timestamp [Component] ...
 # Changed from \w+ to [^\]]+ to handle components with dashes or spaces if they occur (e.g. MD-CHANGE)

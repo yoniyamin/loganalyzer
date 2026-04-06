@@ -175,6 +175,28 @@ class LogVectorStore:
             if "bottleneck" in data:
                 lines.append(f"\n## Bottleneck: {data['bottleneck'].get('primary', 'unknown')}")
             
+            ora = data.get("oracle_redo_read_analysis") or {}
+            if ora.get("has_red_flags") or ora.get("total_events_over_floor", 0):
+                lines.append("\n## Oracle archived redo reads (trace)")
+                lines.append(
+                    f"- Over {ora.get('min_read_ms_floor', 200):.0f} ms: {ora.get('total_events_over_floor', 0)} events"
+                )
+                if ora.get("has_red_flags"):
+                    lines.append(
+                        f"- Red flag: ≥{ora.get('multiplier_threshold', 2):.0f}× spread on similar reads "
+                        f"({len(ora.get('high_variance_groups', []))} group(s))"
+                    )
+            
+            olp = data.get("oracle_redo_log_processing") or {}
+            if olp.get("session_count", 0):
+                st = olp.get("duration_seconds_stats") or {}
+                lines.append("\n## Oracle redo log sessions (open→close)")
+                lines.append(f"- Sessions: {olp.get('session_count', 0)}")
+                lines.append(
+                    f"- Duration per log (s): min={st.get('min', 0):.3f} max={st.get('max', 0):.3f} "
+                    f"avg={st.get('avg', 0):.3f} p95={st.get('p95', 0):.3f}"
+                )
+            
             if "recommendations" in data:
                 lines.append("\n## Recommendations")
                 for rec in data["recommendations"][:5]:  # Top 5
