@@ -49,6 +49,12 @@ ORACLE_ARCHIVED_REDO_READ_RE = re.compile(
 ORACLE_REDO_SOURCE_LOC_RE = re.compile(r'([a-zA-Z0-9_]+\.c:\d+)')
 
 
+# Oracle ASM parallel read worker threads (short-lived, grouped by statement handle)
+ASM_PREPARE_READ_RE = re.compile(
+    r'Preparing read from ASM statement \((\d+)\)',
+    re.IGNORECASE,
+)
+
 # Oracle SOURCE_CAPTURE: open/close archived redo log (pair by path + thread for duration)
 ORACLE_OPEN_REDO_LOG_RE = re.compile(
     r"Going to open Redo Log with original name '([^']+)'",

@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 from backend.database import (
     LogFile, LogIndex, LogPerformance, LogOracleRedoRead, LogOracleRedoLogSession, LogStats, LogError,
 )
+from collections import defaultdict, Counter
 from backend.core.patterns import (
-    LINE_FULL_RE, LINE_START_RE, PERF_RE, ERR_RE,
+    LINE_FULL_RE, LINE_START_RE, PERF_RE, ERR_RE, ASM_PREPARE_READ_RE,
     parse_oracle_archived_redo_read, parse_oracle_redo_log_open, parse_oracle_redo_log_close,
 )
 from backend.core.reader import clear_file_cache
@@ -54,6 +55,9 @@ def process_log_file(db: Session, file_id: int):
         
         # Aggregation stats: (component, thread) -> {count, first_ts, last_ts}
         stats_map = {}
+
+        # ASM worker thread tracking: thread_id -> Counter({stmt_num: count})
+        asm_thread_stmts = defaultdict(Counter)
 
         # Tracking state
         line_count = 0
@@ -201,6 +205,12 @@ def process_log_file(db: Session, file_id: int):
                                         duration_seconds=dur,
                                     ))
 
+                # 2b. Track ASM parallel read worker messages
+                if component == "SOURCE_CAPTURE" and thread_id:
+                    asm_m = ASM_PREPARE_READ_RE.search(line)
+                    if asm_m:
+                        asm_thread_stmts[thread_id][asm_m.group(1)] += 1
+
                 # 3. Aggregates
                 if thread_id and component:
                     key = (component, thread_id)
@@ -252,6 +262,48 @@ def process_log_file(db: Session, file_id: int):
         if session_batch: db.bulk_save_objects(session_batch)
         if error_batch: db.bulk_save_objects(error_batch)
         
+        # Post-process: merge ASM-only worker threads into virtual groups
+        # A thread is "ASM-only" if every one of its SOURCE_CAPTURE messages
+        # is a "Preparing read from ASM statement (N)" line.
+        asm_only_threads = set()
+        for tid, stmt_counts in asm_thread_stmts.items():
+            total_asm = sum(stmt_counts.values())
+            sc_key = ("SOURCE_CAPTURE", tid)
+            if sc_key in stats_map and stats_map[sc_key]["count"] == total_asm:
+                asm_only_threads.add(tid)
+
+        if asm_only_threads:
+            asm_groups = defaultdict(lambda: {
+                "count": 0, "first_ts": None, "last_ts": None, "pool_tids": set()
+            })
+            for tid in asm_only_threads:
+                sc_key = ("SOURCE_CAPTURE", tid)
+                removed = stats_map.pop(sc_key)
+                for stmt_num, count in asm_thread_stmts[tid].items():
+                    g = asm_groups[stmt_num]
+                    g["count"] += count
+                    g["pool_tids"].add(tid)
+                    if removed["first_ts"]:
+                        if not g["first_ts"] or removed["first_ts"] < g["first_ts"]:
+                            g["first_ts"] = removed["first_ts"]
+                    if removed["last_ts"]:
+                        if not g["last_ts"] or removed["last_ts"] > g["last_ts"]:
+                            g["last_ts"] = removed["last_ts"]
+
+            for stmt_num, g in sorted(asm_groups.items(), key=lambda x: int(x[0])):
+                pool_count = len(g["pool_tids"])
+                virtual_tid = f"__asm:{stmt_num}:{pool_count}"
+                stats_map[("SOURCE_CAPTURE", virtual_tid)] = {
+                    "count": g["count"],
+                    "first_ts": g["first_ts"],
+                    "last_ts": g["last_ts"],
+                }
+
+            logger.info(
+                f"Merged {len(asm_only_threads)} ASM worker threads into "
+                f"{len(asm_groups)} virtual groups"
+            )
+
         # Save Stats
         stats_objects = []
         for (comp, tid), data in stats_map.items():

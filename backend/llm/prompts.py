@@ -31,6 +31,28 @@ import json
 # Import sanitization functions from centralized module
 from backend.llm.sanitizer import sanitize_text, sanitize_dict, sanitize_list
 
+# Short troubleshooting-focused descriptions for each Replicate component.
+# Used to enrich error summaries in the LLM prompt with "why this matters".
+COMPONENT_CONTEXT: Dict[str, str] = {
+    "SOURCE_CAPTURE": "source CDC log reader — log access, supplemental logging, reconnects",
+    "SOURCE_UNLOAD": "Full Load SELECT on source — query performance, table locks",
+    "TARGET_APPLY": "CDC apply to target — PK conflicts, SQL errors, one-by-one fallbacks",
+    "TARGET_LOAD": "Full Load on target — table creation, bulk load, data-type mapping",
+    "SORTER": "CDC transaction routing — event ordering, memory, cached changes",
+    "SORTER_STORAGE": "transaction swap to disk — large transactions, disk I/O",
+    "FILE_FACTORY": "file staging for cloud targets — HDFS/S3/ADLS staging",
+    "FILE_TRANSFER": "file upload (CIFTA) — S3/ADLS/GCS upload, compression",
+    "INFRASTRUCTURE": "ODBC drivers, threads, state persistence",
+    "TABLES_MANAGER": "table lifecycle — load status, partitioning",
+    "METADATA_MANAGER": "metadata read/write — column types, DDL propagation",
+    "METADATA_CHANGES": "DDL change capture — ALTER TABLE propagation",
+    "TRANSFORMATION": "column mapping, expressions, filters",
+    "STREAM": "in-memory data/control buffers between components",
+    "TASK_MANAGER": "task orchestration — start/stop, component lifecycle",
+    "PERFORMANCE": "latency logging (every 30 s)",
+    "COMMUNICATION": "HTTP/CURL transport to source/target",
+}
+
 
 # ============================================================
 # CONTEXT PREPARATION HELPERS
@@ -96,6 +118,23 @@ SYSTEM_PROMPT = """You are an expert log analyst specializing in Qlik Replicate 
 - Error diagnosis and resolution recommendations
 - Qlik Replicate error codes and their meanings
 
+## Replicate Component Reference
+Use this knowledge when interpreting which component generated errors or warnings:
+- **SOURCE_CAPTURE**: Main CDC component on the source side — reads transaction logs (redo, WAL). Errors here indicate source connectivity, log read, or supplemental logging issues.
+- **SOURCE_UNLOAD**: Full Load source-side SELECT execution. Errors indicate query/table lock issues.
+- **TARGET_APPLY**: Applies CDC changes to the target (batch or transactional). Errors here mean apply failures — PK conflicts, SQL errors, one-by-one fallbacks.
+- **TARGET_LOAD**: Full Load on the target side — table creation and bulk loading.
+- **SORTER**: Central CDC routing — orders transactions and manages cached changes. Issues here cause missing events, high memory, or ordering problems.
+- **SORTER_STORAGE**: Sorter's memory/disk swap layer. Errors indicate large transactions or disk I/O.
+- **FILE_FACTORY / FILE_TRANSFER**: File staging and upload for cloud targets (Databricks, Redshift, Synapse). Errors mean upload/staging failures.
+- **PERFORMANCE**: Latency logging (every 30s). Not an error source but the basis for all latency metrics.
+- **INFRASTRUCTURE**: ODBC drivers, thread management, state persistence. Errors indicate driver or connectivity issues.
+- **TABLES_MANAGER**: Table lifecycle — loading status, partitioning, event counts.
+- **METADATA_MANAGER / METADATA_CHANGES**: Metadata and DDL propagation.
+- **TRANSFORMATION**: Column mapping and expression evaluation.
+
+When discussing errors by component, briefly explain *why* that component matters, not just the count.
+
 ## Response Guidelines
 1. Be concise but thorough - focus on what matters
 2. Prioritize findings by severity (Critical > Warning > Info)
@@ -127,6 +166,18 @@ SYSTEM_PROMPT_WITH_WEB_SEARCH = """You are an expert log analyst specializing in
 - Batch processing patterns and optimization
 - Error diagnosis and resolution recommendations
 - Qlik Replicate error codes and their meanings
+
+## Replicate Component Reference
+Use this knowledge when interpreting which component generated errors or warnings:
+- **SOURCE_CAPTURE**: Main CDC source-side log reader. Errors = source connectivity, log read, supplemental logging.
+- **SOURCE_UNLOAD**: Full Load source SELECTs. Errors = query/lock issues.
+- **TARGET_APPLY**: CDC apply to target (batch/transactional). Errors = PK conflicts, SQL errors, one-by-one fallbacks.
+- **TARGET_LOAD**: Full Load target-side. Errors = table creation, bulk load failures.
+- **SORTER**: CDC transaction routing/ordering. Issues = missing events, memory, ordering.
+- **FILE_FACTORY / FILE_TRANSFER**: Cloud target file staging/upload.
+- **INFRASTRUCTURE**: ODBC drivers, threads, state persistence.
+
+When discussing errors by component, briefly explain *why* that component matters.
 
 ## Web Search Instructions
 **IMPORTANT**: You have access to web search. When you encounter error codes, error messages, or specific Qlik Replicate issues:
@@ -474,10 +525,16 @@ Detected **{plateaus['count']} sustained high-latency periods**:""")
 ### {severity_indicator} Error Summary
 - **Total**: {error_count:,} errors
 """)
-            # Show top error-prone components
             if es.get('by_component'):
-                top_components = sorted(es['by_component'].items(), key=lambda x: x[1], reverse=True)[:3]
-                sections.append("- **Top components**: " + ", ".join([f"{comp} ({count})" for comp, count in top_components]) + "\n")
+                top_components = sorted(es['by_component'].items(), key=lambda x: x[1], reverse=True)[:5]
+                comp_parts = []
+                for comp, count in top_components:
+                    ctx = COMPONENT_CONTEXT.get(comp, "")
+                    label = f"**{comp}** ({count})"
+                    if ctx:
+                        label += f" — {ctx}"
+                    comp_parts.append(label)
+                sections.append("- " + "\n- ".join(comp_parts) + "\n")
     
     # Error Correlation - only if significant
     if summary_data.get("error_correlation", {}).get('total_correlated_errors', 0) > 10:

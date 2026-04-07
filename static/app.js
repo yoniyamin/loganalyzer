@@ -133,37 +133,173 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Component descriptions from Qlik Replicate documentation
   const componentDescriptions = {
-    'ADDONS': 'Only relevant when working with a Replicate add-on. Currently, the only add-ons are user-defined transformations.',
-    'ASSERTION': 'Detects anomalies with the data, which might result in replication issues. These warnings are not exposed in the web console and do not trigger notifications.',
-    'COMMON': 'Writes low level messages such as network activity. Not recommended to set to "Trace" as it will write a huge amount of data to the log.',
-    'COMMUNICATION': 'Provides additional information about the communication between Replicate and the Source and Target components. For example, when using Hadoop, it will print the CURL debug messages.',
-    'DATA_RECORD': 'Writes information about each change that occurs. Records when a specific event was captured as well as the event context.',
-    'DATA_STRUCTURE': 'Used for internal Replicate data structures and is related to how the code deals with the data and stores it in memory.',
-    'FILE_FACTORY': 'Relevant to Hadoop Target, Amazon Redshift and Microsoft Azure SQL Synapse Analytics. This component is responsible for moving the files from Replicate to the target.',
-    'FILE_TRANSFER': 'Writes to the log when the File Transfer component is used to push files to a specific location.',
-    'INFRASTRUCTURE': 'Records infrastructure information related to the infrastructure layers of Replicate code: ODBC infrastructure, logger infrastructure, opening/closing threads, saving task state, etc.',
-    'IO': 'Logs all IO operations (i.e. file operations), such as checking directory size, creating directories, deleting directories, etc.',
-    'METADATA_CHANGES': 'Shows the actual DDL changes which are included in the scope (available for specific endpoints).',
-    'METADATA_MANAGER': 'Writes information whenever Replicate reads metadata from the source or target, or stores it. Manages tables metadata and dynamic metadata.',
-    'PERFORMANCE': 'Currently used for latency only. Logs latency values for source and target endpoints every 30 seconds.',
-    'REST_SERVER': 'Handles all REST requests (API and UI). Also shows the interaction between Replicate and Qlik Enterprise Manager.',
-    'SERVER': 'The server thread in the task that communicates with the Replicate Server service on task start, stop, etc. Includes init functions for the task.',
-    'SORTER': 'The main component in CDC that routes the changes captured from the source to the target. Responsible for synchronizing Full Load and CDC changes, deciding which events to apply as cached changes, and storing transactions until they are committed.',
-    'SORTER_STORAGE': 'The storage component of the Sorter which stores transactions in memory and offloads them to disk when the transactions are too large.',
-    'SOURCE_CAPTURE': 'The main CDC component on the source side. Used to troubleshoot any CDC source issue. Setting to "Verbose" will record an enormous amount of data.',
-    'SOURCE_LOG_DUMP': 'When using Replicate Log Reader, this component creates additional files with dumps of the read changes.',
-    'SOURCE_UNLOAD': 'Records source activity related to Full load operations and includes the SELECT statement executed against the source tables prior to Full Load.',
-    'STREAM': 'The buffer in memory where data and control commands are kept. There are two types: Data streams and Control streams.',
-    'STREAM_COMPONENT': 'Used by the Source, Sorter and Target to interact and communicate with the Stream component.',
-    'TABLES_MANAGER': 'Manages the table status including whether they were loaded into the target, the number of events, how the tables are partitioned, etc.',
-    'TARGET_APPLY': 'Determines which changes are applied to the target during CDC. Relevant to both Batch optimized apply and Transactional apply methods. Provides information about all Apply issues including missing events, bad data, etc.',
-    'TARGET_LOAD': 'Provides information about Full Load operations on the target side. Depending on the target, it may also print the metadata of the target table.',
-    'TASK_MANAGER': 'The parent task component that manages the other components in the task. Responsible for issuing commands to start/finish loading tables, create component threads, start or stop tasks, etc.',
-    'TRANSFORMATION': 'Logs information related to transformations. When set to "Trace", it will log the actual transformations being used by the task.',
-    'UTILITIES': 'In most cases, logs issues related to notifications.',
-    'AT_GLOBAL': 'Global task information and licensing details.',
-    'METADATA_MANAGE': 'Alternative name for METADATA_MANAGER - manages metadata operations.'
+    'ADDONS': {
+      short: 'User-defined transformations / add-ons',
+      desc: 'Only relevant when working with a Replicate add-on such as user-defined transformations.',
+      lookFor: 'Errors in custom transformation logic; add-on initialization failures.'
+    },
+    'ASSERTION': {
+      short: 'Data anomaly detection',
+      desc: 'Detects anomalies with the data that might result in replication issues. These warnings are not exposed in the console and do not trigger notifications.',
+      lookFor: 'ASSERTION WARNING entries — they signal data inconsistencies that can cause downstream problems even if the task keeps running.'
+    },
+    'COMMON': {
+      short: 'Low-level network & utility messages',
+      desc: 'Writes low-level messages such as network activity. Setting to Trace produces enormous output.',
+      lookFor: 'Network timeouts, DNS resolution failures, TLS/SSL handshake errors.'
+    },
+    'COMMUNICATION': {
+      short: 'Source/target transport layer (HTTP, CURL)',
+      desc: 'Communication between Replicate and source/target components. For cloud targets (Hadoop, Databricks) this includes CURL debug messages and file uploads.',
+      lookFor: 'HTTP errors (4xx/5xx), CURL failures, slow uploads, authentication/token refresh issues.'
+    },
+    'DATA_RECORD': {
+      short: 'Per-change event capture details',
+      desc: 'Writes information about each captured change event. Content varies by endpoint — Oracle logs header fields; some endpoints include changed data.',
+      lookFor: 'Events captured out of scope, unexpected data types, event ordering issues.'
+    },
+    'DATA_STRUCTURE': {
+      short: 'Internal data layout in memory',
+      desc: 'Internal Replicate data structures — how the code organizes and stores data in memory. Only enable Trace when requested by Qlik Support.',
+      lookFor: 'Memory corruption indicators, unexpected structure sizes.'
+    },
+    'FILE_FACTORY': {
+      short: 'File staging for cloud targets',
+      desc: 'Responsible for moving files from Replicate to file-based targets (Hadoop HDFS, Redshift, Azure Synapse, Databricks). Handles the HDFS/S3/ADLS staging step.',
+      lookFor: 'File write failures, staging directory issues, permission errors, slow file creation.'
+    },
+    'FILE_TRANSFER': {
+      short: 'File push to external storage (CIFTA)',
+      desc: 'Handles the File Transfer / CIFTA component that pushes files to specific locations (S3, ADLS, GCS).',
+      lookFor: 'Upload failures, compression errors, throughput bottlenecks, credential issues.'
+    },
+    'INFRASTRUCTURE': {
+      short: 'ODBC, threading, task state persistence',
+      desc: 'Infrastructure layers: ODBC connections, logger setup, thread lifecycle, task state persistence, and internal protocol buffers.',
+      lookFor: 'ODBC driver load failures, thread creation/termination issues, state save errors, ODBC connection pool exhaustion.'
+    },
+    'IO': {
+      short: 'File system operations',
+      desc: 'Logs all file I/O operations — directory scanning, file creation/deletion, disk space checks.',
+      lookFor: 'Disk full errors, permission denied, directory not found, excessive directory scanning times.'
+    },
+    'METADATA_CHANGES': {
+      short: 'DDL change propagation',
+      desc: 'Shows actual DDL changes (ALTER TABLE, etc.) captured within the task scope. Availability depends on endpoint.',
+      lookFor: 'DDL changes that cause table reloads, unsupported DDL types, metadata sync failures between source and target.'
+    },
+    'METADATA_MANAGER': {
+      short: 'Table metadata read/write/store',
+      desc: 'Manages reading metadata from source/target, storing it, and handling dynamic metadata changes.',
+      lookFor: 'Metadata read timeouts, column type mismatches, metadata store corruption, slow metadata fetches.'
+    },
+    'PERFORMANCE': {
+      short: 'Latency tracking (source/target, every 30s)',
+      desc: 'Logs latency values for source and target endpoints every 30 seconds. This is the primary source for latency graphs and performance monitoring.',
+      lookFor: 'Sudden latency spikes, sustained high latency plateaus, imbalance between source and target latency (indicates bottleneck location).'
+    },
+    'REST_SERVER': {
+      short: 'API & UI request handling',
+      desc: 'Handles REST API requests from the console UI and Qlik Enterprise Manager.',
+      lookFor: 'API timeouts, authentication failures, Enterprise Manager communication issues.'
+    },
+    'SERVER': {
+      short: 'Task ↔ Server service communication',
+      desc: 'The server thread that communicates with the Replicate Server service for task start/stop. Contains init functions and task definition.',
+      lookFor: 'Task start failures, licensing issues, server communication timeouts.'
+    },
+    'SORTER': {
+      short: 'CDC transaction routing & ordering (critical)',
+      desc: 'The central CDC component that routes changes from source to target. Synchronizes Full Load and CDC, decides cached-change apply order, and stores transactions until commit.',
+      lookFor: 'Missing events, transaction ordering issues, high memory usage, "cached changes" buildup, slow commit processing. Enable Verbose when investigating CDC latency or missing data.'
+    },
+    'SORTER_STORAGE': {
+      short: 'Transaction memory & swap management',
+      desc: 'Storage backend for the Sorter — keeps transactions in memory and offloads to disk when they become too large or long-running.',
+      lookFor: 'Swap file creation (large transactions), disk I/O spikes from offloading, corrupt swap files, out-of-memory conditions.'
+    },
+    'SOURCE_CAPTURE': {
+      short: 'CDC source-side log reading (critical)',
+      desc: 'The main CDC component on the source side. Reads database transaction logs (redo logs, WAL, etc.) and captures changes. Some target-side LOB lookups also use this logger.',
+      lookFor: 'Log read delays (redo/WAL), reconnection events, supplemental logging gaps, archive log access issues, high source latency. Enable Trace for source I/O performance analysis.'
+    },
+    'SOURCE_LOG_DUMP': {
+      short: 'Raw change dump files (Log Reader)',
+      desc: 'When using Replicate Log Reader, creates separate dump files of captured changes. Data is stored in a file, not in the main log.',
+      lookFor: 'Dump file creation failures, missing change records in dumps.'
+    },
+    'SOURCE_UNLOAD': {
+      short: 'Full Load SELECT execution on source',
+      desc: 'Records source-side Full Load activity including the SELECT statements executed against source tables.',
+      lookFor: 'Slow SELECT queries, timeout errors, table lock contention during Full Load, query plan issues.'
+    },
+    'STREAM': {
+      short: 'In-memory data & control buffers',
+      desc: 'The memory buffer where data and control commands flow between components. Data streams carry row changes; Control streams carry start/stop signals.',
+      lookFor: 'Buffer overflows, stream backpressure (target too slow), control command delays (table load stuck). Enable Trace only for specific stream issues.'
+    },
+    'STREAM_COMPONENT': {
+      short: 'Component ↔ Stream interaction',
+      desc: 'Used by Source, Sorter, and Target to interact with the Stream buffer. Includes mode switches (e.g., transactional apply mode).',
+      lookFor: 'Apply mode switches, stream communication failures, component synchronization issues.'
+    },
+    'TABLES_MANAGER': {
+      short: 'Table status & partition tracking',
+      desc: 'Manages table status (loaded, loading, error), event counts, partitioning, and table-level state.',
+      lookFor: 'Tables stuck in "loading" state, unexpected table error status, partition issues, table count mismatches.'
+    },
+    'TARGET_APPLY': {
+      short: 'CDC apply to target (batch & transactional)',
+      desc: 'Applies CDC changes to the target. Covers both Batch Optimized Apply and Transactional Apply. Logs bulk operations, one-by-one fallbacks, apply errors, and batch closure reasons.',
+      lookFor: 'Batch closure reasons (PK conflicts, timeouts, memory), one-by-one mode switches, SQL errors during apply, slow apply times, "Failed to execute" messages.'
+    },
+    'TARGET_LOAD': {
+      short: 'Full Load on target side',
+      desc: 'Full Load operations on the target — table creation, data loading, metadata operations. May print target table metadata.',
+      lookFor: 'Table creation failures, data type mapping errors, bulk load errors, slow load times.'
+    },
+    'TASK_MANAGER': {
+      short: 'Task orchestration & lifecycle',
+      desc: 'The parent component that manages all other components. Issues start/stop commands, creates threads, manages table load lifecycle.',
+      lookFor: 'Components not starting or stopping properly, tables stuck in loading, task initialization failures, thread creation errors.'
+    },
+    'TRANSFORMATION': {
+      short: 'Column/expression transformations',
+      desc: 'Logs transformation activity — column mappings, expression evaluation, filter logic. Trace level shows actual transformation expressions.',
+      lookFor: 'Transformation expression errors, unexpected NULL handling, filter logic dropping records, expression evaluation performance.'
+    },
+    'UTILITIES': {
+      short: 'Notifications & misc utilities',
+      desc: 'Utility functions, primarily notification-related (email, SNMP, etc.).',
+      lookFor: 'Notification delivery failures, SMTP errors.'
+    },
+    'AT_GLOBAL': {
+      short: 'Global task info & licensing',
+      desc: 'Global task information, licensing details, and server-wide configuration.',
+      lookFor: 'License expiry warnings, global configuration issues.'
+    },
+    'METADATA_MANAGE': {
+      short: 'Metadata operations (alias)',
+      desc: 'Alternative name for METADATA_MANAGER — manages metadata read/write operations.',
+      lookFor: 'Same as METADATA_MANAGER.'
+    }
   };
+
+  function getComponentDescription(name) {
+    const info = componentDescriptions[name];
+    if (!info) return 'No description available for this component.';
+    return typeof info === 'string' ? info : info.desc;
+  }
+  function getComponentShort(name) {
+    const info = componentDescriptions[name];
+    if (!info) return '';
+    return typeof info === 'string' ? '' : (info.short || '');
+  }
+  function getComponentLookFor(name) {
+    const info = componentDescriptions[name];
+    if (!info) return '';
+    return typeof info === 'string' ? '' : (info.lookFor || '');
+  }
   
   // Modal elements
   const modalOverlay = document.getElementById("modalOverlay");
@@ -785,6 +921,39 @@ document.addEventListener("DOMContentLoaded", () => {
     return m ? m[1] : text;
   }
 
+  // --- ASM virtual thread helpers ---
+  // Virtual thread IDs from the indexer have the format: __asm:N:K
+  // where N = ASM statement handle number, K = number of pooled OS threads
+  function parseAsmThread(threadId) {
+    if (!threadId || !threadId.startsWith('__asm:')) return null;
+    const parts = threadId.split(':');
+    return { stmtNum: parts[1], poolCount: parseInt(parts[2], 10) || 0 };
+  }
+
+  function isAsmThread(threadId) {
+    return threadId && threadId.startsWith('__asm:');
+  }
+
+  function getAsmLabel(threadId) {
+    const asm = parseAsmThread(threadId);
+    if (!asm) return threadId;
+    return `ASM Stmt ${asm.stmtNum}`;
+  }
+
+  function getAsmSublabel(threadId) {
+    const asm = parseAsmThread(threadId);
+    if (!asm) return '';
+    return `${asm.poolCount} pooled OS threads`;
+  }
+
+  // Build a search query for an ASM virtual thread (matches by message content)
+  function buildAsmSearchQuery(threadId, component) {
+    const asm = parseAsmThread(threadId);
+    if (!asm) return null;
+    const escapedComponent = component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return `\\[${escapedComponent}.*Preparing read from ASM statement \\(${asm.stmtNum}\\)`;
+  }
+
   function applyHideNoise() {
     const hideNoise = document.getElementById('hideNoise')?.checked || false;
 
@@ -1024,11 +1193,22 @@ document.addEventListener("DOMContentLoaded", () => {
       groupDiv.className = "component-group-container";
       groupDiv.dataset.componentName = comp.name;
       
-      // Component header
       const headerDiv = document.createElement("div");
       headerDiv.className = "group-header";
-      const threadCount = Object.keys(comp.threads).length;
-      headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color: #9ca3af;">(${comp.totalCount} msgs, ${threadCount} threads)</span>`;
+
+      // Separate real threads from ASM virtual groups for accurate counts
+      const allThreadKeys = Object.keys(comp.threads);
+      const asmThreads = allThreadKeys.filter(isAsmThread);
+      const realThreads = allThreadKeys.filter(k => !isAsmThread(k));
+      const totalPooled = asmThreads.reduce((sum, k) => sum + (parseAsmThread(k)?.poolCount || 0), 0);
+
+      let headerStats = `${comp.totalCount} msgs, ${realThreads.length} thr`;
+      if (asmThreads.length > 0) {
+        headerStats += ` + ${totalPooled} pooled`;
+      }
+      const shortDesc = getComponentShort(comp.name);
+      headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color:#9ca3af;">(${headerStats})</span>`
+        + (shortDesc ? `<span class="component-short-desc">${shortDesc}</span>` : '');
       headerDiv.onclick = () => {
         const threadList = groupDiv.querySelector('.thread-list-inner');
         const icon = headerDiv.querySelector('.expand-icon');
@@ -1038,25 +1218,46 @@ document.addEventListener("DOMContentLoaded", () => {
       
       groupDiv.appendChild(headerDiv);
       
-      // Thread list (collapsed by default)
       const threadListInner = document.createElement("div");
       threadListInner.className = "thread-list-inner hidden";
       
-      // Sort threads by count
       const sortedThreads = Object.values(comp.threads).sort((a, b) => b.count - a.count);
-      
-      sortedThreads.forEach(t => {
+
+      // Render real threads first, then ASM groups with special styling
+      const realEntries = sortedThreads.filter(t => !isAsmThread(t.thread));
+      const asmEntries = sortedThreads.filter(t => isAsmThread(t.thread));
+
+      realEntries.forEach(t => {
         const threadDiv = document.createElement("div");
         threadDiv.className = "thread-item";
         threadDiv.dataset.threadId = t.thread;
         threadDiv.innerHTML = `Thread ${t.thread}: ${t.count} msgs`;
         threadDiv.onclick = (e) => {
           e.stopPropagation();
-          // Load component activity and show component info in log view panel
           loadComponentActivityForLogView(comp.name, t.thread, t.count);
         };
         threadListInner.appendChild(threadDiv);
       });
+
+      if (asmEntries.length > 0) {
+        const asmHeader = document.createElement("div");
+        asmHeader.className = "asm-group-header";
+        asmHeader.innerHTML = `<span class="asm-icon">⛁</span> ASM Parallel Readers <span class="asm-pool-note">${totalPooled} short-lived OS threads grouped by ASM handle</span>`;
+        threadListInner.appendChild(asmHeader);
+
+        asmEntries.forEach(t => {
+          const asm = parseAsmThread(t.thread);
+          const threadDiv = document.createElement("div");
+          threadDiv.className = "thread-item asm-thread-item";
+          threadDiv.dataset.threadId = t.thread;
+          threadDiv.innerHTML = `<span class="asm-label">${getAsmLabel(t.thread)}</span>: ${t.count} msgs <span class="asm-pool-badge">${getAsmSublabel(t.thread)}</span>`;
+          threadDiv.onclick = (e) => {
+            e.stopPropagation();
+            loadComponentActivityForLogView(comp.name, t.thread, t.count);
+          };
+          threadListInner.appendChild(threadDiv);
+        });
+      }
       
       groupDiv.appendChild(threadListInner);
       logViewThreadList.appendChild(groupDiv);
@@ -1071,8 +1272,13 @@ document.addEventListener("DOMContentLoaded", () => {
     // Perform search and create a search tab with results (but don't switch left panel)
     if (!currentFileId) return;
     
-    const escapedComponent = component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const searchQuery = `^${thread}:.*\\[${escapedComponent}`;
+    let searchQuery;
+    if (isAsmThread(thread)) {
+      searchQuery = buildAsmSearchQuery(thread, component);
+    } else {
+      const escapedComponent = component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      searchQuery = `^${thread}:.*\\[${escapedComponent}`;
+    }
     
     // Update the search input but DON'T switch to search panel - user stays on threads panel
     if (searchInput) {
@@ -1082,32 +1288,77 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
-  // Update component info in Log View left panel
+  // Reusable collapsible section builder
+  function buildCollapsibleSection(title, bodyHtml, opts = {}) {
+    const color = opts.color || '#818cf8';
+    const icon = opts.icon || '';
+    const startOpen = opts.startOpen || false;
+    const cls = opts.cls || '';
+    const hiddenCls = startOpen ? '' : ' hidden';
+    const arrow = startOpen ? '▼' : '▶';
+    return `
+      <div class="info-collapsible ${cls}">
+        <div class="info-collapsible-header" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('.info-collapse-arrow').textContent = this.nextElementSibling.classList.contains('hidden') ? '▶' : '▼';">
+          <span class="info-collapse-arrow" style="color:${color}">${arrow}</span>
+          ${icon ? `<span class="info-collapse-icon">${icon}</span>` : ''}
+          <span class="info-collapse-title" style="color:${color}">${title}</span>
+        </div>
+        <div class="info-collapsible-body${hiddenCls}">
+          ${bodyHtml}
+        </div>
+      </div>`;
+  }
+
   function updateLogViewComponentInfo(component, thread, messageCount) {
     if (!logViewComponentInfo || !logViewComponentInfoContent) return;
     
-    const description = componentDescriptions[component] || 'No description available for this component.';
+    const description = getComponentDescription(component);
+    const lookFor = getComponentLookFor(component);
+    const asm = parseAsmThread(thread);
     
     logViewComponentInfo.style.display = 'block';
     
-    logViewComponentInfoContent.innerHTML = `
+    let threadInfo;
+    if (asm) {
+      threadInfo = `
+        <p><strong>ASM Statement Handle:</strong> ${asm.stmtNum}</p>
+        <p><strong>Pooled OS Threads:</strong> ${asm.poolCount}</p>`;
+    } else {
+      threadInfo = thread ? `<p><strong>Thread:</strong> ${thread}</p>` : '';
+    }
+
+    let html = `
       <div class="component-detail-card">
         <h5>${component}</h5>
-        ${thread ? `<p><strong>Thread:</strong> ${thread}</p>` : ''}
+        ${threadInfo}
         <p><strong>Messages:</strong> ${messageCount}</p>
-      </div>
-      <div class="component-description">
-        <h5>Description</h5>
-        <p>${description}</p>
+      </div>`;
+
+    if (asm) {
+      let asmBody = `<p>Oracle ASM spawns short-lived OS threads for parallel disk I/O via <code>dbms_diskgroup.read</code>. 
+        Each thread typically appears only a few times, logging its prepared SQL statement. These ${asm.poolCount} 
+        ephemeral threads all used ASM handle ${asm.stmtNum} and have been grouped together.</p>`;
+      html += buildCollapsibleSection('ASM Parallel Reader Pool', asmBody, { color: '#a78bfa', icon: '⛁', cls: 'asm-info-note' });
+    }
+
+    let aboutBody = `<p>${description}</p>`;
+    if (lookFor) {
+      aboutBody += `
+        <div style="margin-top:8px;padding:6px 8px;background:rgba(59,130,246,0.08);border-left:2px solid #3b82f6;border-radius:0 4px 4px 0;">
+          <strong style="font-size:0.7rem;color:#93c5fd;">What to look for</strong>
+          <p style="margin:2px 0 0;font-size:0.72rem;color:#d1d5db;line-height:1.4;">${lookFor}</p>
+        </div>`;
+    }
+    aboutBody += `
         <p style="margin-top: 8px; font-size: 0.7rem;">
           <a href="https://help.qlik.com/en-US/replicate/November2025/Content/Replicate/Main/Replicate%20Loggers/Loggers.htm" 
-             target="_blank" 
-             style="color: #60a5fa; text-decoration: none;">
-             📖 Qlik Documentation
+             target="_blank" style="color: #60a5fa; text-decoration: none;">
+             Qlik Documentation ↗
           </a>
-        </p>
-      </div>
-    `;
+        </p>`;
+    html += buildCollapsibleSection('About this Component', aboutBody, { color: '#818cf8', icon: 'ℹ' });
+
+    logViewComponentInfoContent.innerHTML = html;
   }
   
   function performActivityQuickSearch() {
@@ -2265,8 +2516,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Load log lines within a specific range (for latency graph time selection)
-  function loadLogLinesInRange(startLine, endLine) {
+  // Load log lines within a specific range (for latency graph time selection).
+  // Optional timeRange: { start: Date, end: Date } for display in the notification.
+  function loadLogLinesInRange(startLine, endLine, timeRange) {
     if (!currentFileId || isFetchingLog) return;
     isFetchingLog = true;
     
@@ -2296,13 +2548,13 @@ document.addEventListener("DOMContentLoaded", () => {
         isFetchingLog = false;
         
         // Show notification about filtered view
-        showTimeRangeNotification(startLine, endLine, data.lines.length, data.total);
+        showTimeRangeNotification(startLine, endLine, data.lines.length, data.total, timeRange);
       })
       .catch(err => isFetchingLog = false);
   }
   
   // Show notification that log is filtered to a time range
-  function showTimeRangeNotification(startLine, endLine, loaded, total) {
+  function showTimeRangeNotification(startLine, endLine, loaded, total, timeRange) {
     // Check if notification already exists
     let notification = document.getElementById('timeRangeNotification');
     if (!notification) {
@@ -2311,9 +2563,15 @@ document.addEventListener("DOMContentLoaded", () => {
       notification.className = 'time-range-notification';
       logPreview.parentNode.insertBefore(notification, logPreview);
     }
+
+    let label = `Showing lines ${startLine + 1} - ${endLine + 1} (${loaded} of ${total})`;
+    if (timeRange && timeRange.start && timeRange.end) {
+      const fmt = d => d.toISOString().replace('T', ' ').substring(0, 19);
+      label += ` | ${fmt(timeRange.start)} → ${fmt(timeRange.end)}`;
+    }
     
     notification.innerHTML = `
-      <span>📊 Showing lines ${startLine + 1} - ${endLine + 1} (${loaded} lines from selected time range)</span>
+      <span>📊 ${label}</span>
       <button id="clearTimeRangeFilter" class="small-btn" style="margin-left: 10px;">Load All Lines</button>
     `;
     notification.style.display = 'flex';
@@ -3011,11 +3269,21 @@ document.addEventListener("DOMContentLoaded", () => {
           groupDiv.className = "component-group-container";
           groupDiv.dataset.componentName = comp.name;
           
-          // Component header
           const headerDiv = document.createElement("div");
           headerDiv.className = "group-header";
-          const threadCount = Object.keys(comp.threads).length;
-          headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color: #9ca3af;">(${comp.totalCount} msgs, ${threadCount} threads)</span>`;
+
+          const allThreadKeys2 = Object.keys(comp.threads);
+          const asmThreads2 = allThreadKeys2.filter(isAsmThread);
+          const realThreads2 = allThreadKeys2.filter(k => !isAsmThread(k));
+          const totalPooled2 = asmThreads2.reduce((sum, k) => sum + (parseAsmThread(k)?.poolCount || 0), 0);
+
+          let headerStats2 = `${comp.totalCount} msgs, ${realThreads2.length} thr`;
+          if (asmThreads2.length > 0) {
+            headerStats2 += ` + ${totalPooled2} pooled`;
+          }
+          const shortDesc = getComponentShort(comp.name);
+          headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color:#9ca3af;">(${headerStats2})</span>`
+            + (shortDesc ? `<span class="component-short-desc">${shortDesc}</span>` : '');
           headerDiv.onclick = () => {
               const threadList = groupDiv.querySelector('.thread-list-inner');
               const icon = headerDiv.querySelector('.expand-icon');
@@ -3025,25 +3293,44 @@ document.addEventListener("DOMContentLoaded", () => {
           
           groupDiv.appendChild(headerDiv);
           
-          // Thread list (collapsed by default)
           const threadListInner = document.createElement("div");
           threadListInner.className = "thread-list-inner hidden";
           
-          // Sort threads by count
           const sortedThreads = Object.values(comp.threads).sort((a, b) => b.count - a.count);
-          
-          sortedThreads.forEach(t => {
+
+          const realEntries2 = sortedThreads.filter(t => !isAsmThread(t.thread));
+          const asmEntries2 = sortedThreads.filter(t => isAsmThread(t.thread));
+
+          realEntries2.forEach(t => {
               const threadDiv = document.createElement("div");
               threadDiv.className = "thread-item";
               threadDiv.dataset.threadId = t.thread;
               threadDiv.innerHTML = `Thread ${t.thread}: ${t.count} msgs`;
               threadDiv.onclick = (e) => {
                   e.stopPropagation();
-                  console.log('Loading component:', comp.name, 'Thread:', t.thread);
                   loadComponentActivity(comp.name, t.thread);
               };
               threadListInner.appendChild(threadDiv);
           });
+
+          if (asmEntries2.length > 0) {
+            const asmHeader = document.createElement("div");
+            asmHeader.className = "asm-group-header";
+            asmHeader.innerHTML = `<span class="asm-icon">⛁</span> ASM Parallel Readers <span class="asm-pool-note">${totalPooled2} short-lived OS threads grouped by ASM handle</span>`;
+            threadListInner.appendChild(asmHeader);
+
+            asmEntries2.forEach(t => {
+              const threadDiv = document.createElement("div");
+              threadDiv.className = "thread-item asm-thread-item";
+              threadDiv.dataset.threadId = t.thread;
+              threadDiv.innerHTML = `<span class="asm-label">${getAsmLabel(t.thread)}</span>: ${t.count} msgs <span class="asm-pool-badge">${getAsmSublabel(t.thread)}</span>`;
+              threadDiv.onclick = (e) => {
+                  e.stopPropagation();
+                  loadComponentActivity(comp.name, t.thread);
+              };
+              threadListInner.appendChild(threadDiv);
+            });
+          }
           
           groupDiv.appendChild(threadListInner);
           threadListDiv.appendChild(groupDiv);
@@ -3077,13 +3364,14 @@ document.addEventListener("DOMContentLoaded", () => {
       threadLogView.innerHTML = '<div class="placeholder-text">Loading component activity...</div>';
       componentInfo.innerHTML = '<div class="placeholder-text-small">Loading...</div>';
       
-      // Escape special regex characters in component name
-      const escapedComponent = component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
-      // Build search query - search for thread ID followed by component in brackets
-      // The component name in brackets may have trailing spaces, so we match the opening bracket and component
-      // Format: ^thread_id:.*\[COMPONENT
-      const searchQuery = `^${thread}:.*\\[${escapedComponent}`;
+      // Build search query
+      let searchQuery;
+      if (isAsmThread(thread)) {
+        searchQuery = buildAsmSearchQuery(thread, component);
+      } else {
+        const escapedComponent = component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        searchQuery = `^${thread}:.*\\[${escapedComponent}`;
+      }
       
       console.log('Search query:', searchQuery);
       console.log('Fetching from:', `/api/files/${currentFileId}/search?q=${encodeURIComponent(searchQuery)}&limit=5000`);
@@ -3209,37 +3497,58 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   function updateComponentInfo(component, thread, messageCount, taskInfo) {
-      const description = componentDescriptions[component] || 'No description available for this component.';
-      
+      const description = getComponentDescription(component);
+      const lookFor = getComponentLookFor(component);
+      const shortDesc = getComponentShort(component);
+      const asm = parseAsmThread(thread);
+
+      let threadHtml;
+      if (asm) {
+        threadHtml = `
+              <p style="margin: 5px 0; font-size: 0.85rem;"><strong>ASM Statement Handle:</strong> ${asm.stmtNum}</p>
+              <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Pooled OS Threads:</strong> ${asm.poolCount}</p>`;
+      } else {
+        threadHtml = thread ? `<p style="margin: 5px 0; font-size: 0.85rem;"><strong>Thread:</strong> ${thread}</p>` : '';
+      }
+
       let html = `
           <div style="padding: 10px; background: #1f2937; border-radius: 6px; margin-bottom: 10px;">
-              <h4 style="margin: 0 0 10px 0; color: #3b82f6;">${component}</h4>
-              ${thread ? `<p style="margin: 5px 0; font-size: 0.85rem;"><strong>Thread:</strong> ${thread}</p>` : ''}
+              <h4 style="margin: 0 0 4px 0; color: #3b82f6;">${component}</h4>
+              ${shortDesc ? `<p style="margin:0 0 8px;font-size:0.72rem;color:#9ca3af;">${shortDesc}</p>` : ''}
+              ${threadHtml}
               <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Messages:</strong> ${messageCount}</p>
-          </div>
-          
-          <div style="padding: 10px; background: #1f2937; border-radius: 6px; margin-bottom: 10px; border-left: 3px solid #6366f1;">
-              <h4 style="margin: 0 0 8px 0; color: #818cf8; font-size: 0.85rem;">Component Description</h4>
-              <p style="margin: 0; font-size: 0.8rem; color: #d1d5db; line-height: 1.5;">${description}</p>
-              <p style="margin: 8px 0 0 0; font-size: 0.7rem; color: #9ca3af;">
+          </div>`;
+
+      if (asm) {
+        let asmBody = `<p>Oracle ASM spawns short-lived OS threads for parallel disk I/O via <code>dbms_diskgroup.read</code>. 
+            Each thread typically appears only a few times. These ${asm.poolCount} ephemeral threads all used 
+            ASM handle ${asm.stmtNum} and have been grouped together.</p>`;
+        html += buildCollapsibleSection('ASM Parallel Reader Pool', asmBody, { color: '#a78bfa', icon: '⛁', cls: 'asm-info-note' });
+      }
+
+      let aboutBody = `<p style="margin: 0; font-size: 0.8rem; color: #d1d5db; line-height: 1.5;">${description}</p>`;
+      if (lookFor) {
+          aboutBody += `
+              <div style="margin-top:10px;padding:8px 10px;background:rgba(59,130,246,0.08);border-left:2px solid #3b82f6;border-radius:0 4px 4px 0;">
+                  <strong style="font-size:0.75rem;color:#93c5fd;">What to look for</strong>
+                  <p style="margin:3px 0 0;font-size:0.78rem;color:#d1d5db;line-height:1.45;">${lookFor}</p>
+              </div>`;
+      }
+      aboutBody += `
+              <p style="margin: 10px 0 0 0; font-size: 0.7rem; color: #9ca3af;">
                   <a href="https://help.qlik.com/en-US/replicate/November2025/Content/Replicate/Main/Replicate%20Loggers/Loggers.htm" 
-                     target="_blank" 
-                     style="color: #60a5fa; text-decoration: none;">
-                     📖 Qlik Documentation
+                     target="_blank" style="color: #60a5fa; text-decoration: none;">
+                     Qlik Documentation ↗
                   </a>
-              </p>
-          </div>
-      `;
+              </p>`;
+      html += buildCollapsibleSection('About this Component', aboutBody, { color: '#818cf8', icon: 'ℹ' });
       
       if (taskInfo) {
-          html += `
-              <div style="padding: 10px; background: #1f2937; border-radius: 6px; border-left: 3px solid #10b981;">
-                  <h4 style="margin: 0 0 10px 0; color: #10b981;">Task Start Info</h4>
+          let taskBody = `
                   <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Task Name:</strong><br>${taskInfo.taskName}</p>
                   <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Running Mode:</strong><br>${taskInfo.runningMode}</p>
-                  <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Start Mode:</strong><br><span style="color: ${taskInfo.startMode.toLowerCase().includes('resume') ? '#f59e0b' : '#10b981'}">${taskInfo.startMode}</span></p>
-              </div>
-          `;
+                  <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Start Mode:</strong><br><span style="color: ${taskInfo.startMode.toLowerCase().includes('resume') ? '#f59e0b' : '#10b981'}">${taskInfo.startMode}</span></p>`;
+          html += buildCollapsibleSection('Task Start Info', taskBody, { color: '#10b981', icon: '▸', startOpen: true });
       }
       
       componentInfo.innerHTML = html;
@@ -3273,30 +3582,34 @@ document.addEventListener("DOMContentLoaded", () => {
             const sourceLatencies = perfData.map(p => p.source_latency);
             const targetLatencies = perfData.map(p => p.target_latency);
             const handlingLatencies = perfData.map(p => p.handling_latency);
+            const customIndices = perfData.map((_, i) => i);
             
             const traces = [
                 {
                     x: timestamps,
                     y: sourceLatencies,
+                    customdata: customIndices,
                     mode: 'lines+markers',
                     name: 'Source Latency',
-                    line: { color: '#f59e0b' },  // Orange
+                    line: { color: '#f59e0b' },
                     marker: { size: 4 }
                 },
                 {
                     x: timestamps,
                     y: targetLatencies,
+                    customdata: customIndices,
                     mode: 'lines+markers',
                     name: 'Target Latency',
-                    line: { color: '#3b82f6' },  // Blue
+                    line: { color: '#3b82f6' },
                     marker: { size: 4 }
                 },
                 {
                     x: timestamps,
                     y: handlingLatencies,
+                    customdata: customIndices,
                     mode: 'lines+markers',
                     name: 'Handling Latency',
-                    line: { color: '#10b981' },  // Green
+                    line: { color: '#10b981' },
                     marker: { size: 4 }
                 }
             ];
@@ -3330,44 +3643,96 @@ document.addEventListener("DOMContentLoaded", () => {
             }, 100);
             
             const graphDiv = document.getElementById('latencyGraph');
-            
-            // Add click handler to jump to log at that timestamp
+            let lastPlotlyClickTime = 0;
+
+            // Click on a data-point marker -> jump to its log line
             graphDiv.on('plotly_click', function(eventData) {
                 if (eventData.points && eventData.points.length > 0) {
-                    const point = eventData.points[0];
-                    const pointIndex = point.pointIndex;
-                    
-                    // Use the line_number we now have in perfData
-                    const lineNumber = perfData[pointIndex].line_number;
-                    
-                    console.log('Graph clicked - Point:', pointIndex, 'Line:', lineNumber);
-                    
+                    lastPlotlyClickTime = Date.now();
+                    const perfIdx = eventData.points[0].customdata;
+                    const lineNumber = perfData[perfIdx].line_number;
+                    console.log('Graph clicked - perfIdx:', perfIdx, 'Line:', lineNumber);
                     if (lineNumber !== undefined && lineNumber !== null) {
-                        // Jump directly to the line number
                         jumpToLineAndHighlight(lineNumber, '');
-                    } else {
-                        console.error('No line number available for this performance data point');
                     }
                 }
             });
+
+            // Click anywhere on the plot area (including gaps) -> jump to nearest point
+            graphDiv.addEventListener('click', function(evt) {
+                if (Date.now() - lastPlotlyClickTime < 300) return;
+
+                const fullLayout = graphDiv._fullLayout;
+                if (!fullLayout || !fullLayout.xaxis) return;
+
+                const xaxis = fullLayout.xaxis;
+                const yaxis = fullLayout.yaxis;
+                const rect = graphDiv.getBoundingClientRect();
+                const xPx = evt.clientX - rect.left;
+                const yPx = evt.clientY - rect.top;
+
+                const plotLeft = xaxis._offset;
+                const plotRight = plotLeft + xaxis._length;
+                const plotTop = yaxis._offset;
+                const plotBottom = plotTop + yaxis._length;
+                if (xPx < plotLeft || xPx > plotRight || yPx < plotTop || yPx > plotBottom) return;
+
+                const rangeMin = new Date(xaxis.range[0]).getTime();
+                const rangeMax = new Date(xaxis.range[1]).getTime();
+                const fraction = (xPx - plotLeft) / xaxis._length;
+                const clickTimeMs = rangeMin + fraction * (rangeMax - rangeMin);
+
+                let nearestIdx = 0;
+                let nearestDist = Infinity;
+                for (let i = 0; i < perfData.length; i++) {
+                    const dist = Math.abs(new Date(perfData[i].timestamp).getTime() - clickTimeMs);
+                    if (dist < nearestDist) { nearestDist = dist; nearestIdx = i; }
+                }
+
+                const lineNumber = perfData[nearestIdx].line_number;
+                if (lineNumber !== undefined && lineNumber !== null) {
+                    console.log('Graph background click - nearest perfIdx:', nearestIdx, 'Line:', lineNumber);
+                    jumpToLineAndHighlight(lineNumber, '');
+                }
+            });
             
-            // Add selection handler to load only log lines within selected time range
+            // Selection handler: map the selection box's x-range to log line numbers
+            // by interpolating between the nearest perf data points.
             graphDiv.on('plotly_selected', function(eventData) {
-                if (eventData && eventData.points && eventData.points.length > 0) {
-                    // Get the min and max line numbers from selected points
-                    const selectedLineNumbers = eventData.points
-                        .map(p => perfData[p.pointIndex].line_number)
-                        .filter(ln => ln !== undefined && ln !== null);
-                    
-                    if (selectedLineNumbers.length > 0) {
-                        const minLine = Math.min(...selectedLineNumbers);
-                        const maxLine = Math.max(...selectedLineNumbers);
-                        
-                        console.log('Selected time range - Lines:', minLine, 'to', maxLine);
-                        
-                        // Load only the lines within this range
-                        loadLogLinesInRange(minLine, maxLine);
+                if (!eventData) return;
+
+                let xRange = (eventData.range && eventData.range.x)
+                    || (eventData.lassoPoints && eventData.lassoPoints.x);
+                if (!xRange || xRange.length < 2) return;
+
+                const edgeTimes = xRange.map(t => new Date(t).getTime());
+                const lo = Math.min(...edgeTimes);
+                const hi = Math.max(...edgeTimes);
+
+                function timeToLine(ms) {
+                    const firstMs = new Date(perfData[0].timestamp).getTime();
+                    const lastMs  = new Date(perfData[perfData.length - 1].timestamp).getTime();
+                    if (ms <= firstMs) return perfData[0].line_number;
+                    if (ms >= lastMs)  return perfData[perfData.length - 1].line_number;
+                    for (let i = 1; i < perfData.length; i++) {
+                        const t1 = new Date(perfData[i].timestamp).getTime();
+                        if (t1 >= ms) {
+                            const t0 = new Date(perfData[i - 1].timestamp).getTime();
+                            const l0 = perfData[i - 1].line_number;
+                            const l1 = perfData[i].line_number;
+                            return Math.round(l0 + (l1 - l0) * (ms - t0) / (t1 - t0));
+                        }
                     }
+                    return perfData[perfData.length - 1].line_number;
+                }
+
+                const startLine = timeToLine(lo);
+                const endLine   = timeToLine(hi);
+
+                if (startLine <= endLine) {
+                    console.log('Selected time range - Lines:', startLine, 'to', endLine,
+                                '(', new Date(lo).toISOString(), '-', new Date(hi).toISOString(), ')');
+                    loadLogLinesInRange(startLine, endLine, { start: new Date(lo), end: new Date(hi) });
                 }
             });
         })
@@ -7366,9 +7731,12 @@ document.addEventListener("DOMContentLoaded", () => {
       html += '<div class="correlation-breakdown"><h4>Errors by Component</h4><div class="error-component-list">';
       Object.entries(correlation.errors_by_component)
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
+        .slice(0, 6)
         .forEach(([comp, count]) => {
-          html += `<div class="error-component-item"><span class="comp-name">${comp}</span><span class="comp-count">${count}</span></div>`;
+          const short = getComponentShort(comp);
+          html += `<div class="error-component-item"><span class="comp-name">${comp}</span><span class="comp-count">${count}</span>`
+            + (short ? `<span class="comp-context">${short}</span>` : '')
+            + `</div>`;
         });
       html += '</div></div>';
     }
