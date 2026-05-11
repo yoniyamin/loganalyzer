@@ -2798,6 +2798,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (floatingExportBtn) {
           floatingExportBtn.style.display = 'none';
         }
+
+        // Show Hide Noise checkbox again
+        const hideNoiseLabel = document.getElementById('hideNoiseLabel');
+        if (hideNoiseLabel) hideNoiseLabel.style.display = '';
         
         fetchLogLines(0, 150, false);
         // Apply search highlights after loading lines
@@ -2821,6 +2825,8 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Switch to search results view
     currentView = 'search';
+    const hideNoiseLabel = document.getElementById('hideNoiseLabel');
+    if (hideNoiseLabel) hideNoiseLabel.style.display = 'none';
     logViewTabs.querySelectorAll('.log-view-tab').forEach(t => t.classList.remove('active'));
     
     const searchTab = logViewTabs.querySelector(`.log-view-tab[data-tab-id="${tabId}"]`);
@@ -2841,19 +2847,32 @@ document.addEventListener("DOMContentLoaded", () => {
     hideLogPlaceholder();
     logPreview.innerHTML = "";
     
-    tabData.matches.forEach(m => {
+    let lastTs = null;
+    tabData.matches.forEach((m, idx) => {
       const div = document.createElement("div");
       div.className = "log-line search-result-line";
       div.dataset.idx = m.line;
       div.dataset.originalText = m.text;
-      
+
       // Create line number span and text content (like All Lines view)
       const lineNumSpan = document.createElement("span");
       lineNumSpan.className = "line-number";
       lineNumSpan.textContent = m.line + 1; // Line numbers start from 1
       div.appendChild(lineNumSpan);
       div.appendChild(document.createTextNode(m.text));
-      
+
+      // Compute time gap between consecutive search results
+      const tsMatch = m.text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+      if (tsMatch) {
+        const currentTs = parseTimestampFast(tsMatch[1]);
+        if (lastTs !== null) {
+          const timeDiff = (currentTs - lastTs) / 1000;
+          div.dataset.timeGap = timeDiff.toFixed(2);
+          div.dataset.gapSize = timeDiff < 1 ? 'small' : timeDiff < 10 ? 'medium' : 'large';
+        }
+        lastTs = currentTs;
+      }
+
       // Left-click: allow text selection, double-click navigates to line in All Lines
       div.addEventListener("dblclick", () => {
         // Switch back to all lines and jump to this line
@@ -2861,9 +2880,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (allLinesTab) allLinesTab.click();
         jumpToLineAndHighlight(m.line, m.text);
       });
-      
+
       logPreview.appendChild(div);
     });
+
+    // Apply time gaps if checkbox is checked
+    applyTimeGapsDisplay();
   }
   
   function removeSearchTab(tabId) {
@@ -3796,6 +3818,13 @@ document.addEventListener("DOMContentLoaded", () => {
         </svg>
         Search on Google
       </div>
+      <div id="ctx-time-gap" class="context-menu-item">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 3.5a.5.5 0 00-1 0V8a.5.5 0 00.252.434l3.5 2a.5.5 0 00.496-.868L8 7.71V3.5z"/>
+          <path d="M8 16A8 8 0 108 0a8 8 0 000 16zm7-8A7 7 0 111 8a7 7 0 0114 0z"/>
+        </svg>
+        <span id="ctx-time-gap-label">Mark for Time Gap</span>
+      </div>
     `;
     document.body.appendChild(menu);
     return menu;
@@ -3807,6 +3836,9 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Store reference to the element that was right-clicked for "Clear Line Highlight"
   let contextMenuTargetElement = null;
+
+  // Time gap marking state
+  let timeGapMarkedLine = null; // { element, timestamp, lineNumber, text }
   
   function showContextMenu(e, text, targetElement = null) {
       e.preventDefault();
@@ -3900,12 +3932,176 @@ document.addEventListener("DOMContentLoaded", () => {
           contextMenu.style.display = "none";
       };
       
-      // Google Search
+      // Google Search - strip log prefix (ID, timestamp, component) and trailing source file ref
       const googleBtn = document.getElementById("ctx-google");
       googleBtn.onclick = () => {
-          const searchQuery = encodeURIComponent(text.trim());
+          let searchText = text.trim();
+          // Strip prefix: "XXXXXXXX: YYYY-MM-DDTHH:MM:SS [COMPONENT]X: "
+          searchText = searchText.replace(/^[0-9a-fA-F]+:\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\s+\[.*?\]\s*[A-Z]?:\s*/, '');
+          // Strip trailing source file reference: " (filename.c:1234)"
+          searchText = searchText.replace(/\s+\([\w._-]+\.\w+:\d+\)\s*$/, '');
+          // Strip trailing ticket/ID references like " [1022502]"
+          searchText = searchText.replace(/\s+\[\d+\]\s*$/, '');
+          const searchQuery = encodeURIComponent(searchText);
           window.open(`https://www.google.com/search?q=${searchQuery}`, '_blank');
           contextMenu.style.display = "none";
+      };
+
+      // Time Gap marking
+      const timeGapBtn = document.getElementById("ctx-time-gap");
+      const timeGapLabel = document.getElementById("ctx-time-gap-label");
+      const tsMatch = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+
+      if (!tsMatch) {
+          timeGapBtn.style.display = "none";
+      } else {
+          timeGapBtn.style.display = "";
+          const currentTs = parseTimestampFast(tsMatch[1]);
+          const currentLineNum = contextMenuTargetElement ? contextMenuTargetElement.dataset.lineNumber : null;
+
+          if (timeGapMarkedLine) {
+              timeGapLabel.textContent = "Calculate Time Gap";
+          } else {
+              timeGapLabel.textContent = "Mark for Time Gap";
+          }
+
+          timeGapBtn.onclick = () => {
+              contextMenu.style.display = "none";
+              if (!timeGapMarkedLine) {
+                  // First mark
+                  timeGapMarkedLine = {
+                      element: contextMenuTargetElement,
+                      timestamp: currentTs,
+                      tsString: tsMatch[1],
+                      lineNumber: currentLineNum,
+                      text: text.trim()
+                  };
+                  if (contextMenuTargetElement) {
+                      contextMenuTargetElement.classList.add('time-gap-marked');
+                  }
+                  showToast('Line marked. Right-click another line to calculate time gap.');
+              } else {
+                  // Second mark - calculate gap
+                  const mark1 = timeGapMarkedLine;
+                  const mark2Ts = currentTs;
+                  const diffMs = Math.abs(mark2Ts - mark1.timestamp);
+                  const gapStr = formatTimeDiff(diffMs);
+
+                  // Determine which is earlier/later
+                  const earlier = mark1.timestamp <= mark2Ts ? mark1 : { timestamp: mark2Ts, tsString: tsMatch[1], lineNumber: currentLineNum, text: text.trim() };
+                  const later = mark1.timestamp <= mark2Ts ? { timestamp: mark2Ts, tsString: tsMatch[1], lineNumber: currentLineNum, text: text.trim() } : mark1;
+
+                  // Clear the visual mark
+                  if (mark1.element) mark1.element.classList.remove('time-gap-marked');
+
+                  // Show result dialog
+                  showTimeGapDialog(earlier, later, gapStr);
+
+                  timeGapMarkedLine = null;
+              }
+          };
+      }
+  }
+
+  function formatTimeDiff(ms) {
+      const totalSeconds = Math.floor(ms / 1000);
+      const days = Math.floor(totalSeconds / 86400);
+      const hours = Math.floor((totalSeconds % 86400) / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const parts = [];
+      if (days > 0) parts.push(`${days}d`);
+      if (hours > 0) parts.push(`${hours}h`);
+      if (minutes > 0) parts.push(`${minutes}m`);
+      parts.push(`${seconds}s`);
+      return parts.join(' ');
+  }
+
+  function showTimeGapDialog(earlier, later, gapStr) {
+      // Remove any existing dialog
+      const existing = document.getElementById('timeGapDialog');
+      if (existing) existing.remove();
+
+      const truncate = (s, len) => s.length > len ? s.substring(0, len) + '...' : s;
+
+      const dialog = document.createElement('div');
+      dialog.id = 'timeGapDialog';
+      dialog.className = 'time-gap-dialog-overlay';
+      dialog.innerHTML = `
+        <div class="time-gap-dialog">
+          <div class="time-gap-dialog-header">
+            <span>Time Gap</span>
+            <button class="time-gap-dialog-close" onclick="document.getElementById('timeGapDialog').remove()">&times;</button>
+          </div>
+          <div class="time-gap-dialog-body">
+            <div class="time-gap-line-info">
+              <span class="time-gap-label-tag">From</span>
+              <span class="time-gap-line-num">Line ${earlier.lineNumber}</span>
+              <span class="time-gap-ts">${earlier.tsString}</span>
+            </div>
+            <div class="time-gap-line-text">${escapeHtml(truncate(earlier.text, 200))}</div>
+            <div class="time-gap-arrow">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color:#6b7280">
+                <path fill-rule="evenodd" d="M8 4a.5.5 0 01.5.5v5.793l2.146-2.147a.5.5 0 01.708.708l-3 3a.5.5 0 01-.708 0l-3-3a.5.5 0 11.708-.708L7.5 10.293V4.5A.5.5 0 018 4z"/>
+              </svg>
+              <span class="time-gap-value">${gapStr}</span>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color:#6b7280">
+                <path fill-rule="evenodd" d="M8 4a.5.5 0 01.5.5v5.793l2.146-2.147a.5.5 0 01.708.708l-3 3a.5.5 0 01-.708 0l-3-3a.5.5 0 11.708-.708L7.5 10.293V4.5A.5.5 0 018 4z"/>
+              </svg>
+            </div>
+            <div class="time-gap-line-info">
+              <span class="time-gap-label-tag">To</span>
+              <span class="time-gap-line-num">Line ${later.lineNumber}</span>
+              <span class="time-gap-ts">${later.tsString}</span>
+            </div>
+            <div class="time-gap-line-text">${escapeHtml(truncate(later.text, 200))}</div>
+          </div>
+          <div class="time-gap-dialog-footer">
+            <button class="time-gap-btn-add" id="timeGapAddToFindings">Add to Findings</button>
+            <button class="time-gap-btn-close" onclick="document.getElementById('timeGapDialog').remove()">Close</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(dialog);
+
+      // Close on overlay click
+      dialog.addEventListener('click', (e) => {
+          if (e.target === dialog) dialog.remove();
+      });
+
+      // Add to Findings
+      document.getElementById('timeGapAddToFindings').onclick = async () => {
+          if (!currentFileId) return;
+          const title = `Time Gap: ${gapStr} (Lines ${earlier.lineNumber} - ${later.lineNumber})`;
+          const content = `**Time Gap: ${gapStr}**\n\n` +
+              `**From** (Line ${earlier.lineNumber}, ${earlier.tsString}):\n${truncate(earlier.text, 300)}\n\n` +
+              `**To** (Line ${later.lineNumber}, ${later.tsString}):\n${truncate(later.text, 300)}`;
+          try {
+              const resp = await fetch('/api/llm/findings', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                      file_id: currentFileId,
+                      finding_type: 'time_gap',
+                      title: title.slice(0, 120),
+                      content,
+                      line_number: parseInt(earlier.lineNumber) || null,
+                      metadata: {
+                          source: 'time_gap',
+                          from_line: earlier.lineNumber,
+                          to_line: later.lineNumber,
+                          gap: gapStr
+                      }
+                  })
+              });
+              if (resp.ok) {
+                  if (window.savedFindingsManager) window.savedFindingsManager.loadFindings();
+                  showToast('Time gap added to Findings');
+                  dialog.remove();
+              }
+          } catch (e) {
+              console.error('Failed to save time gap finding:', e);
+          }
       };
   }
 
