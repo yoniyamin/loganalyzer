@@ -515,6 +515,32 @@ body {
     color: #e5e7eb;
 }
 
+/* Log viewer font-size controls: fixed dimensions so toolbar layout never shifts */
+.log-font-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.log-font-controls .nav-btn {
+    width: 26px;
+    padding: 4px 0;
+    text-align: center;
+    font-size: 0.7rem;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+}
+
+.log-font-controls .log-font-indicator {
+    display: inline-block;
+    min-width: 34px;
+    text-align: center;
+    font-size: 0.65rem;
+    color: #9ca3af;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+}
+
 /* Font Size Scaling with CSS Variables */
 .issues-list {
     --font-scale: 1;
@@ -1432,15 +1458,24 @@ body {
 }
 
 .log-scroll-area {
+    --log-font-scale: 1;
     flex: 1 1 auto;
     margin: 0;
     padding: 0.6rem 0.8rem;
     overflow: auto;
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 0.75rem;
+    font-size: calc(0.75rem * var(--log-font-scale, 1));
     white-space: pre-wrap;
     word-wrap: break-word;
     background: #020617;
+}
+
+.log-scroll-area .line-number {
+    font-size: calc(0.7rem * var(--log-font-scale, 1));
+}
+
+.log-scroll-area .time-gap-indicator {
+    font-size: calc(0.65rem * var(--log-font-scale, 1));
 }
 
 .log-scroll-area.log-placeholder {

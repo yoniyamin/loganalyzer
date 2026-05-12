@@ -672,7 +672,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Jump to top/end buttons
   const jumpToTopBtn = document.getElementById('jumpToTopBtn');
   const jumpToEndBtn = document.getElementById('jumpToEndBtn');
-  
+
   if (jumpToTopBtn) {
     jumpToTopBtn.addEventListener('click', () => {
       if (currentFileId) {
@@ -680,7 +680,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
-  
+
   if (jumpToEndBtn) {
     jumpToEndBtn.addEventListener('click', () => {
       if (currentFileId && totalLogLines > 0) {
@@ -688,8 +688,57 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
-  
+
+  // Log viewer font-size controls.
+  // Scaling is applied via the --log-font-scale CSS variable on .log-scroll-area
+  // elements, so it never affects the surrounding panel layout — only the text
+  // inside the scroll containers reflows.
+  const LOG_FONT_SCALES = [0.7, 0.8, 0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0];
+  const LOG_FONT_STORAGE_KEY = 'logViewerFontScaleIdx';
+  let logFontScaleIdx = (() => {
+    const saved = parseInt(localStorage.getItem(LOG_FONT_STORAGE_KEY), 10);
+    if (Number.isFinite(saved) && saved >= 0 && saved < LOG_FONT_SCALES.length) return saved;
+    return LOG_FONT_SCALES.indexOf(1.0);
+  })();
+
+  function applyLogFontScale() {
+    const scale = LOG_FONT_SCALES[logFontScaleIdx];
+    document.querySelectorAll('.log-scroll-area').forEach(el => {
+      el.style.setProperty('--log-font-scale', scale);
+    });
+    const indicator = document.getElementById('logFontIndicator');
+    if (indicator) indicator.textContent = Math.round(scale * 100) + '%';
+    const dec = document.getElementById('logFontDecBtn');
+    const inc = document.getElementById('logFontIncBtn');
+    if (dec) dec.disabled = logFontScaleIdx <= 0;
+    if (inc) inc.disabled = logFontScaleIdx >= LOG_FONT_SCALES.length - 1;
+  }
+
+  function adjustLogFontScale(delta) {
+    const next = Math.max(0, Math.min(LOG_FONT_SCALES.length - 1, logFontScaleIdx + delta));
+    if (next === logFontScaleIdx) return;
+    logFontScaleIdx = next;
+    localStorage.setItem(LOG_FONT_STORAGE_KEY, String(logFontScaleIdx));
+    applyLogFontScale();
+  }
+
+  function resetLogFontScale() {
+    logFontScaleIdx = LOG_FONT_SCALES.indexOf(1.0);
+    localStorage.setItem(LOG_FONT_STORAGE_KEY, String(logFontScaleIdx));
+    applyLogFontScale();
+  }
+
+  const logFontDecBtn = document.getElementById('logFontDecBtn');
+  const logFontIncBtn = document.getElementById('logFontIncBtn');
+  if (logFontDecBtn) logFontDecBtn.addEventListener('click', () => adjustLogFontScale(-1));
+  if (logFontIncBtn) logFontIncBtn.addEventListener('click', () => adjustLogFontScale(1));
+  applyLogFontScale();
+
+  // Expose so future-rendered .log-scroll-area elements can be re-synced if needed.
+  window.applyLogFontScale = applyLogFontScale;
+
   // Keyboard shortcuts for jump to top/end (Ctrl+Home / Ctrl+End)
+  // and log font size (Ctrl+= / Ctrl++ / Ctrl+- / Ctrl+0).
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 'Home') {
       e.preventDefault();
@@ -700,6 +749,24 @@ document.addEventListener("DOMContentLoaded", () => {
       e.preventDefault();
       if (currentFileId && totalLogLines > 0) {
         jumpToLineAndHighlight(totalLogLines - 1, '');  // 0-indexed
+      }
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === '=' || e.key === '+')) {
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        e.preventDefault();
+        adjustLogFontScale(1);
+      }
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '-') {
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        e.preventDefault();
+        adjustLogFontScale(-1);
+      }
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '0') {
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        e.preventDefault();
+        resetLogFontScale();
       }
     }
   });
