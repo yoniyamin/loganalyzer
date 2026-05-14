@@ -569,7 +569,16 @@ class AIReportManager {
                 <div class="cost-estimate" id="aiCostEstimate">Estimating cost...</div>
             </div>
         `;
-        
+
+        // Toast: provider-aware start notification (persistent until done)
+        if (typeof window.showToast === 'function') {
+            const isLocal = this.currentProvider === 'lmstudio';
+            const msg = isLocal
+                ? '⏳ Generating report with local model — may take 30–120 s'
+                : '⚡ Generating report…';
+            window.showToast(msg, isLocal ? 'warning' : 'info', 0);
+        }
+
         this._startTimer();
         
         // Get cost estimate
@@ -605,12 +614,24 @@ class AIReportManager {
             
             if (response.ok) {
                 const report = await response.json();
+                if (typeof window.hideToast === 'function') window.hideToast();
+                if (typeof window.showToast === 'function') {
+                    window.showToast('✓ Report generated', 'success', 3000);
+                }
                 this.displayReport(report);
             } else {
                 const error = await response.json();
+                if (typeof window.hideToast === 'function') window.hideToast();
+                if (typeof window.showToast === 'function') {
+                    window.showToast('Report generation failed', 'error', 4000);
+                }
                 this.showError(error.detail || 'Failed to generate report');
             }
         } catch (error) {
+            if (typeof window.hideToast === 'function') window.hideToast();
+            if (typeof window.showToast === 'function') {
+                window.showToast('Network error — report not generated', 'error', 4000);
+            }
             this.showError('Network error: ' + error.message);
         } finally {
             this._stopTimer();
@@ -967,6 +988,15 @@ class AIReportManager {
                 // No cache, generate below
             }
 
+            // No cached report — show start toast before the POST
+            if (typeof window.showToast === 'function') {
+                const isLocal = this.currentProvider === 'lmstudio';
+                const msg = isLocal
+                    ? '⏳ Generating report with local model — may take 30–120 s'
+                    : '⚡ Generating report…';
+                window.showToast(msg, isLocal ? 'warning' : 'info', 0);
+            }
+
             const response = await fetch(`/api/llm/report/${this.currentFileId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -979,6 +1009,10 @@ class AIReportManager {
 
             if (response.ok) {
                 const report = await response.json();
+                if (typeof window.hideToast === 'function') window.hideToast();
+                if (typeof window.showToast === 'function') {
+                    window.showToast('✓ Report generated', 'success', 3000);
+                }
                 this.hasReport = true;
                 this.updateStatusBadge('ready');
                 if (this.container) {
@@ -986,12 +1020,20 @@ class AIReportManager {
                 }
             } else {
                 const error = await response.json();
+                if (typeof window.hideToast === 'function') window.hideToast();
+                if (typeof window.showToast === 'function') {
+                    window.showToast('Report generation failed', 'error', 4000);
+                }
                 this.updateStatusBadge('error', error.detail || 'Generation failed');
                 if (this.container) {
                     this.showError(error.detail || 'Failed to auto-generate report');
                 }
             }
         } catch (error) {
+            if (typeof window.hideToast === 'function') window.hideToast();
+            if (typeof window.showToast === 'function') {
+                window.showToast('Network error — report not generated', 'error', 4000);
+            }
             this.updateStatusBadge('error', error.message);
             if (this.container) {
                 this.showError('Network error: ' + error.message);

@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from backend.api.endpoints import router as api_router
 from backend.llm.endpoints import router as llm_router
 from backend.database import init_db
+from backend.paths import static_dir
 import os
 import logging
 
@@ -25,7 +26,7 @@ app.include_router(api_router, prefix="/api")
 app.include_router(llm_router, prefix="/api")
 
 # Mount Static
-STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+STATIC_DIR = static_dir()
 if not os.path.exists(STATIC_DIR):
     os.makedirs(STATIC_DIR)
 

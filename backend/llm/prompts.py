@@ -142,6 +142,7 @@ When discussing errors by component, briefly explain *why* that component matter
 4. Use technical terminology appropriately
 5. Reference specific metrics and line numbers when available
 6. Format your response in clean Markdown
+7. **Do NOT invent URLs or hyperlinks.** If you reference a KB article or document, use only the title provided in the prompt context. Never fabricate links.
 
 ## Report Structure
 Always structure your analysis with these sections:
@@ -195,7 +196,7 @@ Use search queries like:
 When you find relevant information, include:
 - The error explanation from official documentation
 - Recommended resolution steps from Qlik support
-- Links to relevant Qlik Community posts or documentation
+- Only include links if you actually retrieved them via a web search tool call — **never fabricate URLs**
 
 ## Response Guidelines
 1. Be concise but thorough - focus on what matters
@@ -204,7 +205,7 @@ When you find relevant information, include:
 4. Use technical terminology appropriately
 5. Reference specific metrics and line numbers when available
 6. Format your response in clean Markdown
-7. **Include web search results** for error codes and issues
+7. **Include web search results** for error codes and issues — but only reference URLs you actually retrieved; do not invent links
 
 ## Report Structure
 Always structure your analysis with these sections:
@@ -585,7 +586,7 @@ The following release note entries may be relevant to the issues detected:
             title = rn.get("title", "Unknown")
             version = rn.get("version", "")
             fix_id = rn.get("fix_id", "")
-            snippet = rn.get("content", "")[:200]
+            snippet = rn.get("content", "")[:350]
             version_label = f" ({version})" if version else ""
             fix_label = f" [{fix_id}]" if fix_id else ""
             sections.append(f"{i}. **{title}{version_label}{fix_label}**: {snippet}\n")
@@ -598,7 +599,7 @@ The following KB articles from the Qlik support knowledge base may help:
 """)
         for i, kb in enumerate(kb_context[:5], 1):
             title = kb.get("title", "Unknown")
-            snippet = kb.get("content", "")[:150]
+            snippet = kb.get("content", "")[:400]
             sections.append(f"{i}. **{title}**: {snippet}\n")
 
     # Final instruction - more focused

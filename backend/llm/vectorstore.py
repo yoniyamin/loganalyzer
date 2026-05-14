@@ -1,10 +1,9 @@
 """
 ChromaDB Vector Store for Log Analysis RAG
 
-Provides embedding storage and retrieval for:
-- Log summaries (performance cockpit data, batch analysis)
-- Error contexts (error messages with surrounding lines)
-- Anomaly sections (latency spikes, plateaus, unusual patterns)
+Two separate persist directories:
+  - chroma_kb/  — shipped KB articles + release notes (read-only at runtime)
+  - chroma_db/  — per-user log embeddings (summaries, errors, anomalies)
 
 All data is sanitized before embedding to remove sensitive information.
 Uses the centralized sanitizer module for PII detection and anonymization.
@@ -20,20 +19,16 @@ import chromadb
 from chromadb.config import Settings
 
 from backend.llm.sanitizer import sanitize_text as _sanitize_for_embedding
+from backend.paths import chroma_db_dir, chroma_kb_dir
 
-
-# Default ChromaDB persist directory
-CHROMA_PERSIST_DIR = os.environ.get(
-    "CHROMA_PERSIST_DIR",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "chroma_db")
-)
-
-# Collection names
+# Collection names — log analysis (user-local, writable)
 COLLECTION_SUMMARIES = "log_summaries"
 COLLECTION_ERRORS = "error_contexts"
 COLLECTION_ANOMALIES = "anomaly_sections"
-COLLECTION_KB = "qlik_replicate_kb"  # KB articles from kb-assistant
-COLLECTION_RELEASE_NOTES = "qlik_replicate_release_notes"  # Release notes from kb-assistant
+
+# Collection names — knowledge base (shipped, read-only at runtime)
+COLLECTION_KB = "qlik_replicate_kb"
+COLLECTION_RELEASE_NOTES = "qlik_replicate_release_notes"
 
 
 def _version_sort_key(v: str):
@@ -51,32 +46,32 @@ class LogVectorStore:
     """
     Vector store for log analysis using ChromaDB.
     
-    Uses local embeddings (all-MiniLM-L6-v2) which are free and don't require API calls.
+    Maintains two ChromaDB clients:
+      - self.client     → user-local writable store (log embeddings)
+      - self.kb_client  → shipped read-only store (KB articles + release notes)
+    
+    Uses local embeddings (all-MiniLM-L6-v2) — free, no API key needed.
     """
     
-    def __init__(self, persist_directory: Optional[str] = None):
-        """
-        Initialize the vector store.
+    def __init__(self, persist_directory: Optional[str] = None, kb_directory: Optional[str] = None):
+        self.persist_dir = persist_directory or chroma_db_dir()
+        self.kb_dir = kb_directory or chroma_kb_dir()
         
-        Args:
-            persist_directory: Directory to persist ChromaDB data.
-                             Defaults to ./chroma_db in project root.
-        """
-        self.persist_dir = persist_directory or CHROMA_PERSIST_DIR
-        
-        # Ensure directory exists
         os.makedirs(self.persist_dir, exist_ok=True)
+        os.makedirs(self.kb_dir, exist_ok=True)
         
-        # Initialize ChromaDB client with persistence
+        _chroma_settings = Settings(anonymized_telemetry=False, allow_reset=True)
+        
         self.client = chromadb.PersistentClient(
             path=self.persist_dir,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
+            settings=_chroma_settings,
         )
         
-        # Get or create collections
+        self.kb_client = chromadb.PersistentClient(
+            path=self.kb_dir,
+            settings=_chroma_settings,
+        )
+        
         self._init_collections()
     
     def _init_collections(self):
@@ -510,7 +505,7 @@ Relevant lines: {line_numbers or []}
             List of matching KB articles with metadata and relevance score
         """
         try:
-            kb_collection = self.client.get_or_create_collection(
+            kb_collection = self.kb_client.get_or_create_collection(
                 name=COLLECTION_KB,
                 metadata={"description": "Qlik Replicate Knowledge Base articles"}
             )
@@ -553,7 +548,7 @@ Relevant lines: {line_numbers or []}
             Dictionary with KB stats or empty dict if KB not initialized
         """
         try:
-            kb_collection = self.client.get_or_create_collection(name=COLLECTION_KB)
+            kb_collection = self.kb_client.get_or_create_collection(name=COLLECTION_KB)
             return {
                 "kb_documents": kb_collection.count(),
                 "collection_name": COLLECTION_KB
@@ -579,7 +574,7 @@ Relevant lines: {line_numbers or []}
             List of matching release note entries with metadata and relevance score
         """
         try:
-            rn_collection = self.client.get_or_create_collection(
+            rn_collection = self.kb_client.get_or_create_collection(
                 name=COLLECTION_RELEASE_NOTES,
                 metadata={"description": "Qlik Replicate release notes and fixes"}
             )
@@ -631,7 +626,7 @@ Relevant lines: {line_numbers or []}
             List of all matching chunks with their documents and metadata.
         """
         try:
-            rn_collection = self.client.get_or_create_collection(
+            rn_collection = self.kb_client.get_or_create_collection(
                 name=COLLECTION_RELEASE_NOTES,
                 metadata={"description": "Qlik Replicate release notes and fixes"}
             )
@@ -657,7 +652,7 @@ Relevant lines: {line_numbers or []}
     def get_all_release_note_versions(self) -> List[str]:
         """Return the distinct version strings in the release notes collection."""
         try:
-            rn_collection = self.client.get_or_create_collection(
+            rn_collection = self.kb_client.get_or_create_collection(
                 name=COLLECTION_RELEASE_NOTES,
                 metadata={"description": "Qlik Replicate release notes and fixes"}
             )
@@ -674,7 +669,7 @@ Relevant lines: {line_numbers or []}
     def get_all_release_note_chunks(self) -> List[Dict[str, Any]]:
         """Get ALL release note chunks in one call (fast, no embeddings needed)."""
         try:
-            rn_collection = self.client.get_or_create_collection(
+            rn_collection = self.kb_client.get_or_create_collection(
                 name=COLLECTION_RELEASE_NOTES,
                 metadata={"description": "Qlik Replicate release notes and fixes"}
             )
@@ -696,7 +691,7 @@ Relevant lines: {line_numbers or []}
             Dictionary with release notes stats
         """
         try:
-            rn_collection = self.client.get_or_create_collection(name=COLLECTION_RELEASE_NOTES)
+            rn_collection = self.kb_client.get_or_create_collection(name=COLLECTION_RELEASE_NOTES)
             return {
                 "release_notes_documents": rn_collection.count(),
                 "collection_name": COLLECTION_RELEASE_NOTES

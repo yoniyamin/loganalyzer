@@ -25,9 +25,11 @@ from pydantic import BaseModel, Field, ConfigDict
 from backend.database import get_db, LLMConfig, LLMReport, LogFile, KBArticle
 from backend.llm.client import get_llm_client, set_api_key, DEFAULT_MODEL
 from backend.llm.gemini_client import get_gemini_client, set_gemini_api_key, DEFAULT_GEMINI_MODEL, GEMINI_MODELS
+from backend.llm.lmstudio_client import get_lmstudio_client, set_lmstudio_base_url, DEFAULT_LMSTUDIO_BASE_URL
 from backend.llm.report_generator import ReportGenerator
 from backend.llm.vectorstore import get_vector_store
 from backend.llm.error_resolution import resolve_issue
+from backend.paths import release_notes_cache_path
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Provider constants
 PROVIDER_GEMINI = "gemini"
 PROVIDER_OPENROUTER = "openrouter"
+PROVIDER_LMSTUDIO = "lmstudio"
 
 
 router = APIRouter(prefix="/llm", tags=["LLM"])
@@ -46,10 +49,13 @@ router = APIRouter(prefix="/llm", tags=["LLM"])
 
 class ConfigRequest(BaseModel):
     """Request to save LLM configuration."""
-    provider: Optional[str] = "gemini"  # "gemini" or "openrouter"
+    provider: Optional[str] = "gemini"  # "gemini", "openrouter", or "lmstudio"
     gemini_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
+    lmstudio_base_url: Optional[str] = None       # LM Studio server URL
+    lmstudio_temperature: Optional[float] = None  # 0.0–2.0, default 0.3
+    lmstudio_max_tokens: Optional[int] = None     # response length cap, default 1500
     default_model: Optional[str] = None  # Provider-specific model ID
     web_search_enabled: Optional[bool] = None  # Enable web search in reports
 
@@ -61,6 +67,10 @@ class ConfigResponse(BaseModel):
     default_model: Optional[str] = None
     gemini_configured: bool = False
     openrouter_configured: bool = False
+    lmstudio_configured: bool = False
+    lmstudio_base_url: Optional[str] = None
+    lmstudio_temperature: Optional[float] = None
+    lmstudio_max_tokens: Optional[int] = None
     gemini_api_key_preview: Optional[str] = None
     openrouter_api_key_preview: Optional[str] = None
     tavily_configured: bool = False
@@ -220,6 +230,23 @@ def _ensure_tavily_column(db: Session):
             logger.warning("Failed to add tavily_api_key_encrypted column: %s", e)
 
 
+def _ensure_lmstudio_column(db: Session):
+    """Ensure all lmstudio_* columns exist (runtime guard alongside the migration)."""
+    for col, ddl in [
+        ("lmstudio_base_url", "ALTER TABLE llm_config ADD COLUMN lmstudio_base_url VARCHAR"),
+        ("lmstudio_temperature", "ALTER TABLE llm_config ADD COLUMN lmstudio_temperature REAL"),
+        ("lmstudio_max_tokens", "ALTER TABLE llm_config ADD COLUMN lmstudio_max_tokens INTEGER"),
+    ]:
+        try:
+            db.execute(text(f"SELECT {col} FROM llm_config LIMIT 1"))
+        except Exception:
+            try:
+                db.execute(text(ddl))
+                db.commit()
+            except Exception as e:
+                logger.warning("Failed to add %s column: %s", col, e)
+
+
 def _load_tavily_api_key(db: Session) -> Optional[str]:
     """Load Tavily API key from DB or env."""
     _ensure_tavily_column(db)
@@ -281,6 +308,7 @@ def _ensure_gemini_configured(db: Session):
 def get_config(db: Session = Depends(get_db)):
     """Get current LLM configuration status."""
     _ensure_tavily_column(db)
+    _ensure_lmstudio_column(db)
     config = db.query(LLMConfig).first()
     
     if not config:
@@ -290,6 +318,8 @@ def get_config(db: Session = Depends(get_db)):
             default_model=DEFAULT_GEMINI_MODEL,
             gemini_configured=False,
             openrouter_configured=False,
+            lmstudio_configured=False,
+            lmstudio_base_url=DEFAULT_LMSTUDIO_BASE_URL,
             tavily_configured=False
         )
     
@@ -297,7 +327,11 @@ def get_config(db: Session = Depends(get_db)):
     gemini_configured = bool(config.gemini_api_key_encrypted)
     openrouter_configured = bool(config.api_key_encrypted)
     tavily_configured = bool(getattr(config, "tavily_api_key_encrypted", None))
-    
+    stored_lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
+    lmstudio_configured = bool(getattr(config, "lmstudio_base_url", None))
+    stored_lmstudio_temperature = getattr(config, "lmstudio_temperature", None)
+    stored_lmstudio_max_tokens = getattr(config, "lmstudio_max_tokens", None)
+
     # Get API key previews
     gemini_preview = None
     openrouter_preview = None
@@ -326,8 +360,11 @@ def get_config(db: Session = Depends(get_db)):
     
     # Determine if configured based on selected provider
     provider = config.provider or PROVIDER_GEMINI
-    is_configured = (provider == PROVIDER_GEMINI and gemini_configured) or \
-                   (provider == PROVIDER_OPENROUTER and openrouter_configured)
+    is_configured = (
+        (provider == PROVIDER_GEMINI and gemini_configured)
+        or (provider == PROVIDER_OPENROUTER and openrouter_configured)
+        or (provider == PROVIDER_LMSTUDIO)  # LM Studio is always "configured" — no key needed
+    )
     
     return ConfigResponse(
         is_configured=is_configured,
@@ -335,6 +372,10 @@ def get_config(db: Session = Depends(get_db)):
         default_model=config.default_model or (DEFAULT_GEMINI_MODEL if provider == PROVIDER_GEMINI else DEFAULT_MODEL),
         gemini_configured=gemini_configured,
         openrouter_configured=openrouter_configured,
+        lmstudio_configured=lmstudio_configured,
+        lmstudio_base_url=stored_lmstudio_url,
+        lmstudio_temperature=stored_lmstudio_temperature,
+        lmstudio_max_tokens=stored_lmstudio_max_tokens,
         gemini_api_key_preview=gemini_preview,
         openrouter_api_key_preview=openrouter_preview,
         tavily_configured=tavily_configured,
@@ -348,6 +389,7 @@ def get_config(db: Session = Depends(get_db)):
 def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     """Save LLM configuration (API keys and preferences)."""
     _ensure_tavily_column(db)
+    _ensure_lmstudio_column(db)
     # Get or create config
     config = db.query(LLMConfig).first()
     if not config:
@@ -377,13 +419,24 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         if len(request.tavily_api_key) < 10:
             raise HTTPException(status_code=400, detail="Invalid Tavily API key")
         config.tavily_api_key_encrypted = _encode_api_key(request.tavily_api_key)
-    
-    # Validate that selected provider has a key
+
+    # Update LM Studio base URL and generation parameters
+    if request.lmstudio_base_url is not None:
+        url = request.lmstudio_base_url.strip() or DEFAULT_LMSTUDIO_BASE_URL
+        config.lmstudio_base_url = url
+        set_lmstudio_base_url(url)
+    if request.lmstudio_temperature is not None:
+        config.lmstudio_temperature = max(0.0, min(2.0, request.lmstudio_temperature))
+    if request.lmstudio_max_tokens is not None:
+        config.lmstudio_max_tokens = max(256, min(8192, request.lmstudio_max_tokens))
+
+    # Validate that selected provider has necessary configuration
     provider = request.provider or config.provider or PROVIDER_GEMINI
     if provider == PROVIDER_GEMINI and not config.gemini_api_key_encrypted and not request.gemini_api_key:
         raise HTTPException(status_code=400, detail="Gemini API key required")
     if provider == PROVIDER_OPENROUTER and not config.api_key_encrypted and not request.openrouter_api_key:
         raise HTTPException(status_code=400, detail="OpenRouter API key required")
+    # LM Studio: no key required — URL defaults to localhost:1234
     
     # Update default model
     if request.default_model:
@@ -405,7 +458,11 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     gemini_configured = bool(config.gemini_api_key_encrypted)
     openrouter_configured = bool(config.api_key_encrypted)
     tavily_configured = bool(getattr(config, "tavily_api_key_encrypted", None))
-    
+    stored_lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
+    lmstudio_configured = bool(getattr(config, "lmstudio_base_url", None))
+    stored_lmstudio_temperature = getattr(config, "lmstudio_temperature", None)
+    stored_lmstudio_max_tokens = getattr(config, "lmstudio_max_tokens", None)
+
     gemini_preview = None
     openrouter_preview = None
     tavily_preview = None
@@ -434,6 +491,10 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         default_model=config.default_model,
         gemini_configured=gemini_configured,
         openrouter_configured=openrouter_configured,
+        lmstudio_configured=lmstudio_configured,
+        lmstudio_base_url=stored_lmstudio_url,
+        lmstudio_temperature=stored_lmstudio_temperature,
+        lmstudio_max_tokens=stored_lmstudio_max_tokens,
         gemini_api_key_preview=gemini_preview,
         openrouter_api_key_preview=openrouter_preview,
         tavily_configured=tavily_configured,
@@ -449,6 +510,7 @@ def test_connection(
     db: Session = Depends(get_db)
 ):
     """Test the API connection with the configured key."""
+    _ensure_lmstudio_column(db)
     config = db.query(LLMConfig).first()
     test_provider = provider or (config.provider if config else PROVIDER_GEMINI)
     
@@ -465,6 +527,18 @@ def test_connection(
             success=success,
             message="Gemini connection successful" if success else "Gemini connection failed",
             model_count=len(GEMINI_MODELS) if success else None
+        )
+    elif test_provider == PROVIDER_LMSTUDIO:
+        # Reload base URL from DB in case it was just saved
+        lmstudio_url = getattr(config, "lmstudio_base_url", None) if config else None
+        lmstudio_client = get_lmstudio_client()
+        if lmstudio_url:
+            lmstudio_client.set_base_url(lmstudio_url)
+        result = lmstudio_client.test_connection()
+        return TestConnectionResponse(
+            success=result["success"],
+            message=result["message"],
+            model_count=result.get("model_count")
         )
     else:
         _ensure_client_configured(db)
@@ -546,6 +620,7 @@ def get_models(
         recommended_only: If True, return only recommended models. If False, return all.
         refresh: If True, force refresh the model list from the API (OpenRouter only).
     """
+    _ensure_lmstudio_column(db)
     config = db.query(LLMConfig).first()
     use_provider = provider or (config.provider if config else PROVIDER_GEMINI)
     
@@ -566,6 +641,30 @@ def get_models(
                     is_free=m.is_free,
                     provider=PROVIDER_GEMINI,
                     capabilities=m.capabilities,
+                )
+                for m in models
+            ]
+        )
+    elif use_provider == PROVIDER_LMSTUDIO:
+        # Return models available in the local LM Studio server
+        lmstudio_url = getattr(config, "lmstudio_base_url", None) if config else None
+        lmstudio_client = get_lmstudio_client()
+        if lmstudio_url:
+            lmstudio_client.set_base_url(lmstudio_url)
+        models = lmstudio_client.get_models()
+        return ModelsResponse(
+            provider=PROVIDER_LMSTUDIO,
+            models=[
+                ModelInfo(
+                    id=m.id,
+                    name=m.name,
+                    description=m.description,
+                    context_length=m.context_length,
+                    prompt_price=0.0,
+                    completion_price=0.0,
+                    is_free=True,
+                    provider=PROVIDER_LMSTUDIO,
+                    capabilities=[],
                 )
                 for m in models
             ]
@@ -941,7 +1040,7 @@ def _load_release_notes_cache() -> dict | None:
     if _RELEASE_NOTES_CACHE is not None:
         return _RELEASE_NOTES_CACHE
 
-    cache_path = Path(__file__).resolve().parent.parent.parent / "data" / "release_notes_cache.json"
+    cache_path = Path(release_notes_cache_path())
     if not cache_path.exists():
         return None
     try:
@@ -2406,7 +2505,11 @@ def _compile_findings_email_with_llm(
         if not client.is_configured:
             raise HTTPException(status_code=400, detail="Gemini API key not configured.")
         model = config.default_model or DEFAULT_GEMINI_MODEL
-        use_gemini = True
+    elif provider == PROVIDER_LMSTUDIO:
+        lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
+        client = get_lmstudio_client()
+        client.set_base_url(lmstudio_url)
+        model = config.default_model or ""
     else:
         if not config.api_key_encrypted:
             raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
@@ -2415,7 +2518,6 @@ def _compile_findings_email_with_llm(
         if not client.is_configured:
             raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
         model = config.default_model or DEFAULT_MODEL
-        use_gemini = False
 
     audience_guide = _findings_export_audience_guidance(audience)
 
@@ -2443,22 +2545,13 @@ def _compile_findings_email_with_llm(
         {"role": "user", "content": user_prompt},
     ]
     max_tokens = 4096
-    if use_gemini:
-        result = client.complete(
-            messages=messages,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=0.3,
-            web_search=False,
-        )
-    else:
-        result = client.complete(
-            messages=messages,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=0.3,
-            web_search=False,
-        )
+    result = client.complete(
+        messages=messages,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=0.3,
+        web_search=False,
+    )
 
     return {
         "content": (result.content or "").strip(),
@@ -2871,7 +2964,7 @@ def add_release_notes_url(request: AddReleaseNoteURLRequest):
     eol_items = _parse_all_eol_entries(raw_text)
 
     # Load existing cache and merge
-    cache_path = Path(__file__).resolve().parent.parent.parent / "data" / "release_notes_cache.json"
+    cache_path = Path(release_notes_cache_path())
     cache_path.parent.mkdir(exist_ok=True)
 
     existing: dict = {}
@@ -2952,8 +3045,7 @@ def add_markdown_source(
     try:
         vector_store = get_vector_store()
         
-        # Get KB collection directly for embedding
-        kb_collection = vector_store.client.get_or_create_collection(
+        kb_collection = vector_store.kb_client.get_or_create_collection(
             name="qlik_replicate_kb",
             metadata={"description": "Qlik Replicate Knowledge Base articles"}
         )
@@ -3050,7 +3142,7 @@ def delete_kb_source(
     # Delete from ChromaDB
     try:
         vector_store = get_vector_store()
-        kb_collection = vector_store.client.get_or_create_collection(name="qlik_replicate_kb")
+        kb_collection = vector_store.kb_client.get_or_create_collection(name="qlik_replicate_kb")
         
         # Find and delete chunks for this URL
         existing = kb_collection.get(where={"url": source.url})

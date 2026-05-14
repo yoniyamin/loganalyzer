@@ -4463,22 +4463,35 @@ document.addEventListener("DOMContentLoaded", () => {
   })();
   
   // Lightweight toast notification
-  function showToast(message, type = 'info') {
+  // duration: ms before auto-dismiss (0 = stay until hideToast() is called)
+  function showToast(message, type = 'info', duration = 2500) {
     const existing = document.querySelector('.app-toast');
     if (existing) existing.remove();
-    
+
     const toast = document.createElement('div');
     toast.className = `app-toast app-toast-${type}`;
     toast.textContent = message;
     document.body.appendChild(toast);
-    
+
     setTimeout(() => toast.classList.add('visible'), 10);
-    setTimeout(() => {
-      toast.classList.remove('visible');
-      setTimeout(() => toast.remove(), 300);
-    }, 2000);
+
+    if (duration > 0) {
+      setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => toast.remove(), 300);
+      }, duration);
+    }
   }
+
+  function hideToast() {
+    const toast = document.querySelector('.app-toast');
+    if (!toast) return;
+    toast.classList.remove('visible');
+    setTimeout(() => toast.remove(), 300);
+  }
+
   window.showToast = showToast;
+  window.hideToast = hideToast;
 
   function renderFindings() {
       findingsList.innerHTML = "";

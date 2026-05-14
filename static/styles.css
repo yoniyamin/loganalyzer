@@ -5626,6 +5626,14 @@ body {
     border-left: 3px solid #3b82f6;
 }
 
+.app-toast-success {
+    border-left: 3px solid #22c55e;
+}
+
+.app-toast-warning {
+    border-left: 3px solid #f59e0b;
+}
+
 .app-toast-error {
     border-left: 3px solid #ef4444;
 }

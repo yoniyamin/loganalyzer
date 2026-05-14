@@ -23,6 +23,7 @@ from backend.core.analysis import PerformanceCockpit
 from backend.llm.vectorstore import get_vector_store, LogVectorStore
 from backend.llm.client import get_llm_client, OpenRouterClient, DEFAULT_MODEL, openrouter_model_supports_vision
 from backend.llm.gemini_client import get_gemini_client, GeminiClient, DEFAULT_GEMINI_MODEL, gemini_model_supports_vision
+from backend.llm.lmstudio_client import get_lmstudio_client, LMStudioClient, DEFAULT_LMSTUDIO_BASE_URL, LMSTUDIO_DEFAULT_MAX_TOKENS
 from backend.llm.prompts import (
     get_messages_for_analysis,
     count_prompt_tokens,
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 # Provider constants
 PROVIDER_GEMINI = "gemini"
 PROVIDER_OPENROUTER = "openrouter"
+PROVIDER_LMSTUDIO = "lmstudio"
 
 
 class ReportGenerator:
@@ -55,7 +57,8 @@ class ReportGenerator:
         db: Session,
         vector_store: Optional[LogVectorStore] = None,
         llm_client: Optional[OpenRouterClient] = None,
-        gemini_client: Optional[GeminiClient] = None
+        gemini_client: Optional[GeminiClient] = None,
+        lmstudio_client: Optional[LMStudioClient] = None,
     ):
         """
         Initialize the report generator.
@@ -65,15 +68,23 @@ class ReportGenerator:
             vector_store: Optional vector store instance (uses singleton if not provided)
             llm_client: Optional OpenRouter LLM client instance
             gemini_client: Optional Gemini client instance
+            lmstudio_client: Optional LM Studio client instance
         """
         self.db = db
         self.vector_store = vector_store or get_vector_store()
         self.llm_client = llm_client or get_llm_client()
         self.gemini_client = gemini_client or get_gemini_client()
+        self.lmstudio_client = lmstudio_client or get_lmstudio_client()
         
-        # Get provider preference from config
+        # Get provider preference from config; sync LM Studio URL and parameters
         config = self.db.query(LLMConfig).first()
         self.provider = config.provider if config else PROVIDER_GEMINI
+        if config and self.provider == PROVIDER_LMSTUDIO:
+            lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
+            self.lmstudio_client.set_base_url(lmstudio_url)
+        # Store user-configured overrides (None = use hardcoded defaults)
+        self.lmstudio_temperature: Optional[float] = getattr(config, "lmstudio_temperature", None) if config else None
+        self.lmstudio_max_tokens: Optional[int] = getattr(config, "lmstudio_max_tokens", None) if config else None
     
     def get_file_info(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get basic file information."""
@@ -507,7 +518,7 @@ class ReportGenerator:
                 hits = self.vector_store.query_kb(query=q, n_results=4)
                 for h in hits:
                     url = h.get("url", "")
-                    if url and url not in seen_urls:
+                    if url and url not in seen_urls and h.get("similarity", 0) >= 0.25:
                         seen_urls.add(url)
                         results.append(h)
             except Exception as e:
@@ -603,9 +614,15 @@ class ReportGenerator:
         """
         # Determine which provider and model to use
         use_gemini = self.provider == PROVIDER_GEMINI
-        
+        use_lmstudio = self.provider == PROVIDER_LMSTUDIO
+
         if model is None:
-            model = DEFAULT_GEMINI_MODEL if use_gemini else DEFAULT_MODEL
+            if use_gemini:
+                model = DEFAULT_GEMINI_MODEL
+            elif use_lmstudio:
+                model = ""  # LM Studio uses whatever model is loaded; empty = server default
+            else:
+                model = DEFAULT_MODEL
         
         logger.info(f"Starting report generation for file_id={file_id}, provider={self.provider}, model={model}, quick={quick}")
         
@@ -614,6 +631,8 @@ class ReportGenerator:
             if not self.gemini_client.is_configured:
                 logger.error("Gemini API key not configured")
                 raise ValueError("Gemini API key not configured. Please configure in AI Settings.")
+        elif use_lmstudio:
+            pass  # LM Studio: no key required; connection is validated at test-connection time
         else:
             if not self.llm_client.is_configured:
                 logger.error("OpenRouter API key not configured")
@@ -697,7 +716,8 @@ class ReportGenerator:
         chart_image_data = None
         supports_vision = (
             (use_gemini and gemini_model_supports_vision(model))
-            or (not use_gemini and openrouter_model_supports_vision(model))
+            or (not use_gemini and not use_lmstudio and openrouter_model_supports_vision(model))
+            # LM Studio vision support is not detected per-model yet; skip chart rendering
         )
         if supports_vision and not quick:
             try:
@@ -731,11 +751,24 @@ class ReportGenerator:
 
         # Generate completion using appropriate provider
         try:
-            provider_name = "Gemini" if use_gemini else "OpenRouter"
+            if use_gemini:
+                provider_name = "Gemini"
+            elif use_lmstudio:
+                provider_name = "LM Studio"
+            else:
+                provider_name = "OpenRouter"
             logger.info(f"Calling {provider_name} API with model={model}...")
             
-            max_output = 8192 if not quick else 800
-            
+            # LM Studio local models can degrade at very long outputs; cap the default.
+            # User-configured lmstudio_max_tokens overrides the per-call default.
+            if use_lmstudio:
+                default_max = LMSTUDIO_DEFAULT_MAX_TOKENS if not quick else 350
+                max_output = self.lmstudio_max_tokens if self.lmstudio_max_tokens is not None else default_max
+                lmstudio_temp = self.lmstudio_temperature if self.lmstudio_temperature is not None else 0.3
+            else:
+                max_output = 8192 if not quick else 800
+                lmstudio_temp = 0.3  # unused for non-lmstudio paths
+
             def _call_llm(use_web_search: bool):
                 if use_gemini:
                     return self.gemini_client.complete(
@@ -745,6 +778,15 @@ class ReportGenerator:
                         temperature=0.3,
                         web_search=use_web_search,
                         image_data=chart_image_data,
+                    )
+                elif use_lmstudio:
+                    # LM Studio handles web search via its own Tavily MCP;
+                    # the app does not inject Tavily results separately.
+                    return self.lmstudio_client.complete(
+                        messages=messages,
+                        model=model,
+                        max_tokens=max_output,
+                        temperature=lmstudio_temp,
                     )
                 else:
                     return self.llm_client.complete(
@@ -758,8 +800,14 @@ class ReportGenerator:
             
             result = _call_llm(web_search)
             
-            # Retry without web_search if response was empty (grounding conflict)
-            if result.completion_tokens == 0 and not result.content.strip() and web_search:
+            # Retry without web_search if response was empty (grounding conflict).
+            # Skip retry for LM Studio — web_search param is ignored there.
+            if (
+                result.completion_tokens == 0
+                and not result.content.strip()
+                and web_search
+                and not use_lmstudio
+            ):
                 logger.warning(
                     f"Empty response with web_search enabled (finish_reason={result.finish_reason}). "
                     "Retrying without web search..."

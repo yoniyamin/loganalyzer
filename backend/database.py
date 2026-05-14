@@ -1,10 +1,10 @@
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
-import os
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "log_analyzer.db")
+from backend.paths import db_path
+
+DB_PATH = db_path()
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -257,6 +257,11 @@ class LLMConfig(Base):
     tavily_api_key_encrypted = Column(String, nullable=True)
     # Default model (provider-specific)
     default_model = Column(String, default="gemini-2.5-flash")
+    # LM Studio local server base URL
+    lmstudio_base_url = Column(String, nullable=True)
+    # LM Studio generation parameters (overrides client defaults when set)
+    lmstudio_temperature = Column(Float, nullable=True)   # default 0.3
+    lmstudio_max_tokens = Column(Integer, nullable=True)  # default 1500
     # Web search enabled for report generation
     web_search_enabled = Column(Boolean, default=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -405,7 +410,19 @@ def _migrate_llm_config():
         if 'web_search_enabled' not in columns:
             cursor.execute("ALTER TABLE llm_config ADD COLUMN web_search_enabled INTEGER DEFAULT 0")
             print("Migration: Added 'web_search_enabled' column to llm_config")
-        
+
+        if 'lmstudio_base_url' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_base_url TEXT")
+            print("Migration: Added 'lmstudio_base_url' column to llm_config")
+
+        if 'lmstudio_temperature' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_temperature REAL")
+            print("Migration: Added 'lmstudio_temperature' column to llm_config")
+
+        if 'lmstudio_max_tokens' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_max_tokens INTEGER")
+            print("Migration: Added 'lmstudio_max_tokens' column to llm_config")
+
         conn.commit()
         conn.close()
     except Exception as e:

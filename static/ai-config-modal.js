@@ -125,6 +125,11 @@ class AIConfigModal {
                                     <span class="provider-name">OpenRouter</span>
                                     <span class="provider-tag">Multi-Model</span>
                                 </button>
+                                <button type="button" class="ai-provider-btn" data-provider="lmstudio" id="btnLMStudio">
+                                    <span class="provider-icon">🖥️</span>
+                                    <span class="provider-name">LM Studio</span>
+                                    <span class="provider-tag local">Local</span>
+                                </button>
                             </div>
                         </div>
                         
@@ -147,6 +152,38 @@ class AIConfigModal {
                             </p>
                         </div>
                         
+                        <!-- LM Studio Section -->
+                        <div class="ai-form-group ai-lmstudio-section" id="lmstudioSection" style="display: none;">
+                            <label for="aiLMStudioUrl">LM Studio Server URL</label>
+                            <div class="ai-input-wrapper">
+                                <input type="text" id="aiLMStudioUrl" class="ai-input"
+                                       value="http://localhost:1234" placeholder="http://localhost:1234" autocomplete="off">
+                            </div>
+                            <p class="ai-help-text">
+                                In LM Studio: Developer tab → Start Server (default port 1234).
+                                <br><span style="color: #22c55e;">✓ No API key needed — runs fully locally.</span>
+                                <br><span style="color: #6b7280;">Tavily MCP configured in LM Studio is used automatically for web search.</span>
+                            </p>
+
+                            <!-- Model generation parameters -->
+                            <div class="ai-lmstudio-params">
+                                <div class="ai-param-row">
+                                    <div class="ai-param-group">
+                                        <label for="aiLMStudioTemp">Temperature</label>
+                                        <input type="number" id="aiLMStudioTemp" class="ai-input ai-param-input"
+                                               value="0.3" min="0" max="2" step="0.05" placeholder="0.3">
+                                        <p class="ai-help-text">Lower = more focused. 0.1–0.4 recommended for reports.</p>
+                                    </div>
+                                    <div class="ai-param-group">
+                                        <label for="aiLMStudioMaxTokens">Max Output Tokens</label>
+                                        <input type="number" id="aiLMStudioMaxTokens" class="ai-input ai-param-input"
+                                               value="1500" min="256" max="4096" step="128" placeholder="1500">
+                                        <p class="ai-help-text">Response length cap. Higher = more detail, slower.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- OpenRouter API Key Section -->
                         <div class="ai-form-group ai-openrouter-section" id="openrouterSection" style="display: none;">
                             <label for="aiApiKey">OpenRouter API Key</label>
@@ -334,6 +371,9 @@ class AIConfigModal {
         document.getElementById('btnOpenRouter').addEventListener('click', () => {
             this.switchProvider('openrouter');
         });
+        document.getElementById('btnLMStudio').addEventListener('click', () => {
+            this.switchProvider('lmstudio');
+        });
         
         // Toggle password visibility - Gemini
         document.getElementById('aiToggleGeminiKey').addEventListener('click', () => {
@@ -389,10 +429,13 @@ class AIConfigModal {
         // Update button states
         document.getElementById('btnGemini').classList.toggle('active', provider === 'gemini');
         document.getElementById('btnOpenRouter').classList.toggle('active', provider === 'openrouter');
+        document.getElementById('btnLMStudio').classList.toggle('active', provider === 'lmstudio');
         
         // Show/hide relevant sections
         document.getElementById('geminiSection').style.display = provider === 'gemini' ? 'block' : 'none';
         document.getElementById('openrouterSection').style.display = provider === 'openrouter' ? 'block' : 'none';
+        document.getElementById('lmstudioSection').style.display = provider === 'lmstudio' ? 'block' : 'none';
+        // Custom model route only makes sense for OpenRouter
         document.getElementById('customModelSection').style.display = provider === 'openrouter' ? 'block' : 'none';
         
         // Reload models for the selected provider
@@ -411,6 +454,19 @@ class AIConfigModal {
                 if (this.currentConfig.provider) {
                     this.selectedProvider = this.currentConfig.provider;
                     this.switchProvider(this.selectedProvider);
+                }
+                // Populate LM Studio fields
+                if (this.currentConfig.lmstudio_base_url) {
+                    const urlInput = document.getElementById('aiLMStudioUrl');
+                    if (urlInput) urlInput.value = this.currentConfig.lmstudio_base_url;
+                }
+                if (this.currentConfig.lmstudio_temperature != null) {
+                    const tempInput = document.getElementById('aiLMStudioTemp');
+                    if (tempInput) tempInput.value = this.currentConfig.lmstudio_temperature;
+                }
+                if (this.currentConfig.lmstudio_max_tokens != null) {
+                    const maxTokInput = document.getElementById('aiLMStudioMaxTokens');
+                    if (maxTokInput) maxTokInput.value = this.currentConfig.lmstudio_max_tokens;
                 }
                 this.updateStatusDisplay();
             }
@@ -533,6 +589,7 @@ class AIConfigModal {
         
         const geminiConfigured = this.currentConfig.gemini_configured;
         const openrouterConfigured = this.currentConfig.openrouter_configured;
+        const lmstudioConfigured = this.currentConfig.lmstudio_configured;
         const activeProvider = this.currentConfig.provider || 'gemini';
         
         // Update placeholders with key previews
@@ -546,22 +603,22 @@ class AIConfigModal {
             tavilyInput.placeholder = this.currentConfig.tavily_api_key_preview;
         }
         
-        // Check if the active provider is configured
-        const activeConfigured = (activeProvider === 'gemini' && geminiConfigured) || 
-                                 (activeProvider === 'openrouter' && openrouterConfigured);
+        // LM Studio is always "configured" — no key required
+        const activeConfigured = (activeProvider === 'gemini' && geminiConfigured) ||
+                                 (activeProvider === 'openrouter' && openrouterConfigured) ||
+                                 (activeProvider === 'lmstudio');
         
         if (activeConfigured) {
-            const providerName = activeProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
-            const keyPreview = activeProvider === 'gemini' 
-                ? this.currentConfig.gemini_api_key_preview 
-                : this.currentConfig.openrouter_api_key_preview;
-            
             statusDiv.className = 'ai-config-status configured';
             
-            // Build status text showing both providers
+            // Build status text showing all configured providers
             let statusParts = [];
             if (geminiConfigured) statusParts.push(`✨ Gemini: ${this.currentConfig.gemini_api_key_preview || '✓'}`);
             if (openrouterConfigured) statusParts.push(`🔀 OpenRouter: ${this.currentConfig.openrouter_api_key_preview || '✓'}`);
+            if (lmstudioConfigured || activeProvider === 'lmstudio') {
+                const lmUrl = this.currentConfig.lmstudio_base_url || 'localhost:1234';
+                statusParts.push(`🖥️ LM Studio: ${lmUrl}`);
+            }
             if (this.currentConfig.tavily_configured) statusParts.push(`🌐 Tavily: ${this.currentConfig.tavily_api_key_preview || '✓'}`);
             
             statusDiv.innerHTML = `
@@ -572,14 +629,18 @@ class AIConfigModal {
                 <span>${statusParts.join(' • ') || 'Configured'}</span>
             `;
         } else {
-            // Active provider not configured but maybe the other one is
-            const providerName = activeProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+            // Active provider not configured but maybe another one is
+            let providerName;
+            if (activeProvider === 'gemini') providerName = 'Gemini';
+            else if (activeProvider === 'openrouter') providerName = 'OpenRouter';
+            else providerName = 'LM Studio';
+
             statusDiv.className = 'ai-config-status not-configured';
             
             let message = `${providerName} API key not configured`;
             if (geminiConfigured || openrouterConfigured) {
-                const otherProvider = activeProvider === 'gemini' ? 'OpenRouter' : 'Gemini';
-                message += ` (${otherProvider} is configured)`;
+                const configured = geminiConfigured ? 'Gemini' : 'OpenRouter';
+                message += ` (${configured} is configured)`;
             }
             
             statusDiv.innerHTML = `
@@ -595,10 +656,12 @@ class AIConfigModal {
     async testConnection() {
         const resultDiv = document.getElementById('aiTestResult');
         
-        // Get API key based on selected provider
-        const apiKey = this.selectedProvider === 'gemini' 
-            ? document.getElementById('aiGeminiKey').value
-            : document.getElementById('aiApiKey').value;
+        // Get API key based on selected provider (not applicable for LM Studio)
+        const isLMStudio = this.selectedProvider === 'lmstudio';
+        const apiKey = isLMStudio ? null
+            : this.selectedProvider === 'gemini'
+                ? document.getElementById('aiGeminiKey').value
+                : document.getElementById('aiApiKey').value;
         
         // Show loading
         resultDiv.style.display = 'flex';
@@ -606,8 +669,21 @@ class AIConfigModal {
         resultDiv.innerHTML = '<div class="ai-spinner"></div> Testing connection...';
         
         try {
-            // Save the key first if entered
-            if (apiKey) {
+            // For cloud providers: save the key first if entered.
+            // For LM Studio: save the URL so the backend uses the latest value.
+            if (isLMStudio) {
+                const lmUrl = document.getElementById('aiLMStudioUrl')?.value.trim() || 'http://localhost:1234';
+                const testPayload = { provider: 'lmstudio', lmstudio_base_url: lmUrl };
+                const rawTemp = parseFloat(document.getElementById('aiLMStudioTemp')?.value);
+                if (!isNaN(rawTemp)) testPayload.lmstudio_temperature = rawTemp;
+                const rawMaxTok = parseInt(document.getElementById('aiLMStudioMaxTokens')?.value, 10);
+                if (!isNaN(rawMaxTok)) testPayload.lmstudio_max_tokens = rawMaxTok;
+                await fetch('/api/llm/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(testPayload)
+                });
+            } else if (apiKey) {
                 const savePayload = {
                     provider: this.selectedProvider,
                     default_model: document.getElementById('aiDefaultModel').value
@@ -674,11 +750,13 @@ class AIConfigModal {
         // Use custom model if provided (OpenRouter only), otherwise use dropdown selection
         const modelToUse = (this.selectedProvider === 'openrouter' && customModel) ? customModel : defaultModel;
         
-        // Validate that selected provider has a key
+        // Validate that selected provider has a key (LM Studio never needs one)
         const isGemini = this.selectedProvider === 'gemini';
-        const isConfigured = isGemini ? 
-            (geminiKey || this.currentConfig?.gemini_configured) :
-            (openrouterKey || this.currentConfig?.openrouter_configured);
+        const isLMStudio = this.selectedProvider === 'lmstudio';
+        const isConfigured = isLMStudio ? true
+            : isGemini
+                ? (geminiKey || this.currentConfig?.gemini_configured)
+                : (openrouterKey || this.currentConfig?.openrouter_configured);
         
         if (!isConfigured) {
             window.showModal('API Key Required', `<p>Please enter a ${isGemini ? 'Gemini' : 'OpenRouter'} API key to continue.</p>`, null);
@@ -707,6 +785,14 @@ class AIConfigModal {
             }
             if (openrouterKey) {
                 payload.openrouter_api_key = openrouterKey;
+            }
+            // LM Studio: include base URL and generation parameters
+            if (isLMStudio) {
+                payload.lmstudio_base_url = document.getElementById('aiLMStudioUrl')?.value.trim() || 'http://localhost:1234';
+                const rawTemp = parseFloat(document.getElementById('aiLMStudioTemp')?.value);
+                if (!isNaN(rawTemp)) payload.lmstudio_temperature = rawTemp;
+                const rawMaxTok = parseInt(document.getElementById('aiLMStudioMaxTokens')?.value, 10);
+                if (!isNaN(rawMaxTok)) payload.lmstudio_max_tokens = rawMaxTok;
             }
             
             const response = await fetch('/api/llm/config', {
@@ -787,26 +873,16 @@ class AIConfigModal {
     
     updateProviderSectionVisibility() {
         const aiEnabled = document.getElementById('aiEnabled')?.checked ?? true;
-        const providerSection = document.getElementById('providerSection');
-        const geminiSection = document.getElementById('geminiSection');
-        const openrouterSection = document.getElementById('openrouterSection');
-        const customModelSection = document.getElementById('customModelSection');
-        
-        if (providerSection) {
-            providerSection.style.opacity = aiEnabled ? '1' : '0.5';
-            providerSection.style.pointerEvents = aiEnabled ? 'auto' : 'none';
-        }
-        if (geminiSection) {
-            geminiSection.style.opacity = aiEnabled ? '1' : '0.5';
-            geminiSection.style.pointerEvents = aiEnabled ? 'auto' : 'none';
-        }
-        if (openrouterSection) {
-            openrouterSection.style.opacity = aiEnabled ? '1' : '0.5';
-            openrouterSection.style.pointerEvents = aiEnabled ? 'auto' : 'none';
-        }
-        if (customModelSection) {
-            customModelSection.style.opacity = aiEnabled ? '1' : '0.5';
-            customModelSection.style.pointerEvents = aiEnabled ? 'auto' : 'none';
+        const sections = [
+            'providerSection', 'geminiSection', 'openrouterSection',
+            'lmstudioSection', 'customModelSection'
+        ];
+        for (const id of sections) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.style.opacity = aiEnabled ? '1' : '0.5';
+                el.style.pointerEvents = aiEnabled ? 'auto' : 'none';
+            }
         }
     }
     

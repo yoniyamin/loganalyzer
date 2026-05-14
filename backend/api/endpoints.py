@@ -10,12 +10,11 @@ from datetime import datetime
 from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, LogOracleRedoRead, LogOracleRedoLogSession, UserSettings
 from backend.core.indexer import process_log_file
 from backend.core.reader import LogReader
+from backend.paths import upload_dir
 
 router = APIRouter()
 
-UPLOAD_DIR = "uploads"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+UPLOAD_DIR = upload_dir()
 
 class FilePathRequest(BaseModel):
     path: str

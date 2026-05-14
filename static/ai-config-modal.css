@@ -406,12 +406,21 @@
     color: #22c55e;
 }
 
+.ai-provider-btn .provider-tag.local {
+    background: rgba(139, 92, 246, 0.2);
+    color: #a78bfa;
+}
+
 .ai-provider-btn.active .provider-tag {
     background: rgba(137, 180, 250, 0.2);
 }
 
 .ai-provider-btn.active .provider-tag.free {
     background: rgba(34, 197, 94, 0.3);
+}
+
+.ai-provider-btn.active .provider-tag.local {
+    background: rgba(139, 92, 246, 0.3);
 }
 
 /* Checkbox Label Style */
@@ -643,4 +652,29 @@
 .ai-entity-replacement {
     font-family: monospace;
     color: #a5b4fc;
+}
+
+/* LM Studio model parameter row */
+.ai-lmstudio-params {
+    margin-top: 12px;
+    border-top: 1px solid var(--border-color, #313244);
+    padding-top: 12px;
+}
+
+.ai-param-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.ai-param-group label {
+    font-size: 0.82rem;
+    color: var(--text-secondary, #a6adc8);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.ai-param-input {
+    width: 100%;
+    text-align: right;
 }
