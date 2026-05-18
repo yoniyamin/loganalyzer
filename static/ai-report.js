@@ -17,7 +17,8 @@ class AIReportManager {
         this.hasReport = false;
         this.autoGenerateEnabled = true;
         this._timerInterval = null;
-        
+        this.currentProvider = 'gemini';
+
         this.init();
     }
     
@@ -41,6 +42,9 @@ class AIReportManager {
         if (window.aiConfigModal) {
             window.aiConfigModal.onConfigSaved = (config) => {
                 this.isConfigured = config.is_configured;
+                if (config.provider) {
+                    this.currentProvider = String(config.provider).toLowerCase();
+                }
                 this.renderSection();
                 // Auto-generate if we have a file and just got configured
                 if (this.isConfigured && this.currentFileId && !this.hasReport) {
@@ -103,6 +107,15 @@ class AIReportManager {
         }
     }
     
+    async syncProviderFromServer() {
+        await this.checkConfig();
+        await this.loadModels();
+    }
+
+    _isLMStudioActive() {
+        return (this.currentProvider || '').toLowerCase() === 'lmstudio';
+    }
+
     async loadModels() {
         try {
             // Models are loaded based on current provider config
@@ -110,7 +123,7 @@ class AIReportManager {
             if (response.ok) {
                 const data = await response.json();
                 this.models = data.models;
-                this.currentProvider = data.provider || 'gemini';
+                this.currentProvider = (data.provider || 'gemini').toLowerCase();
             }
         } catch (error) {
             console.error('Failed to load models:', error);
@@ -125,6 +138,7 @@ class AIReportManager {
                 this.isConfigured = config.is_configured;
                 this.defaultModel = config.default_model || null;
                 this.webSearchEnabled = config.web_search_enabled || false;
+                this.currentProvider = (config.provider || 'gemini').toLowerCase();
             }
         } catch (error) {
             this.isConfigured = false;
@@ -160,6 +174,7 @@ class AIReportManager {
                             <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240zM384 384l-56.5 21.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 448l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 448l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 384l-21.2-56.5c-1.7-4.5-6-7.5-10.8-7.5s-9.1 3-10.8 7.5L384 384z"/>
                         </svg>
                         Insights Report
+                        <span class="ai-report-type-badge" id="aiReportTypeBadge"></span>
                     </h3>
                     <div class="ai-report-controls">
                         <div class="ai-history-dropdown" id="aiHistoryDropdown" style="display: none;">
@@ -238,6 +253,10 @@ class AIReportManager {
                 <div class="ai-loading-spinner"></div>
                 <p>Auto-generating AI insights...</p>
                 <div class="ai-generation-timer" id="aiGenerationTimer">0s</div>
+                <div class="ai-progress-status">
+                    <span class="ai-progress-phase" id="aiProgressPhase">Preparing</span>
+                    <span class="ai-progress-detail" id="aiProgressDetail"></span>
+                </div>
                 <div class="cost-estimate">Using default model settings</div>
             </div>
         `;
@@ -524,9 +543,9 @@ class AIReportManager {
         this._timerInterval = setInterval(() => {
             this._syncTimerDisplay();
         }, 1000);
+        this._startProgressPolling();
     }
 
-    /** Update #aiGenerationTimer from _timerStart without resetting the start time (used after tab switches re-mount the DOM). */
     _syncTimerDisplay() {
         const el = document.getElementById('aiGenerationTimer');
         if (!el || this._timerStart == null) return;
@@ -539,14 +558,150 @@ class AIReportManager {
             clearInterval(this._timerInterval);
             this._timerInterval = null;
         }
+        this._stopProgressPolling();
+    }
+
+    _startProgressPolling() {
+        this._stopProgressPolling();
+        if (!this.currentFileId) return;
+        this._progressInterval = setInterval(() => this._pollProgress(), 2500);
+    }
+
+    _stopProgressPolling() {
+        if (this._progressInterval) {
+            clearInterval(this._progressInterval);
+            this._progressInterval = null;
+        }
+    }
+
+    async _pollProgress() {
+        if (!this.currentFileId || !this.isGenerating) return;
+        try {
+            const resp = await fetch(`/api/llm/report/${this.currentFileId}/progress`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data || data.phase === 'idle') return;
+            this._updateProgressUI(data);
+        } catch (e) {
+            // Ignore polling errors
+        }
+    }
+
+    _updateProgressUI(progress) {
+        const detailEl = document.getElementById('aiProgressDetail');
+        const phaseEl = document.getElementById('aiProgressPhase');
+        if (!detailEl && !phaseEl) return;
+
+        const phaseLabels = {
+            preparing: 'Preparing',
+            building_prompt: 'Building prompt',
+            generating: 'Generating',
+            done: 'Finalizing',
+            error: 'Error',
+        };
+        const label = phaseLabels[progress.phase] || progress.phase;
+
+        if (phaseEl) phaseEl.textContent = label;
+        if (detailEl) {
+            let detail = progress.detail || '';
+            if (progress.phase === 'generating' && progress.est_prompt_tokens) {
+                detail = `Sent ~${progress.est_prompt_tokens.toLocaleString()} tokens to ${progress.provider || 'model'}`;
+                if (progress.model && progress.model !== 'default') {
+                    const short = progress.model.includes('/') ? progress.model.split('/').pop() : progress.model;
+                    detail += ` (${short})`;
+                }
+            }
+            detailEl.textContent = detail;
+        }
+    }
+
+    /**
+     * Show a focus mode selection dialog. Returns a Promise that resolves
+     * to the chosen focus_mode string, or null if the user cancels.
+     */
+    _showFocusDialog() {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.className = 'ai-focus-overlay';
+            overlay.innerHTML = `
+                <div class="ai-focus-dialog">
+                    <h3>Choose Analysis Focus</h3>
+                    <p class="ai-focus-subtitle">This log has no errors or performance data. What would you like the report to focus on?</p>
+                    <div class="ai-focus-options">
+                        <button class="ai-focus-option" data-focus="general_review">
+                            <span class="ai-focus-icon">📋</span>
+                            <span class="ai-focus-label">General Review</span>
+                            <span class="ai-focus-desc">Health, drivers, connectivity, configuration overview</span>
+                        </button>
+                        <button class="ai-focus-option" data-focus="performance">
+                            <span class="ai-focus-icon">⚡</span>
+                            <span class="ai-focus-label">Performance Analysis</span>
+                            <span class="ai-focus-desc">Throughput, batch efficiency, tuning opportunities</span>
+                        </button>
+                        <button class="ai-focus-option" data-focus="errors">
+                            <span class="ai-focus-icon">🔍</span>
+                            <span class="ai-focus-label">Error Analysis</span>
+                            <span class="ai-focus-desc">Warnings, latent risks, preventive recommendations</span>
+                        </button>
+                        <button class="ai-focus-option" data-focus="configuration">
+                            <span class="ai-focus-icon">⚙️</span>
+                            <span class="ai-focus-label">Configuration Review</span>
+                            <span class="ai-focus-desc">Settings, best practices, optimization opportunities</span>
+                        </button>
+                    </div>
+                    <button class="ai-focus-cancel">Cancel</button>
+                </div>
+            `;
+
+            overlay.querySelector('.ai-focus-cancel').addEventListener('click', () => {
+                overlay.remove();
+                resolve(null);
+            });
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) { overlay.remove(); resolve(null); }
+            });
+            overlay.querySelectorAll('.ai-focus-option').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const mode = btn.dataset.focus;
+                    overlay.remove();
+                    resolve(mode);
+                });
+            });
+
+            document.body.appendChild(overlay);
+        });
     }
 
     async generateReport(regenerate = false) {
         if (!this.currentFileId) return;
         
+        await this.syncProviderFromServer();
+
+        // Preflight: check if data is sparse and ask for focus
+        let focusMode = null;
+        try {
+            const pf = await fetch(`/api/llm/report/${this.currentFileId}/preflight`);
+            if (pf.ok) {
+                const pfData = await pf.json();
+                if (pfData.needs_focus) {
+                    focusMode = await this._showFocusDialog();
+                    if (focusMode === null) return; // User cancelled
+                }
+            }
+        } catch (e) {
+            // Preflight failed — proceed without focus
+        }
+        this._currentFocusMode = focusMode;
+
         this._manualGeneration = true;
         const body = document.getElementById('aiReportBody');
         const generateBtn = document.getElementById('aiGenerateBtn');
+        if (!body || !generateBtn) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('Open the Resources tab (Insights) to generate a report.', 'warning', 3500);
+            }
+            return;
+        }
         
         // Hide meta info during generation
         const metaInline = document.getElementById('aiReportMetaInline');
@@ -566,13 +721,17 @@ class AIReportManager {
                 <div class="ai-loading-spinner"></div>
                 <p>Generating AI insights...</p>
                 <div class="ai-generation-timer" id="aiGenerationTimer">0s</div>
+                <div class="ai-progress-status">
+                    <span class="ai-progress-phase" id="aiProgressPhase">Preparing</span>
+                    <span class="ai-progress-detail" id="aiProgressDetail"></span>
+                </div>
                 <div class="cost-estimate" id="aiCostEstimate">Estimating cost...</div>
             </div>
         `;
 
         // Toast: provider-aware start notification (persistent until done)
         if (typeof window.showToast === 'function') {
-            const isLocal = this.currentProvider === 'lmstudio';
+            const isLocal = this._isLMStudioActive();
             const msg = isLocal
                 ? '⏳ Generating report with local model — may take 30–120 s'
                 : '⚡ Generating report…';
@@ -608,7 +767,8 @@ class AIReportManager {
                 body: JSON.stringify({
                     regenerate: regenerate,
                     quick: false,
-                    web_search: this.webSearchEnabled || false
+                    web_search: this.webSearchEnabled || false,
+                    focus_mode: this._currentFocusMode || null
                 })
             });
             
@@ -636,13 +796,8 @@ class AIReportManager {
         } finally {
             this._stopTimer();
             this.isGenerating = false;
-            generateBtn.disabled = false;
-            generateBtn.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-                </svg>
-                Generate Report
-            `;
+            // Always query fresh node: renderSection() may have replaced the DOM (tab switch, config save)
+            this._resetGenerateButtonHtml();
         }
     }
     
@@ -655,7 +810,26 @@ class AIReportManager {
         window.dispatchEvent(new CustomEvent('aiReportReady', { 
             detail: { fileId: this.currentFileId, report: report, manual: this._manualGeneration || false }
         }));
-        
+
+        // Show report type badge when a focus mode was used
+        const typeBadge = document.getElementById('aiReportTypeBadge');
+        if (typeBadge) {
+            const focusLabels = {
+                general_review: 'General Review',
+                performance: 'Performance Analysis',
+                errors: 'Error Analysis',
+                configuration: 'Configuration Review',
+            };
+            const label = focusLabels[report.focus_mode];
+            if (label) {
+                typeBadge.textContent = label;
+                typeBadge.style.display = 'inline-block';
+            } else {
+                typeBadge.textContent = '';
+                typeBadge.style.display = 'none';
+            }
+        }
+
         // Update header meta info
         const metaInline = document.getElementById('aiReportMetaInline');
         const metaModel = document.getElementById('metaModelInline');
@@ -798,6 +972,8 @@ class AIReportManager {
     
     showError(message) {
         const body = document.getElementById('aiReportBody');
+        this.updateStatusBadge('error', message);
+        if (!body) return;
         body.innerHTML = `
             <div class="ai-report-placeholder" style="color: #f38ba8;">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -847,9 +1023,8 @@ class AIReportManager {
         html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
         html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
         
-        // Horizontal rules
-        html = html.replace(/^---+$/gm, '<hr>');
-        html = html.replace(/^\*\*\*+$/gm, '<hr>');
+        // Horizontal rules (allow spaces; don’t rely on --- only)
+        html = html.replace(/^[\t ]*(?:-{3,}|\*{3,}|_{3,})[\t ]*$/gm, '<hr>');
         
         // Blockquotes
         html = html.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
@@ -959,7 +1134,7 @@ class AIReportManager {
      */
     async autoGenerate() {
         if (!this.currentFileId || this.isGenerating) return;
-        await this.checkConfig();
+        await this.syncProviderFromServer();
         if (!this.isConfigured || !this.autoGenerateEnabled) return;
         this._manualGeneration = false;
 
@@ -988,9 +1163,19 @@ class AIReportManager {
                 // No cache, generate below
             }
 
+            // Preflight: auto-gen defaults to general_review when data is sparse
+            let autoFocus = null;
+            try {
+                const pf = await fetch(`/api/llm/report/${this.currentFileId}/preflight`);
+                if (pf.ok) {
+                    const pfData = await pf.json();
+                    if (pfData.needs_focus) autoFocus = 'general_review';
+                }
+            } catch (e) { /* proceed without focus */ }
+
             // No cached report — show start toast before the POST
             if (typeof window.showToast === 'function') {
-                const isLocal = this.currentProvider === 'lmstudio';
+                const isLocal = this._isLMStudioActive();
                 const msg = isLocal
                     ? '⏳ Generating report with local model — may take 30–120 s'
                     : '⚡ Generating report…';
@@ -1003,8 +1188,10 @@ class AIReportManager {
                 body: JSON.stringify({
                     model: null,
                     regenerate: false,
-                    quick: false
-                })
+                    quick: false,
+                    web_search: this.webSearchEnabled || false,
+                    focus_mode: autoFocus,
+                }),
             });
 
             if (response.ok) {

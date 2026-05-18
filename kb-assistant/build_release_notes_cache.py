@@ -12,10 +12,16 @@ import json
 import hashlib
 import re
 import logging
+import sys
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from backend.release_notes_eol import parse_eol_entries_from_release_note_text
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -125,35 +131,7 @@ def _parse_recob_entries(text: str) -> list[dict]:
 
 
 def _parse_eol_entries(text: str) -> list[dict]:
-    entries = []
-    lines = text.split('\n')
-    capture = False
-    section_count = 0
-    for line in lines:
-        lower = line.lower().strip()
-        if any(kw in lower for kw in ("has been discontinued", "no longer supported", "end of support")):
-            capture = True
-            section_count = 0
-            continue
-        if capture:
-            if not lower or lower.startswith(("resolved", "known", "downloads", "what", "migration")):
-                capture = False
-                continue
-            if section_count >= 20:
-                capture = False
-                continue
-            stripped = line.strip()
-            if len(stripped) > 3:
-                section_count += 1
-                entries.append({
-                    "entry_type": "End of Support",
-                    "description": stripped,
-                    "component": "",
-                    "fix_id": "",
-                    "salesforce_case": "",
-                    "source": "chromadb",
-                })
-    return entries
+    return parse_eol_entries_from_release_note_text(text, task_endpoint_keys=None)
 
 
 def main():

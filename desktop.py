@@ -6,6 +6,8 @@ import os
 import time
 import logging
 import urllib.request
+import subprocess
+import platform
 from backend.main import app
 
 # Configure logging to avoid clutter in the console
@@ -51,6 +53,35 @@ class Api:
                 print(f"Error saving file: {e}")
                 return False
         return False
+
+    def open_log_folder(self, file_path):
+        """Open the folder containing the log in the system file manager (desktop app only)."""
+        if not file_path or not isinstance(file_path, str):
+            return False
+        raw = file_path.strip().strip('"').strip("'")
+        path = os.path.normpath(raw)
+        if not path or not os.path.exists(path):
+            return False
+
+        try:
+            system = platform.system()
+            if system == "Windows":
+                if os.path.isfile(path):
+                    subprocess.Popen(["explorer", "/select,", path])
+                else:
+                    subprocess.Popen(["explorer", path])
+            elif system == "Darwin":
+                if os.path.isfile(path):
+                    subprocess.Popen(["open", "-R", path])
+                else:
+                    subprocess.Popen(["open", path])
+            else:
+                folder = os.path.dirname(path) if os.path.isfile(path) else path
+                subprocess.Popen(["xdg-open", folder])
+            return True
+        except Exception as e:
+            print(f"open_log_folder: {e}")
+            return False
 
 def start_server():
     """Run uvicorn server."""

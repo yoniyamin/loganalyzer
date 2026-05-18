@@ -125,7 +125,7 @@ class LMStudioClient:
                 description = f"Loaded — {params} params, context {inst_ctx:,}" if params else f"Loaded — context {inst_ctx:,}"
                 info = ModelInfo(
                     id=model_id,
-                    name=f"✓ {display_name}",
+                    name=f"{display_name} (loaded)",
                     description=description,
                     context_length=inst_ctx,
                     prompt_price=0.0,
@@ -209,14 +209,15 @@ class LMStudioClient:
         """
         input_text = self._convert_messages_to_input(messages)
 
+        # Size the KV window for the full prompt + completion. LM Studio defaults
+        # to small contexts (e.g. 4096) which truncates long structured prompts.
+        est_prompt_tokens = max(len(input_text) // 4 + 1024, 3072)
+        ctx_len = min(max(est_prompt_tokens + max_tokens + 1024, 8192), 65536)
+
         payload: Dict[str, Any] = {
             "input": input_text,
             "temperature": temperature,
-            # context_length = total KV window (prompt + output).
-            # Prompt for a full report is ~1 500-2 000 tokens; add max_tokens for the
-            # output and a small buffer.  Keep this tight to reduce KV cache allocation
-            # time and VRAM usage on integrated GPUs.
-            "context_length": max(max_tokens + 2500, 4096),
+            "context_length": ctx_len,
         }
         if model:
             payload["model"] = model

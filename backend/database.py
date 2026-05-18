@@ -264,6 +264,8 @@ class LLMConfig(Base):
     lmstudio_max_tokens = Column(Integer, nullable=True)  # default 1500
     # Web search enabled for report generation
     web_search_enabled = Column(Boolean, default=False)
+    # Redact log-derived prompt content before Gemini/OpenRouter (ignored for LM Studio)
+    sanitize_log_for_cloud_llm = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -422,6 +424,10 @@ def _migrate_llm_config():
         if 'lmstudio_max_tokens' not in columns:
             cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_max_tokens INTEGER")
             print("Migration: Added 'lmstudio_max_tokens' column to llm_config")
+
+        if 'sanitize_log_for_cloud_llm' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN sanitize_log_for_cloud_llm INTEGER DEFAULT 1")
+            print("Migration: Added 'sanitize_log_for_cloud_llm' column to llm_config")
 
         conn.commit()
         conn.close()

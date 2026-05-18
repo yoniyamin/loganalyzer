@@ -17,6 +17,11 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from backend.release_notes_eol import parse_eol_entries_from_release_note_text
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import CHROMA_PERSIST_DIR
@@ -207,36 +212,7 @@ def _parse_recob_entries(text: str) -> list[dict]:
 
 
 def _parse_eol_entries(text: str) -> list[dict]:
-    """Extract End of Life / End of Support items from release notes."""
-    entries = []
-    lines = text.split('\n')
-    capture = False
-    section_count = 0
-    for ln in lines:
-        lower = ln.lower().strip()
-        if any(kw in lower for kw in ("has been discontinued", "no longer supported", "end of support")):
-            capture = True
-            section_count = 0
-            continue
-        if capture:
-            if not lower or lower.startswith(("resolved", "known", "downloads", "what", "migration")):
-                capture = False
-                continue
-            if section_count >= 20:
-                capture = False
-                continue
-            stripped = ln.strip()
-            if len(stripped) > 3:
-                section_count += 1
-                entries.append({
-                    "entry_type": "End of Support",
-                    "description": stripped,
-                    "component": "",
-                    "fix_id": "",
-                    "salesforce_case": "",
-                    "source": "chromadb",
-                })
-    return entries
+    return parse_eol_entries_from_release_note_text(text, task_endpoint_keys=None)
 
 
 def _build_json_cache(all_articles: list[dict]):

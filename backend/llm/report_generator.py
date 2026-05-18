@@ -40,6 +40,35 @@ PROVIDER_GEMINI = "gemini"
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_LMSTUDIO = "lmstudio"
 
+# ---------------------------------------------------------------------------
+# In-memory progress tracking (keyed by file_id)
+# ---------------------------------------------------------------------------
+import threading
+import time as _time
+
+_progress_lock = threading.Lock()
+_progress_store: Dict[int, Dict[str, Any]] = {}
+
+
+def set_progress(file_id: int, phase: str, detail: str = "", **extra):
+    with _progress_lock:
+        _progress_store[file_id] = {
+            "phase": phase,
+            "detail": detail,
+            "updated_at": _time.time(),
+            **extra,
+        }
+
+
+def get_progress(file_id: int) -> Optional[Dict[str, Any]]:
+    with _progress_lock:
+        return _progress_store.get(file_id)
+
+
+def clear_progress(file_id: int):
+    with _progress_lock:
+        _progress_store.pop(file_id, None)
+
 
 class ReportGenerator:
     """
@@ -78,13 +107,18 @@ class ReportGenerator:
         
         # Get provider preference from config; sync LM Studio URL and parameters
         config = self.db.query(LLMConfig).first()
-        self.provider = config.provider if config else PROVIDER_GEMINI
+        self.provider = (config.provider or PROVIDER_GEMINI).strip().lower() if config else PROVIDER_GEMINI
         if config and self.provider == PROVIDER_LMSTUDIO:
             lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
             self.lmstudio_client.set_base_url(lmstudio_url)
         # Store user-configured overrides (None = use hardcoded defaults)
         self.lmstudio_temperature: Optional[float] = getattr(config, "lmstudio_temperature", None) if config else None
         self.lmstudio_max_tokens: Optional[int] = getattr(config, "lmstudio_max_tokens", None) if config else None
+        if self.provider == PROVIDER_LMSTUDIO:
+            self.sanitize_log_payload = False
+        else:
+            cloud_raw = getattr(config, "sanitize_log_for_cloud_llm", True) if config else True
+            self.sanitize_log_payload = bool(cloud_raw) if cloud_raw is not None else True
     
     def get_file_info(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get basic file information."""
@@ -99,6 +133,23 @@ class ReportGenerator:
             "line_count": file.line_count,
             "status": file.status
         }
+    
+    def _sanitize_log_bundle(
+        self,
+        summary: Dict[str, Any],
+        merged_errors: List[str],
+        anomalies: List[str],
+        file_info: Optional[Dict[str, Any]],
+    ):
+        """Apply PII redaction to report prompt inputs when `sanitize_log_payload` is enabled."""
+        if self.sanitize_log_payload:
+            return (
+                sanitize_dict(summary),
+                sanitize_list(merged_errors),
+                sanitize_list(anomalies),
+                sanitize_dict(file_info) if file_info else None,
+            )
+        return summary, merged_errors, anomalies, file_info
     
     def build_performance_summary(self, file_id: int) -> Dict[str, Any]:
         """
@@ -370,6 +421,75 @@ class ReportGenerator:
 
         return {"source": source_type, "target": target_type}
 
+    def _sqlite_error_excerpts(self, file_id: int, limit: int = 40) -> List[str]:
+        """Structured error lines from SQLite (always include in LLM prompt)."""
+        rows = (
+            self.db.query(LogError)
+            .filter(LogError.file_id == file_id)
+            .order_by(LogError.line_number.asc())
+            .limit(limit)
+            .all()
+        )
+        out: List[str] = []
+        for e in rows:
+            body = (e.text or "").strip()
+            if not body:
+                continue
+            ts = e.timestamp.strftime("%Y-%m-%d %H:%M:%S") if e.timestamp else ""
+            comp = e.component or "UNKNOWN"
+            line = e.line_number if e.line_number is not None else "?"
+            body_one = " ".join(body.split())
+            if len(body_one) > 3500:
+                body_one = body_one[:3497] + "..."
+            out.append(f"LINE {line} | {ts} | {comp}\n{body_one}")
+        return out
+
+    def merge_error_contexts(
+        self,
+        file_id: int,
+        rag_errors: Optional[List[str]],
+        cap: int = 30,
+    ) -> List[str]:
+        """Prefer SQLite rows (full text + line) then unique RAG chunks."""
+        primary = self._sqlite_error_excerpts(file_id)
+        merged: List[str] = []
+        seen: set[str] = set()
+        for block in primary + (rag_errors or []):
+            if not block or not str(block).strip():
+                continue
+            key = str(block)[:240].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(str(block))
+            if len(merged) >= cap:
+                break
+        return merged
+
+    def _distinct_error_snippets(self, file_id: int, max_snippets: int = 6) -> List[str]:
+        """Short unique message snippets to drive KB / semantic search."""
+        rows = (
+            self.db.query(LogError)
+            .filter(LogError.file_id == file_id)
+            .order_by(LogError.line_number.asc())
+            .limit(45)
+            .all()
+        )
+        out: List[str] = []
+        seen: set[str] = set()
+        for r in rows:
+            t = (r.text or "").strip().replace("\n", " ")
+            if len(t) < 18:
+                continue
+            sig = t[:80].lower()
+            if sig in seen:
+                continue
+            seen.add(sig)
+            out.append(t[:240])
+            if len(out) >= max_snippets:
+                break
+        return out
+
     def get_release_notes_context(
         self,
         file_id: int,
@@ -490,22 +610,34 @@ class ReportGenerator:
         if target_type:
             queries.append(f"Qlik Replicate {target_type} target")
 
+        for snippet in self._distinct_error_snippets(file_id, max_snippets=6):
+            queries.append(f'Qlik Replicate troubleshooting "{snippet}"')
+
         error_summary = summary.get("error_summary", {})
         if error_summary.get("by_component"):
             top = sorted(error_summary["by_component"].items(), key=lambda x: x[1], reverse=True)[:3]
             for comp, _ in top:
                 queries.append(f"Qlik Replicate {comp} error troubleshooting")
 
-        has_perf_issues = (
+        if summary.get("cdc_pipeline", {}).get("memory_warnings", 0) > 0:
+            queries.append("Qlik Replicate sorter CDC memory warning troubleshooting")
+
+        lp_dp = (summary.get("latency_profile") or {}).get("data_points", 0) or 0
+        has_latency_telemetry = lp_dp > 0
+        if has_latency_telemetry and (
             summary.get("spikes", {}).get("count", 0) > 0
             or summary.get("plateaus", {}).get("count", 0) > 0
-            or summary.get("bottleneck", {}).get("primary", "unknown") != "unknown"
-        )
-        if has_perf_issues:
-            bottleneck = summary.get("bottleneck", {}).get("primary", "")
+            or summary.get("bottleneck", {}).get("primary", "unknown") not in ("unknown", "balanced", "")
+        ):
+            bottleneck = summary.get("bottleneck", {}).get("primary", "") or ""
             queries.append(f"Qlik Replicate high latency {bottleneck} performance troubleshooting")
-            if summary.get("cdc_pipeline", {}).get("memory_warnings", 0) > 0:
-                queries.append("Qlik Replicate memory pressure CDC")
+
+        if (
+            summary.get("oracle_redo_read_analysis") or {}
+        ).get("has_red_flags") or (
+            summary.get("oracle_redo_log_processing") or {}
+        ).get("session_count", 0) > 0:
+            queries.append("Qlik Replicate Oracle source redo archived log performance")
 
         if not queries:
             queries = ["Qlik Replicate troubleshooting"]
@@ -513,7 +645,7 @@ class ReportGenerator:
         results = []
         seen_urls = set()
 
-        for q in queries[:5]:
+        for q in queries[:12]:
             try:
                 hits = self.vector_store.query_kb(query=q, n_results=4)
                 for h in hits:
@@ -577,12 +709,20 @@ class ReportGenerator:
         summary = self.build_performance_summary(file_id)
         file_info = self.get_file_info(file_id)
         context = self.get_rag_context(file_id)
-        
+        merged_errors = self.merge_error_contexts(file_id, context.get("errors", []))
+        sd, ec, ac, fi = self._sanitize_log_bundle(
+            summary,
+            merged_errors,
+            context.get("anomalies", []),
+            file_info,
+        )
         messages = get_messages_for_analysis(
-            summary_data=sanitize_dict(summary),
-            error_contexts=sanitize_list(context.get("errors", [])),
-            anomaly_contexts=sanitize_list(context.get("anomalies", [])),
-            file_info=sanitize_dict(file_info) if file_info else None
+            summary_data=sd,
+            error_contexts=ec,
+            anomaly_contexts=ac,
+            file_info=fi,
+            sanitize_log_payload=self.sanitize_log_payload,
+            compact=self.provider == PROVIDER_LMSTUDIO,
         )
         
         prompt_tokens = count_prompt_tokens(messages)
@@ -598,7 +738,8 @@ class ReportGenerator:
         file_id: int,
         model: Optional[str] = None,
         quick: bool = False,
-        web_search: bool = False
+        web_search: bool = False,
+        focus_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate an LLM analysis report for a log file.
@@ -608,6 +749,7 @@ class ReportGenerator:
             model: Model to use (defaults to configured default)
             quick: If True, generate a quick summary instead of full report
             web_search: If True, enable web search for additional context
+            focus_mode: Optional analysis focus (general_review, performance, errors, configuration)
         
         Returns:
             Report result dictionary
@@ -625,7 +767,8 @@ class ReportGenerator:
                 model = DEFAULT_MODEL
         
         logger.info(f"Starting report generation for file_id={file_id}, provider={self.provider}, model={model}, quick={quick}")
-        
+        set_progress(file_id, "preparing", "Collecting log data and building context...")
+
         # Check if the appropriate client is configured
         if use_gemini:
             if not self.gemini_client.is_configured:
@@ -676,6 +819,8 @@ class ReportGenerator:
             logger.warning(f"Error getting RAG context (continuing anyway): {e}")
             context = {"errors": [], "anomalies": []}
 
+        merged_errors = self.merge_error_contexts(file_id, context.get("errors", []))
+
         # Get release notes context
         release_notes_context = []
         try:
@@ -695,17 +840,46 @@ class ReportGenerator:
             logger.warning(f"Error getting KB context (continuing anyway): {e}")
         
         # Build messages
+        compact = self.provider == PROVIDER_LMSTUDIO
+        set_progress(
+            file_id, "building_prompt",
+            f"Assembling prompt ({len(merged_errors)} errors, {len(kb_context)} KB articles)...",
+            errors=len(merged_errors),
+            kb=len(kb_context),
+            release_notes=len(release_notes_context),
+        )
         try:
-            logger.info(f"Building prompt messages (web_search={web_search})...")
+            logger.info(f"Building prompt messages (web_search={web_search}, compact={compact})...")
+            sd, ec, ac, fi = self._sanitize_log_bundle(
+                summary,
+                merged_errors,
+                context.get("anomalies", []),
+                file_info,
+            )
             messages = get_messages_for_analysis(
-                summary_data=sanitize_dict(summary),
-                error_contexts=sanitize_list(context.get("errors", [])),
-                anomaly_contexts=sanitize_list(context.get("anomalies", [])),
-                file_info=sanitize_dict(file_info) if file_info else None,
+                summary_data=sd,
+                error_contexts=ec,
+                anomaly_contexts=ac,
+                file_info=fi,
                 quick=quick,
                 web_search=web_search,
                 release_notes_context=release_notes_context,
                 kb_context=kb_context,
+                sanitize_log_payload=self.sanitize_log_payload,
+                compact=compact,
+                focus_mode=focus_mode,
+            )
+            est_tokens = count_prompt_tokens(messages)
+            logger.info(
+                "Prompt composition: provider=%s compact=%s focus=%s | "
+                "errors=%d anomalies=%d kb=%d release_notes=%d | "
+                "est_prompt_tokens=%d",
+                self.provider, compact, focus_mode or "default",
+                len(merged_errors),
+                len(context.get("anomalies", [])),
+                len(kb_context),
+                len(release_notes_context),
+                est_tokens,
             )
             logger.debug(f"Message count: {len(messages)}")
         except Exception as e:
@@ -757,6 +931,14 @@ class ReportGenerator:
                 provider_name = "LM Studio"
             else:
                 provider_name = "OpenRouter"
+
+            set_progress(
+                file_id, "generating",
+                f"Waiting for {provider_name} response...",
+                provider=provider_name,
+                model=model or "default",
+                est_prompt_tokens=est_tokens,
+            )
             logger.info(f"Calling {provider_name} API with model={model}...")
             
             # LM Studio local models can degrade at very long outputs; cap the default.
@@ -815,7 +997,14 @@ class ReportGenerator:
                 result = _call_llm(False)
             
             logger.info(f"{provider_name} call successful: {result.prompt_tokens} prompt + {result.completion_tokens} completion tokens, cost=${result.cost_usd:.4f}")
+            set_progress(
+                file_id, "done",
+                f"Completed — {result.completion_tokens} tokens generated",
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+            )
         except Exception as e:
+            set_progress(file_id, "error", str(e)[:200])
             logger.error(f"LLM API call failed: {e}\n{traceback.format_exc()}")
             raise ValueError(f"LLM API call failed: {e}")
         

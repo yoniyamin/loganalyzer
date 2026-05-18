@@ -87,8 +87,8 @@
 .ai-modal-body {
     padding: 20px;
     overflow-y: auto;
-    max-height: calc(90vh - 140px);
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .ai-config-status {
@@ -523,12 +523,72 @@
    Tab Navigation
    ============================================ */
 
+/* Tabs + compact status on one row */
+.ai-modal-tabs-bar {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 12px 0 20px;
+    background: var(--bg-secondary, #181825);
+    border-bottom: 1px solid var(--border-color, #313244);
+    flex-wrap: wrap;
+}
+
 .ai-modal-tabs {
     display: flex;
     gap: 4px;
-    padding: 0 20px;
-    background: var(--bg-secondary, #181825);
-    border-bottom: 1px solid var(--border-color, #313244);
+    padding: 0;
+    background: transparent;
+    border-bottom: none;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.ai-status-compact {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex: 0 0 auto;
+    padding: 6px 0;
+    max-width: 55%;
+}
+
+.ai-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.72rem;
+    line-height: 1;
+    padding: 5px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color, #45475a);
+    color: var(--text-secondary, #a6adc8);
+    background: var(--bg-primary, #11111b);
+    cursor: default;
+    white-space: nowrap;
+}
+
+.ai-status-pill[data-ok="true"] {
+    border-color: rgba(166, 227, 161, 0.35);
+    color: #a6e3a1;
+}
+
+.ai-status-pill[data-ok="false"] {
+    border-color: rgba(249, 226, 175, 0.35);
+    color: #f9e2af;
+}
+
+.ai-status-pill .ai-status-ico {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+.ai-status-pill .ai-status-mark {
+    font-size: 0.62rem;
+    font-weight: 700;
+    opacity: 0.85;
 }
 
 .ai-modal-tab {
@@ -654,17 +714,29 @@
     color: #a5b4fc;
 }
 
+.ai-cloud-extras-note {
+    margin-left: 24px;
+    margin-bottom: 0;
+}
+
 /* LM Studio model parameter row */
 .ai-lmstudio-params {
-    margin-top: 12px;
+    margin-top: 8px;
     border-top: 1px solid var(--border-color, #313244);
-    padding-top: 12px;
+    padding-top: 8px;
 }
 
 .ai-param-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+    display: flex;
+    flex-wrap: wrap;
     gap: 12px;
+    align-items: flex-start;
+}
+
+.ai-param-group {
+    flex: 1 1 140px;
+    min-width: 0;
+    max-width: 220px;
 }
 
 .ai-param-group label {
@@ -674,7 +746,37 @@
     margin-bottom: 4px;
 }
 
+.ai-lmstudio-params .ai-help-text {
+    margin-top: 4px;
+    margin-bottom: 0;
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
 .ai-param-input {
     width: 100%;
+    max-width: 160px;
     text-align: right;
+    box-sizing: border-box;
+}
+
+/* Provider dropdown (replaces tile buttons) */
+.ai-provider-select-wrap .ai-select {
+    max-width: 100%;
+}
+
+/* Cloud: mandatory sanitization notice */
+.ai-sanitize-mandatory-notice {
+    margin: 0 0 12px 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(137, 180, 250, 0.35);
+    background: rgba(137, 180, 250, 0.08);
+    font-size: 0.82rem;
+    color: var(--text-primary, #cdd6f4);
+    line-height: 1.45;
+}
+
+.ai-sanitize-mandatory-notice strong {
+    color: #89b4fa;
 }

@@ -49,7 +49,13 @@ class SavedFindingsManager {
         this.isLoading = false;
         this._orderKey = null;     // localStorage key for custom order
         this._dragSrcEl = null;
-        
+        /** Pending compiled email (after async LLM); opened from toast or Findings banner */
+        this._compiledEmailPending = null;
+        /** Last successful compiled email for this file — survives closing the preview */
+        this._lastCompiledEmail = null;
+        this._compileEmailTimer = null;
+        this._compileEmailAbort = null;
+
         this.init();
     }
     
@@ -74,6 +80,15 @@ class SavedFindingsManager {
             this.currentFileId = null;
             this._orderKey = null;
             this.findings = [];
+            this._compiledEmailPending = null;
+            this._lastCompiledEmail = null;
+            this._updateReopenCompiledEmailButton();
+            if (this._compileEmailAbort) {
+                try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
+            }
+            this._compileEmailAbort = null;
+            this._dismissCompiledEmailBanner();
+            this._removeCompileEmailToast();
             const container = document.getElementById('findingsList');
             if (container) {
                 container.innerHTML = '<p class="placeholder-text">Open a log file to view and save findings.</p>';
@@ -91,7 +106,21 @@ class SavedFindingsManager {
         if (exportBtn) {
             exportBtn.addEventListener('click', () => this.exportFindings());
         }
-        
+
+        const openCompiled = document.getElementById('compiledEmailOpenBtn');
+        if (openCompiled) {
+            openCompiled.addEventListener('click', () => this._openCompiledEmailPreviewFromPending());
+        }
+        const dismissBanner = document.getElementById('compiledEmailBannerDismiss');
+        if (dismissBanner) {
+            dismissBanner.addEventListener('click', () => this._dismissCompiledEmailBanner());
+        }
+
+        const reopenCompiled = document.getElementById('reopenCompiledEmailBtn');
+        if (reopenCompiled) {
+            reopenCompiled.addEventListener('click', () => this._openCompiledEmailPreviewFromPending());
+        }
+
         const clearBtn = document.getElementById('clearFindings');
         if (clearBtn) {
             clearBtn.addEventListener('click', () => this.clearAllFindings());
@@ -135,6 +164,7 @@ class SavedFindingsManager {
             }
         } finally {
             this.isLoading = false;
+            this._updateReopenCompiledEmailButton();
         }
     }
     
@@ -470,6 +500,246 @@ class SavedFindingsManager {
         });
     }
     
+    // ── Compiled email (async LLM): toast progress + Findings banner ──
+
+    _updateReopenCompiledEmailButton() {
+        const btn = document.getElementById('reopenCompiledEmailBtn');
+        if (!btn) return;
+        const show = Boolean(this._lastCompiledEmail);
+        btn.style.display = show ? '' : 'none';
+        btn.disabled = !show;
+    }
+
+    _dismissCompiledEmailBanner() {
+        const b = document.getElementById('compiledEmailReadyBanner');
+        if (b) b.style.display = 'none';
+    }
+
+    _showCompiledEmailBanner() {
+        const b = document.getElementById('compiledEmailReadyBanner');
+        if (b) b.style.display = 'flex';
+    }
+
+    _goToFindingsTab() {
+        const btn = document.querySelector('.tab-btn[data-tab="findings-tab"]');
+        if (btn) btn.click();
+    }
+
+    _openCompiledEmailPreviewFromPending() {
+        const bundle = this._compiledEmailPending || this._lastCompiledEmail;
+        if (!bundle) {
+            if (window.showToast) window.showToast('No compiled email to show.', 'error');
+            return;
+        }
+        const { filename, content, previewOpts } = bundle;
+        this._goToFindingsTab();
+        this._showExportPreview(filename, content, previewOpts);
+        this._compiledEmailPending = null;
+        this._dismissCompiledEmailBanner();
+        this._removeCompileEmailToast();
+    }
+
+    _removeCompileEmailToast() {
+        const t = document.getElementById('compileEmailToast');
+        if (t) {
+            t.classList.remove('visible');
+            setTimeout(() => { if (t.parentNode) t.remove(); }, 300);
+        }
+        if (this._compileEmailTimer) {
+            clearInterval(this._compileEmailTimer);
+            this._compileEmailTimer = null;
+        }
+    }
+
+    async _fetchProviderLabel() {
+        let hint = 'the configured model';
+        try {
+            const cr = await fetch('/api/llm/config');
+            if (cr.ok) {
+                const c = await cr.json();
+                const p = String(c.provider || '').toLowerCase();
+                if (p === 'lmstudio') hint = 'local model (LM Studio)';
+                else if (p === 'gemini') hint = 'Google Gemini';
+                else if (p === 'openrouter') hint = 'OpenRouter';
+            }
+        } catch (_) { /* ignore */ }
+        return hint;
+    }
+
+    _ensureCompileEmailToast() {
+        let toast = document.getElementById('compileEmailToast');
+        if (toast) return toast;
+        toast = document.createElement('div');
+        toast.id = 'compileEmailToast';
+        toast.className = 'app-toast app-toast-warning compile-email-toast';
+        toast.setAttribute('role', 'status');
+        toast.innerHTML = `
+            <div class="compile-email-toast-spinner" aria-hidden="true"></div>
+            <div class="compile-email-toast-body">
+                <div class="compile-email-toast-title">Compiling email…</div>
+                <div class="compile-email-toast-meta"></div>
+                <div class="compile-email-toast-status"></div>
+            </div>
+            <button type="button" class="compile-email-toast-dismiss" title="Cancel">×</button>
+        `;
+        document.body.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add('visible'));
+        return toast;
+    }
+
+    _bindCompileToastDismissRunning(toast) {
+        const dismiss = toast.querySelector('.compile-email-toast-dismiss');
+        if (!dismiss) return;
+        dismiss.style.display = 'block';
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            if (this._compileEmailAbort) {
+                try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
+            }
+            this._compileEmailAbort = null;
+            this._removeCompileEmailToast();
+            if (window.showToast) window.showToast('Compile email cancelled', 'info');
+        };
+    }
+
+    _setCompileToastRunning(elapsedSec, providerHint) {
+        const toast = this._ensureCompileEmailToast();
+        toast.classList.remove('compile-email-toast--clickable', 'app-toast-success', 'app-toast-error', 'app-toast-info');
+        toast.classList.add('app-toast-warning');
+        toast.onclick = null;
+        const spinner = toast.querySelector('.compile-email-toast-spinner');
+        if (spinner) spinner.style.display = 'block';
+        toast.querySelector('.compile-email-toast-title').textContent = 'Compiling email…';
+        toast.querySelector('.compile-email-toast-meta').textContent =
+            `${elapsedSec}s elapsed · ${providerHint}`;
+        toast.querySelector('.compile-email-toast-status').textContent =
+            'Generating message with the model. You can keep working — open the preview from here or the Findings tab when finished.';
+        this._bindCompileToastDismissRunning(toast);
+    }
+
+    _setCompileToastSuccess(metaLine) {
+        const toast = document.getElementById('compileEmailToast');
+        if (!toast) return;
+        toast.classList.remove('app-toast-warning', 'app-toast-error');
+        toast.classList.add('app-toast-success', 'compile-email-toast--clickable');
+        const spinner = toast.querySelector('.compile-email-toast-spinner');
+        if (spinner) spinner.style.display = 'none';
+        toast.querySelector('.compile-email-toast-title').textContent = 'Compiled email ready';
+        toast.querySelector('.compile-email-toast-meta').textContent = metaLine || '';
+        toast.querySelector('.compile-email-toast-status').textContent =
+            'Click this notification to open the preview (Findings tab).';
+        const dismiss = toast.querySelector('.compile-email-toast-dismiss');
+        dismiss.style.display = 'block';
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            this._removeCompileEmailToast();
+        };
+        toast.onclick = () => this._openCompiledEmailPreviewFromPending();
+    }
+
+    _setCompileToastError(message) {
+        let toast = document.getElementById('compileEmailToast');
+        if (!toast) toast = this._ensureCompileEmailToast();
+        toast.classList.remove('app-toast-warning', 'app-toast-success', 'compile-email-toast--clickable');
+        toast.classList.add('app-toast-error');
+        toast.onclick = null;
+        const spinner = toast.querySelector('.compile-email-toast-spinner');
+        if (spinner) spinner.style.display = 'none';
+        toast.querySelector('.compile-email-toast-title').textContent = 'Compile failed';
+        toast.querySelector('.compile-email-toast-meta').textContent = '';
+        toast.querySelector('.compile-email-toast-status').textContent = message || 'Unknown error';
+        const dismiss = toast.querySelector('.compile-email-toast-dismiss');
+        dismiss.style.display = 'block';
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            this._removeCompileEmailToast();
+        };
+        setTimeout(() => {
+            const t = document.getElementById('compileEmailToast');
+            if (t && t.classList.contains('app-toast-error')) this._removeCompileEmailToast();
+        }, 8000);
+    }
+
+    async _runCompiledEmailExport(payload) {
+        if (this._compileEmailAbort) {
+            try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
+        }
+        const ac = new AbortController();
+        this._compileEmailAbort = ac;
+
+        const providerHint = await this._fetchProviderLabel();
+        this._removeCompileEmailToast();
+        this._setCompileToastRunning(0, providerHint);
+
+        const start = Date.now();
+        this._compileEmailTimer = setInterval(() => {
+            const sec = Math.floor((Date.now() - start) / 1000);
+            this._setCompileToastRunning(sec, providerHint);
+        }, 1000);
+
+        try {
+            const resp = await fetch(`/api/llm/findings/${this.currentFileId}/export`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: ac.signal
+            });
+            const errText = await resp.text();
+            let data;
+            try {
+                data = JSON.parse(errText);
+            } catch {
+                throw new Error(errText || 'Export failed');
+            }
+            if (!resp.ok) {
+                const detail = data.detail;
+                const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg || d).join(' ') : (data.message || errText));
+                throw new Error(msg || 'Export failed');
+            }
+
+            if (data.format !== 'compiled_email') {
+                throw new Error('Unexpected response from server');
+            }
+
+            const previewOpts = {
+                format: 'compiled_email',
+                rawMarkdown: data.raw_markdown || '',
+                modelUsed: data.model_used,
+                audience: payload.audience
+            };
+            const bundle = {
+                filename: data.filename,
+                content: data.content,
+                previewOpts
+            };
+            this._compiledEmailPending = bundle;
+            this._lastCompiledEmail = bundle;
+            this._updateReopenCompiledEmailButton();
+
+            if (this._compileEmailTimer) {
+                clearInterval(this._compileEmailTimer);
+                this._compileEmailTimer = null;
+            }
+            this._compileEmailAbort = null;
+
+            const elapsed = Math.floor((Date.now() - start) / 1000);
+            const modelBit = data.model_used ? String(data.model_used) : providerHint;
+            this._setCompileToastSuccess(`Done in ${elapsed}s · ${modelBit}`);
+            this._showCompiledEmailBanner();
+        } catch (e) {
+            if (this._compileEmailTimer) {
+                clearInterval(this._compileEmailTimer);
+                this._compileEmailTimer = null;
+            }
+            this._compileEmailAbort = null;
+            if (e.name === 'AbortError') {
+                return;
+            }
+            console.error('Compile email failed:', e);
+            this._setCompileToastError(e.message || 'Export failed');
+        }
+    }
+
     // ── Export ───────────────────────────────────────────────
     
     exportFindings() {
@@ -492,7 +762,7 @@ class SavedFindingsManager {
         overlay.innerHTML = `
             <div class="export-options-dialog">
                 <h3 class="export-options-title">Export findings</h3>
-                <p class="export-options-hint">Choose how to share your findings. Audience and notes are used when compiling an email-style summary.</p>
+                <p class="export-options-hint">Choose how to share your findings. Audience and notes are used when compiling an email-style summary. <strong>Compile email</strong> runs in the background with a live timer — you can switch tabs; when it finishes, open the preview from the notification or the banner on Findings.</p>
                 <label class="export-options-label" for="exportAudience">Audience</label>
                 <select id="exportAudience" class="export-options-select">
                     <option value="technical">Technical — detail, codes, line refs</option>
@@ -536,17 +806,23 @@ class SavedFindingsManager {
     
     async _runExport(payload) {
         if (!this.currentFileId) return;
+
+        if (payload.compile) {
+            await this._runCompiledEmailExport(payload);
+            return;
+        }
+
         const loadingId = 'exportLoadingOverlay';
         let loading = document.getElementById(loadingId);
         if (!loading) {
             loading = document.createElement('div');
             loading.id = loadingId;
             loading.className = 'export-loading-overlay';
-            loading.innerHTML = '<div class="export-loading-box">Compiling email...</div>';
+            loading.innerHTML = '<div class="export-loading-box">Exporting…</div>';
             document.body.appendChild(loading);
         }
-        loading.style.display = payload.compile ? 'flex' : 'none';
-        
+        loading.style.display = 'none';
+
         try {
             const resp = await fetch(`/api/llm/findings/${this.currentFileId}/export`, {
                 method: 'POST',
@@ -565,22 +841,11 @@ class SavedFindingsManager {
                 const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg || d).join(' ') : (data.message || errText));
                 throw new Error(msg || 'Export failed');
             }
-            
-            if (data.format === 'compiled_email') {
-                this._showExportPreview(data.filename, data.content, {
-                    format: 'compiled_email',
-                    rawMarkdown: data.raw_markdown || '',
-                    modelUsed: data.model_used,
-                    audience: payload.audience
-                });
-            } else {
-                this._showExportPreview(data.filename, data.content, { format: 'markdown' });
-            }
+
+            this._showExportPreview(data.filename, data.content, { format: 'markdown' });
         } catch (e) {
             console.error('Export failed:', e);
             if (window.showToast) window.showToast(e.message || 'Export failed', 'error');
-        } finally {
-            if (loading) loading.style.display = 'none';
         }
     }
     

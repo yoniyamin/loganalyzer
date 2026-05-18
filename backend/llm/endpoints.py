@@ -30,6 +30,8 @@ from backend.llm.report_generator import ReportGenerator
 from backend.llm.vectorstore import get_vector_store
 from backend.llm.error_resolution import resolve_issue
 from backend.paths import release_notes_cache_path
+from backend.release_notes_eol import parse_eol_entries_from_release_note_text
+from backend.replicate_support_schedule import replicate_support_payload
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -58,6 +60,7 @@ class ConfigRequest(BaseModel):
     lmstudio_max_tokens: Optional[int] = None     # response length cap, default 1500
     default_model: Optional[str] = None  # Provider-specific model ID
     web_search_enabled: Optional[bool] = None  # Enable web search in reports
+    sanitize_log_for_cloud_llm: Optional[bool] = None  # Gemini/OpenRouter only; LM Studio skips sanitization regardless
 
 
 class ConfigResponse(BaseModel):
@@ -76,6 +79,7 @@ class ConfigResponse(BaseModel):
     tavily_configured: bool = False
     tavily_api_key_preview: Optional[str] = None
     web_search_enabled: bool = False
+    sanitize_log_for_cloud_llm: bool = True
     updated_at: Optional[datetime] = None
 
 
@@ -123,6 +127,7 @@ class ReportRequest(BaseModel):
     regenerate: bool = False
     quick: bool = False
     web_search: bool = False  # Enable web search for additional context
+    focus_mode: Optional[str] = None  # None | "general_review" | "performance" | "errors" | "configuration"
 
 
 class ReferenceItem(BaseModel):
@@ -149,6 +154,7 @@ class ReportResponse(BaseModel):
     chart_image_base64: Optional[str] = None
     kb_references: Optional[List[ReferenceItem]] = None
     release_notes_references: Optional[List[ReferenceItem]] = None
+    focus_mode: Optional[str] = None
 
 
 class ReportHistoryItem(BaseModel):
@@ -247,6 +253,38 @@ def _ensure_lmstudio_column(db: Session):
                 logger.warning("Failed to add %s column: %s", col, e)
 
 
+def _ensure_sanitize_cloud_column(db: Session):
+    """Ensure sanitize_log_for_cloud_llm exists on llm_config."""
+    try:
+        db.execute(text("SELECT sanitize_log_for_cloud_llm FROM llm_config LIMIT 1"))
+    except Exception:
+        try:
+            db.execute(text("ALTER TABLE llm_config ADD COLUMN sanitize_log_for_cloud_llm INTEGER DEFAULT 1"))
+            db.commit()
+        except Exception as e:
+            logger.warning("Failed to add sanitize_log_for_cloud_llm column: %s", e)
+
+
+def _effective_sanitize_log_for_llm(db: Session) -> bool:
+    """
+    Whether log-derived LLM payloads should run through PII sanitization.
+
+    LM Studio prompts skip sanitization. Cloud providers sanitize by default unless
+    the user turns the option off in settings.
+    """
+    _ensure_sanitize_cloud_column(db)
+    config = db.query(LLMConfig).first()
+    if not config:
+        return True
+    prov = (config.provider or PROVIDER_GEMINI).strip().lower()
+    if prov == PROVIDER_LMSTUDIO:
+        return False
+    raw = getattr(config, "sanitize_log_for_cloud_llm", True)
+    if raw is None:
+        return True
+    return bool(raw)
+
+
 def _load_tavily_api_key(db: Session) -> Optional[str]:
     """Load Tavily API key from DB or env."""
     _ensure_tavily_column(db)
@@ -309,18 +347,21 @@ def get_config(db: Session = Depends(get_db)):
     """Get current LLM configuration status."""
     _ensure_tavily_column(db)
     _ensure_lmstudio_column(db)
+    _ensure_sanitize_cloud_column(db)
     config = db.query(LLMConfig).first()
     
     if not config:
         return ConfigResponse(
             is_configured=False,
-            provider=PROVIDER_GEMINI,
-            default_model=DEFAULT_GEMINI_MODEL,
+            provider=PROVIDER_LMSTUDIO,
+            default_model=None,
             gemini_configured=False,
             openrouter_configured=False,
             lmstudio_configured=False,
             lmstudio_base_url=DEFAULT_LMSTUDIO_BASE_URL,
-            tavily_configured=False
+            tavily_configured=False,
+            web_search_enabled=False,
+            sanitize_log_for_cloud_llm=True,
         )
     
     # Check which providers are configured
@@ -366,6 +407,9 @@ def get_config(db: Session = Depends(get_db)):
         or (provider == PROVIDER_LMSTUDIO)  # LM Studio is always "configured" — no key needed
     )
     
+    stored_sanitize = getattr(config, "sanitize_log_for_cloud_llm", True)
+    sanitize_pref = stored_sanitize if stored_sanitize is not None else True
+
     return ConfigResponse(
         is_configured=is_configured,
         provider=provider,
@@ -381,6 +425,7 @@ def get_config(db: Session = Depends(get_db)):
         tavily_configured=tavily_configured,
         tavily_api_key_preview=tavily_preview,
         web_search_enabled=config.web_search_enabled or False,
+        sanitize_log_for_cloud_llm=bool(sanitize_pref),
         updated_at=config.updated_at
     )
 
@@ -390,6 +435,7 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     """Save LLM configuration (API keys and preferences)."""
     _ensure_tavily_column(db)
     _ensure_lmstudio_column(db)
+    _ensure_sanitize_cloud_column(db)
     # Get or create config
     config = db.query(LLMConfig).first()
     if not config:
@@ -449,6 +495,11 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     if request.web_search_enabled is not None:
         config.web_search_enabled = request.web_search_enabled
     
+    if provider in (PROVIDER_GEMINI, PROVIDER_OPENROUTER):
+        config.sanitize_log_for_cloud_llm = True
+    elif request.sanitize_log_for_cloud_llm is not None:
+        config.sanitize_log_for_cloud_llm = request.sanitize_log_for_cloud_llm
+    
     config.updated_at = datetime.utcnow()
     
     db.commit()
@@ -485,6 +536,9 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         except Exception:
             tavily_preview = "***"
     
+    stored_sanitize = getattr(config, "sanitize_log_for_cloud_llm", True)
+    sanitize_pref = stored_sanitize if stored_sanitize is not None else True
+
     return ConfigResponse(
         is_configured=True,
         provider=config.provider,
@@ -500,6 +554,7 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         tavily_configured=tavily_configured,
         tavily_api_key_preview=tavily_preview,
         web_search_enabled=config.web_search_enabled or False,
+        sanitize_log_for_cloud_llm=bool(sanitize_pref),
         updated_at=config.updated_at
     )
 
@@ -840,6 +895,8 @@ def generate_report(
         model = config.default_model if config else DEFAULT_MODEL
     
     # Generate report
+    from backend.llm.report_generator import clear_progress
+
     try:
         logger.info(f"Generating report for file_id={file_id}, model={model}")
         generator = ReportGenerator(db)
@@ -847,15 +904,20 @@ def generate_report(
             file_id=file_id,
             model=model,
             quick=request.quick,
-            web_search=request.web_search
+            web_search=request.web_search,
+            focus_mode=request.focus_mode,
         )
         logger.info(f"Report generated successfully for file_id={file_id}")
     except ValueError as e:
+        clear_progress(file_id)
         logger.error(f"ValueError during report generation: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        clear_progress(file_id)
         logger.error(f"Unexpected error during report generation: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+    finally:
+        clear_progress(file_id)
     
     # Save report to database
     report = LLMReport(
@@ -884,6 +946,7 @@ def generate_report(
         chart_image_base64=result.get("chart_image_base64"),
         kb_references=[ReferenceItem(**r) for r in result["kb_references"]] if result.get("kb_references") else None,
         release_notes_references=[ReferenceItem(**r) for r in result["release_notes_references"]] if result.get("release_notes_references") else None,
+        focus_mode=request.focus_mode,
     )
 
 
@@ -946,12 +1009,15 @@ def get_release_notes(
 
     # Load pre-built release notes cache (fast JSON read, no ChromaDB)
     rn_data = _load_release_notes_cache()
+    _support_meta = replicate_support_payload(release_version)
+
     if not rn_data:
         return {
             "file_id": file_id,
             "indexed_count": 0,
             "results": [],
             "eol_warnings": [],
+            "replicate_support": _support_meta,
             "message": (
                 "No release notes indexed. Run the release notes indexer "
                 "(python kb-assistant/index_help_release_notes.py) to index "
@@ -1026,6 +1092,7 @@ def get_release_notes(
         "indexed_count": rn_data.get("total_entries", 0),
         "results": all_entries[:30],
         "eol_warnings": unique_eol[:10],
+        "replicate_support": _support_meta,
     }
 
 
@@ -1111,80 +1178,13 @@ def _parse_recob_entries(text: str) -> list[dict]:
 
 def _parse_all_eol_entries(text: str) -> list[dict]:
     """Extract ALL End of Life / End of Support items (unfiltered, for indexing)."""
-    entries = []
-    lines = text.split('\n')
-    capture = False
-    section_count = 0
-    for ln in lines:
-        lower = ln.lower().strip()
-        if any(kw in lower for kw in ("has been discontinued", "no longer supported", "end of support")):
-            capture = True
-            section_count = 0
-            continue
-        if capture:
-            if not lower or lower.startswith(("resolved", "known", "downloads", "what", "migration")):
-                capture = False
-                continue
-            if section_count >= 20:
-                capture = False
-                continue
-            stripped = ln.strip()
-            if len(stripped) > 3:
-                section_count += 1
-                entries.append({
-                    "entry_type": "End of Support",
-                    "description": stripped,
-                    "component": "",
-                    "fix_id": "",
-                    "salesforce_case": "",
-                    "source": "chromadb",
-                })
-    return entries
+    return parse_eol_entries_from_release_note_text(text, task_endpoint_keys=None)
 
 
 def _parse_eol_entries(text: str, task_endpoint_keys: set[str]) -> list[dict]:
     """Extract End of Life / End of Support items relevant to the task's endpoints."""
-    entries = []
-    lines = text.split('\n')
-    capture = False
-    section_count = 0
-    for ln in lines:
-        lower = ln.lower().strip()
-        if any(kw in lower for kw in ("has been discontinued", "no longer supported", "end of support")):
-            capture = True
-            section_count = 0
-            continue
-        if capture:
-            if not lower or lower.startswith(("resolved", "known", "downloads", "what", "migration")):
-                capture = False
-                continue
-            if section_count >= 20:
-                capture = False
-                continue
-            stripped = ln.strip()
-            if len(stripped) > 3:
-                section_count += 1
-                line_lower = stripped.lower()
-                relevant = False
-                if task_endpoint_keys:
-                    for key in task_endpoint_keys:
-                        if key in line_lower:
-                            relevant = True
-                            break
-                        parts = key.split()
-                        if any(p in line_lower for p in parts if len(p) > 3):
-                            relevant = True
-                            break
-                if relevant:
-                    entries.append({
-                        "entry_type": "End of Support",
-                        "description": stripped,
-                        "component": "",
-                        "fix_id": "",
-                        "salesforce_case": "",
-                        "source": "chromadb",
-                    })
-    return entries
+    keys = task_endpoint_keys or None
+    return parse_eol_entries_from_release_note_text(text, task_endpoint_keys=keys)
 
 
 def _classify_endpoint_match(entry: dict, task_keys: set[str]) -> str | None:
@@ -1426,6 +1426,75 @@ def estimate_report_cost(
         total_tokens=estimate["total_tokens"],
         estimated_cost_usd=estimate["estimated_cost_usd"]
     )
+
+
+# ============================================================
+# Pre-generation Preflight
+# ============================================================
+
+@router.get("/report/{file_id}/preflight")
+def report_preflight(file_id: int, db: Session = Depends(get_db)):
+    """
+    Check whether a file has sufficient errors/performance data for a
+    meaningful default report.  When data is sparse, the frontend should
+    prompt the user to choose a focus mode before generating.
+
+    Returns:
+        needs_focus: True when both error and performance data are absent
+        has_errors: whether parsed errors exist
+        has_performance: whether latency/batch telemetry exists
+        error_count / perf_sample_count: counts for UI display
+    """
+    from backend.database import LogError, LogPerformance, LogBatch
+
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    error_count = db.query(LogError).filter(LogError.file_id == file_id).count()
+    perf_count = db.query(LogPerformance).filter(LogPerformance.file_id == file_id).count()
+    batch_count = db.query(LogBatch).filter(LogBatch.file_id == file_id).count()
+
+    has_errors = error_count > 0
+    has_performance = (perf_count > 0) or (batch_count > 0)
+    needs_focus = not has_errors and not has_performance
+
+    return {
+        "needs_focus": needs_focus,
+        "has_errors": has_errors,
+        "has_performance": has_performance,
+        "error_count": error_count,
+        "perf_sample_count": perf_count,
+        "batch_count": batch_count,
+    }
+
+
+# ============================================================
+# Progress Tracking
+# ============================================================
+
+@router.get("/report/{file_id}/progress")
+def get_generation_progress(file_id: int):
+    """
+    Poll generation progress for a file.
+
+    Returns the current phase, a human-readable detail string, and any
+    extra metadata (est tokens, provider, etc.).  Returns 204 when no
+    generation is tracked (idle).
+    """
+    from backend.llm.report_generator import get_progress, clear_progress
+
+    progress = get_progress(file_id)
+    if not progress:
+        return {"phase": "idle", "detail": ""}
+
+    # Auto-expire stale entries (>5 min old) to avoid leaks
+    import time as _t
+    if _t.time() - progress.get("updated_at", 0) > 300:
+        clear_progress(file_id)
+        return {"phase": "idle", "detail": ""}
+
+    return progress
 
 
 # ============================================================
@@ -1793,6 +1862,8 @@ def preview_prompt(
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
+    apply_sanitize = _effective_sanitize_log_for_llm(db)
+    
     # Step 1: Classify question and get relevant sections
     routing_mode, relevant_sections = classify_question(request.question)
     
@@ -1865,7 +1936,7 @@ def preview_prompt(
             type="log_summary",
             title="Log Analysis Summary",
             content=log_summary_context,
-            sanitized_content=sanitize_text(log_summary_context)
+            sanitized_content=sanitize_text(log_summary_context) if apply_sanitize else log_summary_context
         ))
     
     # Add report sections if available
@@ -1891,7 +1962,7 @@ def preview_prompt(
             type="log_error",
             title=f"Log Error #{i+1}",
             content=err,
-            sanitized_content=sanitize_text(err)
+            sanitized_content=sanitize_text(err) if apply_sanitize else err
         ))
     
     for i, anomaly in enumerate(log_anomalies):
@@ -1899,7 +1970,7 @@ def preview_prompt(
             type="log_anomaly",
             title=f"Anomaly #{i+1}",
             content=anomaly,
-            sanitized_content=sanitize_text(anomaly)
+            sanitized_content=sanitize_text(anomaly) if apply_sanitize else anomaly
         ))
     
     # Step 7: Select appropriate system prompt
@@ -1931,13 +2002,20 @@ def preview_prompt(
     user_prompt = "\n".join(user_prompt_parts)
     full_prompt = f"[SYSTEM]\n{system_prompt}\n\n[USER]\n{user_prompt}"
     
-    # Step 9: Sanitize and get redactions
-    sanitized_question = sanitize_text(request.question)
-    sanitized_user_prompt = sanitize_text(user_prompt)
-    sanitized_prompt = f"[SYSTEM]\n{system_prompt}\n\n[USER]\n{sanitized_user_prompt}"
-    
-    # Get redaction details
-    redaction_result = preview_redactions(user_prompt)
+    # Step 9: Sanitize and get redactions (skipped for LM Studio — matches report pipeline)
+    if apply_sanitize:
+        sanitized_question = sanitize_text(request.question)
+        sanitized_user_prompt = sanitize_text(user_prompt)
+        sanitized_prompt = f"[SYSTEM]\n{system_prompt}\n\n[USER]\n{sanitized_user_prompt}"
+        redaction_result = preview_redactions(user_prompt)
+    else:
+        sanitized_question = request.question
+        sanitized_user_prompt = user_prompt
+        sanitized_prompt = full_prompt
+        redaction_result = {
+            "redactions": [],
+            "summary": "PII sanitization is skipped for LM Studio (local prompts are not redacted).",
+        }
     
     # Build processing flow
     processing_flow = []
@@ -1984,12 +2062,20 @@ def preview_prompt(
         detail=f"Included {len(log_errors)} log errors" if log_errors else "No errors in context"
     ))
     
-    # Step 6: Presidio PII check (always runs)
+    # Step 6: Presidio PII check
     redaction_count = len(redaction_result.get("redactions", []))
+    if apply_sanitize:
+        rdetail = (
+            f"Detected {redaction_count} PII items to redact"
+            if redaction_count > 0
+            else "No sensitive information detected"
+        )
+    else:
+        rdetail = "Skipped (LM Studio — prompts not sanitized)"
     processing_flow.append(ProcessingStep(
         step="Presidio PII Detection",
-        status="completed",
-        detail=f"Detected {redaction_count} PII items to redact" if redaction_count > 0 else "No sensitive information detected"
+        status="completed" if apply_sanitize else "skipped",
+        detail=rdetail
     ))
     
     # Build summary

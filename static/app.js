@@ -27,6 +27,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Recent files state
   const RECENT_FILES_KEY = 'logAnalyzer_recentFiles';
   const MAX_RECENT_FILES = 20;
+  let selectedFileId = null;
+  let filesCache = [];
 
   // DOM Elements
   const fileList = document.getElementById("fileList");
@@ -329,6 +331,12 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (nativeOpenBtn) {
           nativeOpenBtn.style.display = "flex";
+      }
+      if (selectedFileId && filesCache.length) {
+          const f = filesCache.find((x) => x.id === selectedFileId);
+          if (f) {
+              showFileMetadataPanel(f);
+          }
       }
   }
 
@@ -1721,10 +1729,6 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
   
-  // Track selected file (before loading)
-  let selectedFileId = null;
-  let filesCache = []; // Cache file list for metadata lookup
-  
   function renderFileList(files) {
     filesCache = files; // Cache for metadata lookup
     fileList.innerHTML = "";
@@ -1828,6 +1832,35 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   
+  function formatLogTimeWindow(startIso, endIso) {
+    if (!startIso && !endIso) return { text: '—', title: '' };
+    const a = startIso ? new Date(startIso) : null;
+    const b = endIso ? new Date(endIso) : null;
+    const validA = a && !isNaN(a.getTime());
+    const validB = b && !isNaN(b.getTime());
+    if (!validA && !validB) return { text: '—', title: '' };
+    if (validA && !validB) {
+      const t = a.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      return { text: t, title: startIso || '' };
+    }
+    if (!validA && validB) {
+      const t = b.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      return { text: t, title: endIso || '' };
+    }
+    const sameDay = a.toDateString() === b.toDateString();
+    let text;
+    if (sameDay) {
+      const d = a.toLocaleDateString(undefined, { dateStyle: 'medium' });
+      const t0 = a.toLocaleTimeString(undefined, { timeStyle: 'short' });
+      const t1 = b.toLocaleTimeString(undefined, { timeStyle: 'short' });
+      text = t0 === t1 ? `${d}, ${t0}` : `${d}, ${t0} – ${t1}`;
+    } else {
+      const fmt = { dateStyle: 'medium', timeStyle: 'short' };
+      text = `${a.toLocaleString(undefined, fmt)} → ${b.toLocaleString(undefined, fmt)}`;
+    }
+    return { text, title: `${startIso} \u2192 ${endIso}` };
+  }
+  
   // Select a file (show metadata) without loading it
   function selectFile(fileId) {
     selectedFileId = fileId;
@@ -1884,16 +1917,42 @@ document.addEventListener("DOMContentLoaded", () => {
       ? new Date(indexed).toLocaleDateString() 
       : '-';
     
-    // Vectorized
-    const vecEl = document.getElementById('metadataVectorized');
-    vecEl.textContent = file.vectorized ? 'Yes' : 'No';
-    vecEl.className = 'file-metadata-value' + (file.vectorized ? ' vectorized' : '');
+    const logTimeEl = document.getElementById('metadataLogTime');
+    if (logTimeEl) {
+      const { text, title } = formatLogTimeWindow(file.log_time_start, file.log_time_end);
+      logTimeEl.textContent = text;
+      logTimeEl.title = title;
+    }
     
     // Path
     const pathEl = document.getElementById('metadataPath');
-    const path = file.file_path || file.local_path || '-';
-    pathEl.textContent = path.length > 25 ? '...' + path.slice(-22) : path;
-    pathEl.title = path;
+    const browseFolderBtn = document.getElementById('metadataBrowseFolderBtn');
+    const path = file.file_path || file.local_path || '';
+    if (pathEl) {
+      pathEl.textContent = path.length > 25 ? '...' + path.slice(-22) : (path || '-');
+      pathEl.title = path;
+    }
+    if (browseFolderBtn) {
+      const api = window.pywebview && window.pywebview.api;
+      const canBrowse = Boolean(
+        path &&
+        api &&
+        typeof api.open_log_folder === 'function'
+      );
+      browseFolderBtn.style.display = canBrowse ? 'inline-block' : 'none';
+      browseFolderBtn.onclick = () => {
+        if (!canBrowse) return;
+        Promise.resolve(api.open_log_folder(path))
+          .then((ok) => {
+            if (!ok && window.showToast) {
+              window.showToast('Could not open folder (path missing or unavailable)', 'error');
+            }
+          })
+          .catch(() => {
+            if (window.showToast) window.showToast('Could not open folder', 'error');
+          });
+      };
+    }
     
     // Open button
     const openBtn = document.getElementById('metadataOpenBtn');
@@ -7180,55 +7239,167 @@ document.addEventListener("DOMContentLoaded", () => {
     return sections;
   }
   
-  // Convert markdown to HTML (simplified version)
+  /** Split a GFM pipe table row into cells (leading/trailing | ignored). */
+  function splitMdTableRow(line) {
+    let s = String(line).trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map(c => c.trim());
+  }
+
+  /** Markdown separator row | --- | :---: | (cells are only dashes, colons, spaces). */
+  function isMdTableSeparatorRow(line) {
+    const cells = splitMdTableRow(line);
+    if (cells.length === 0) return false;
+    return cells.every(c => {
+      const t = c.trim();
+      return t.length > 0 && /^[:\- ]+$/.test(t) && /-/.test(t);
+    });
+  }
+
+  function pipeTableHtmlFromBlock(block) {
+    const headerCells = splitMdTableRow(block[0]);
+    if (headerCells.length === 0) return null;
+    let theadHtml = '';
+    let bodyRows;
+    if (block.length >= 2 && isMdTableSeparatorRow(block[1])) {
+      theadHtml = '<thead><tr>' + headerCells.map(c => '<th>' + c + '</th>').join('') + '</tr></thead>';
+      bodyRows = block.slice(2);
+    } else {
+      bodyRows = block;
+    }
+    let h = '<table class="ai-md-table">' + theadHtml + '<tbody>';
+    bodyRows.forEach(row => {
+      if (!row.trim() || isMdTableSeparatorRow(row)) return;
+      const cells = splitMdTableRow(row);
+      if (cells.length === 0) return;
+      h += '<tr>' + cells.map(c => '<td>' + c + '</td>').join('') + '</tr>';
+    });
+    h += '</tbody></table>';
+    return h;
+  }
+
+  /** Convert pipe-style markdown tables to HTML (after HTML escape). */
+  function convertMarkdownPipeTables(text) {
+    const lines = text.split('\n');
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const t = lines[i].trim();
+      if (t.startsWith('|') && t.lastIndexOf('|') > 0) {
+        const block = [];
+        let j = i;
+        while (j < lines.length) {
+          const lj = lines[j].trim();
+          if (lj.startsWith('|') && lj.includes('|')) {
+            block.push(lj);
+            j++;
+          } else break;
+        }
+        if (block.length >= 1) {
+          const htmlTable = pipeTableHtmlFromBlock(block);
+          if (htmlTable) {
+            out.push(htmlTable);
+            i = j;
+            continue;
+          }
+        }
+        for (let k = i; k < j; k++) out.push(lines[k]);
+        i = j;
+        continue;
+      }
+      out.push(lines[i]);
+      i++;
+    }
+    return out.join('\n');
+  }
+
+  /**
+   * Markdown → HTML for Log Summary AI sections (tables, hr, lists — aligned with ai-report.js).
+   */
   function convertMarkdownToHtml(md) {
     if (!md) return '';
-    
-    // Clean up input - remove excessive whitespace and empty lines
-    let html = md.trim()
-      .replace(/\r\n/g, '\n')
-      .replace(/\n{2,}/g, '\n')  // Multiple newlines to single
-      .replace(/^\s*\n/gm, '');   // Remove empty lines
-    
-    if (!html.trim()) return '';
-    
-    // Escape HTML first
+    let html = md.trim().replace(/\r\n/g, '\n');
+    if (!html) return '';
+
     html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    
-    // Code blocks
+
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    
-    // Bold and italic
+
+    html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+
     html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    
-    // Headers (h4 and lower since h2/h3 are section headers)
-    html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-    
-    // Lists - handle bullet points
-    html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-    
-    // Numbered lists
-    html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
-    
-    // Convert remaining lines to paragraphs, but skip empty lines
-    const lines = html.split('\n').filter(line => line.trim());
-    html = lines.map(line => {
+    html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+    html = convertMarkdownPipeTables(html);
+
+    // Horizontal rules (full line only — not table separators, already in <table>)
+    html = html.replace(/^[\t ]*(?:-{3,}|\*{3,}|_{3,})[\t ]*$/gm, '<hr>');
+
+    const lines = html.split('\n');
+    let inList = false;
+    let listType = null;
+    const result = [];
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const unorderedMatch = line.match(/^(\s*)[-*]\s+(.+)$/);
+      const orderedMatch = line.match(/^(\s*)\d+\.\s+(.+)$/);
+      if (unorderedMatch) {
+        if (!inList || listType !== 'ul') {
+          if (inList) result.push(`</${listType}>`);
+          result.push('<ul>');
+          inList = true;
+          listType = 'ul';
+        }
+        result.push(`<li>${unorderedMatch[2]}</li>`);
+      } else if (orderedMatch) {
+        if (!inList || listType !== 'ol') {
+          if (inList) result.push(`</${listType}>`);
+          result.push('<ol>');
+          inList = true;
+          listType = 'ol';
+        }
+        result.push(`<li>${orderedMatch[2]}</li>`);
+      } else {
+        if (inList && line.trim() === '') {
+          const nextLine = lines[li + 1] || '';
+          if (!nextLine.match(/^(\s*)[-*]\s+/) && !nextLine.match(/^(\s*)\d+\.\s+/)) {
+            result.push(`</${listType}>`);
+            inList = false;
+            listType = null;
+          }
+        } else if (inList && line.trim() !== '' && !line.match(/^\s/)) {
+          result.push(`</${listType}>`);
+          inList = false;
+          listType = null;
+          result.push(line);
+        } else {
+          result.push(line);
+        }
+      }
+    }
+    if (inList) result.push(`</${listType}>`);
+    html = result.join('\n');
+
+    html = html.split('\n').map(line => {
       const trimmed = line.trim();
       if (!trimmed) return '';
-      if (trimmed.startsWith('<')) return trimmed;
-      return `<p>${trimmed}</p>`;
+      if (trimmed.startsWith('<')) return line;
+      return `<p>${line}</p>`;
     }).filter(line => line).join('');
-    
-    // Status highlights - expanded list
+
+    html = html.replace(/<p><\/p>/g, '');
+    html = html.replace(/\n{3,}/g, '\n\n');
+
     html = html.replace(/\b(Healthy|OK|Good|Success|Successful|Complete|Completed|Normal|Stable)\b/gi, '<span class="status-healthy">$1</span>');
     html = html.replace(/\b(Warning|Caution|Moderate|Attention|Watch|Note)\b/gi, '<span class="status-warning">$1</span>');
     html = html.replace(/\b(Critical|Error|Errors|Failed|Failure|Severe|Fatal|Issue|Issues|Problem|Problems)\b/gi, '<span class="status-critical">$1</span>');
     html = html.replace(/\b(Info|Information|CDC|Full Load|Replication)\b/gi, '<span class="status-info">$1</span>');
-    
+
     return html;
   }
   
@@ -7643,10 +7814,85 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
   
+  /** True when Oracle trace blocks have content worth full cockpit layout. */
+  function hasOracleTraceCockpitData(data) {
+    if (!data) return false;
+    const olp = data.oracle_redo_log_processing || {};
+    const ora = data.oracle_redo_read_analysis || {};
+    return (olp.session_count || 0) > 0 || (ora.total_events_over_floor || 0) > 0 || !!ora.has_red_flags;
+  }
+
+  /**
+   * Sparse cockpit: few/no latency samples and no other performance-focused signals.
+   * Oracle trace logs still use the full layout.
+   */
+  function isPerformanceCockpitSparse(data) {
+    if (!data) return true;
+    if (hasOracleTraceCockpitData(data)) return false;
+    const dp = data.latency_profile?.data_points ?? 0;
+    if (dp >= 8) return false;
+    const spikes = data.spikes?.count ?? 0;
+    const plateaus = data.plateaus?.count ?? 0;
+    const batches = data.batch_profile?.total_batches ?? 0;
+    if (spikes > 0 || plateaus > 0 || batches > 0) return false;
+    if ((data.pain_tables || []).length > 0) return false;
+    if ((data.batch_issues || []).length > 0) return false;
+    if (data.file_operations?.count > 0) return false;
+    if (data.error_correlation?.total_correlated_errors > 0) return false;
+    if (data.cdc_pipeline?.has_issues) return false;
+    if (data.source_analysis && ((data.source_analysis.total_source_errors || 0) > 0 || (data.source_analysis.total_reconnects || 0) > 0)) return false;
+    if (data.merge_analysis?.merge_enabled) return false;
+    return true;
+  }
+
+  /** Minimal cockpit when the log has little structured performance data. */
+  function renderPerformanceCockpitSparse(data, content) {
+    const dp = data.latency_profile?.data_points ?? 0;
+    const parts = [];
+    parts.push(
+      '<div class="cockpit-container cockpit-sparse">' +
+        '<div class="cockpit-header">' +
+        '<h2 style="margin:0;display:flex;align-items:center;gap:6px;">' +
+        '<svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>' +
+        'Performance Cockpit</h2>' +
+        `<span class="cockpit-sparse-badge">${dp} latency sample${dp === 1 ? '' : 's'}</span>` +
+        '</div>'
+    );
+    parts.push(
+      '<div class="cockpit-section cockpit-sparse-notice">' +
+      '<p style="margin:0 0 8px 0;font-size:0.78rem;color:#cbd5e1;line-height:1.5;">' +
+      (dp === 0
+        ? 'This file has <strong>no indexed latency measurements</strong> yet. That is normal for short logs, task-setup-only extracts, or when performance lines were not parsed into the database. Open a full task log and re-ingest if you expected throughput and timing data.'
+        : 'Only a <strong>few latency samples</strong> were found, so charts and bottleneck breakdowns would be misleading. The sections below are collapsed to essentials.') +
+      '</p>' +
+      '<p style="margin:0;font-size:0.72rem;color:#9ca3af;line-height:1.45;">When the log includes batch and latency lines, this view will populate bottleneck analysis, spikes, plateaus, and batch behavior automatically.</p>' +
+      '</div>'
+    );
+    if (data.config && Object.keys(data.config).length > 0) {
+      parts.push(
+        '<div class="cockpit-section config-section"><h3>Task configuration (from log)</h3>' +
+        renderConfig(data.config) +
+        '</div>'
+      );
+    }
+    const recs = (data.recommendations || []).slice(0, 2);
+    parts.push(
+      '<div class="cockpit-section recommendations-section"><h3>Recommendations</h3>' +
+      renderRecommendations(recs.length ? recs : []) +
+      '</div>'
+    );
+    parts.push('</div>');
+    content.innerHTML = parts.join('');
+  }
+
   function renderPerformanceCockpit(data) {
     const content = document.getElementById('performanceCockpitMainContent');
     if (!content) return;
-    
+    if (isPerformanceCockpitSparse(data)) {
+      renderPerformanceCockpitSparse(data, content);
+      return;
+    }
+
     // Build HTML parts - no whitespace between sections
     const parts = [];
     
@@ -8221,11 +8467,16 @@ document.addEventListener("DOMContentLoaded", () => {
     h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Target Endpoint</div>';
     h += '<div style="font-size:0.85rem;color:#f59e0b">' + targetEndpoint + '</div></div></div></div>';
 
-    // Indexed release notes results placeholder
-    h += '<div id="releaseNotesResults" style="margin-bottom:20px">';
+    // Indexed release notes (banner + in-page search + list)
+    h += '<div id="rnReleaseNotesPanel" style="margin-bottom:20px">';
+    h += '<div id="rnProductSupportBanner" style="display:none;margin-bottom:14px"></div>';
+    h += '<div style="margin-bottom:12px">';
+    h += '<label for="rnInPageSearch" style="display:block;font-size:0.65rem;color:#9ca3af;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.04em">Search in displayed notes</label>';
+    h += '<input type="search" id="rnInPageSearch" autocomplete="off" placeholder="Filter by keyword in fixes or warnings…" style="width:100%;max-width:420px;background:#111827;border:1px solid #374151;border-radius:6px;padding:8px 10px;color:#e5e7eb;font-size:0.85rem" /></div>';
+    h += '<div id="releaseNotesResults" style="margin-bottom:4px">';
     h += '<div style="text-align:center;padding:24px;color:#9ca3af;font-size:0.8rem">';
     h += '<div class="loading-spinner" style="margin:0 auto 8px;width:24px;height:24px;border:2px solid #374151;border-top-color:#06b6d4;border-radius:50%;animation:spin 1s linear infinite"></div>';
-    h += 'Searching indexed release notes...</div></div>';
+    h += 'Searching indexed release notes...</div></div></div>';
 
     // Search on community fallback
     h += '<div style="background:linear-gradient(135deg,#1e3a5f,#1e1b4b);border:1px solid #3b82f6;border-radius:8px;padding:16px">';
@@ -8256,6 +8507,11 @@ document.addEventListener("DOMContentLoaded", () => {
         .then(data => {
           window._rnData = data;
           window._rnActiveFilters = new Set();
+          window._rnTextFilter = '';
+          _populateRnProductSupportBanner(data);
+          const rin = document.getElementById('rnInPageSearch');
+          if (rin) rin.value = '';
+          _rnBindInPageSearchField();
           _renderReleaseNotesEntries();
         })
         .catch(err => {
@@ -8272,6 +8528,68 @@ document.addEventListener("DOMContentLoaded", () => {
   // ============================================================
   // RELEASE NOTES FILTER + RENDERING
   // ============================================================
+
+  function _populateRnProductSupportBanner(data) {
+    const el = document.getElementById('rnProductSupportBanner');
+    if (!el || !data) return;
+    const s = data.replicate_support;
+    if (!s || !s.matched) {
+      el.innerHTML = '';
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = 'block';
+    const oos = s.is_out_of_support;
+    const border = oos ? '#b91c1c' : '#059669';
+    const titleColor = oos ? '#fecaca' : '#a7f3d0';
+    const title = oos
+      ? 'Out of vendor support — ended ' + escapeHtml(s.support_end_date)
+      : 'In vendor product support through ' + escapeHtml(s.support_end_date);
+    const bgTint = oos ? 'rgba(127,29,29,0.18)' : 'rgba(6,78,59,0.22)';
+    el.innerHTML =
+      '<div style="border:1px solid ' + border + ';border-radius:8px;padding:12px 14px;background:' + bgTint + '">'
+      + '<div style="font-size:0.72rem;color:#cbd5e1;margin-bottom:6px;font-weight:600">' + escapeHtml(s.version_label) + '</div>'
+      + '<p style="margin:0 0 6px;font-size:0.85rem;color:' + titleColor + ';font-weight:600;line-height:1.35">' + title + '</p>'
+      + '<p style="margin:0;font-size:0.7rem;color:#9ca3af;line-height:1.35">Release milestone '
+      + escapeHtml(s.release_date) + '. Compared as-of ' + escapeHtml(s.reference_date_iso) + '.</p>'
+      + '</div>';
+  }
+
+  function _rnBindInPageSearchField() {
+    const inp = document.getElementById('rnInPageSearch');
+    if (!inp || inp.dataset.rnListen === '1') return;
+    inp.dataset.rnListen = '1';
+    inp.addEventListener('input', () => {
+      window._rnTextFilter = inp.value.trim();
+      _renderReleaseNotesEntries();
+    });
+  }
+
+  function _rnEntryMatchesKeyword(rn, q) {
+    if (!q) return true;
+    const qs = q.toLowerCase();
+    const hay =
+      [
+        rn.fix_id,
+        rn.description,
+        rn.component,
+        rn.entry_type,
+        rn.version,
+        rn.title,
+        rn.salesforce_case,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+    return hay.indexOf(qs) !== -1;
+  }
+
+  function _rnEolMatchesKeyword(eol, q) {
+    if (!q) return true;
+    const qs = q.toLowerCase();
+    const hay = [eol.description, eol.version, eol.url].filter(Boolean).join(' ').toLowerCase();
+    return hay.indexOf(qs) !== -1;
+  }
 
   const _rnComponentGroups = {
     'Endpoint-Specific': comp => false,
@@ -8300,6 +8618,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const container = document.getElementById('releaseNotesResults');
     if (!container || !data) return;
 
+    const kw = (typeof window._rnTextFilter === 'string' ? window._rnTextFilter : '').trim();
+
     if (data.indexed_count === 0) {
       container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:20px;text-align:center">'
         + '<svg width="32" height="32" viewBox="0 0 16 16" fill="#6b7280" style="margin-bottom:8px"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>'
@@ -8308,10 +8628,15 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const allResults = data.results || [];
-    const hasEol = data.eol_warnings && data.eol_warnings.length > 0;
+    const rawResults = data.results || [];
+    const rawEolList = data.eol_warnings || [];
+    const searchResults = kw ? rawResults.filter(r => _rnEntryMatchesKeyword(r, kw)) : rawResults;
+    const matchedEol = kw ? rawEolList.filter(e => _rnEolMatchesKeyword(e, kw)) : rawEolList;
 
-    // Build group counts from all results
+    const allResults = searchResults;
+    const hasEol = matchedEol.length > 0;
+
+    // Build group counts from search-filtered results
     const groupCounts = {};
     for (const rn of allResults) {
       const g = _classifyComponent(rn.component, rn.endpoint_specific);
@@ -8326,9 +8651,15 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     if (!filtered.length && !hasEol) {
-      container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
-        + '<p style="margin:0;font-size:0.8rem;color:#9ca3af">No matching release notes found for this log file\'s configuration. '
-        + data.indexed_count + ' entries are indexed.</p></div>';
+      if (!kw) {
+        container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
+          + '<p style="margin:0;font-size:0.8rem;color:#9ca3af">No matching release notes found for this log file\'s configuration. '
+          + data.indexed_count + ' entries are indexed.</p></div>';
+      } else {
+        container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
+          + '<p style="margin:0;font-size:0.8rem;color:#9ca3af">No indexed lines match your search.</p>'
+          + '<p style="margin:8px 0 0;font-size:0.72rem;color:#6b7280">Try another keyword or clear the search filter.</p></div>';
+      }
       return;
     }
 
@@ -8368,7 +8699,7 @@ document.addEventListener("DOMContentLoaded", () => {
       rh += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">';
       rh += '<svg width="16" height="16" viewBox="0 0 16 16" fill="#f59e0b"><path d="M8 1L1 14h14L8 1zm0 4v4m0 2v1"/></svg>';
       rh += '<h3 style="margin:0;font-size:0.85rem;color:#fbbf24">End of Support Warnings</h3></div>';
-      for (const eol of data.eol_warnings) {
+      for (const eol of matchedEol) {
         const vBadge = eol.version ? '<span style="padding:1px 5px;background:#78350f;color:#fcd34d;border-radius:3px;font-size:0.6rem">' + eol.version + '</span> ' : '';
         const eolLink = eol.url
           ? '<a href="' + eol.url + '" target="_blank" title="View source release notes" style="color:#fbbf24;text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'

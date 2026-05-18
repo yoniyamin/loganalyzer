@@ -2,7 +2,7 @@
  * AI Configuration Modal
  * 
  * Provides a modal dialog for configuring AI API settings:
- * - Provider selection (Gemini default, OpenRouter optional)
+ * - Provider selection (LM Studio default in UI; persisted via Save)
  * - API key input with show/hide toggle
  * - Model selection dropdown
  * - Connection testing
@@ -17,7 +17,7 @@ class AIConfigModal {
         this.isOpen = false;
         this.models = [];
         this.currentConfig = null;
-        this.selectedProvider = 'gemini'; // Default to Gemini
+        this.selectedProvider = 'lmstudio';
         this.onConfigSaved = null; // Callback when config is saved
         
         this.init();
@@ -27,11 +27,8 @@ class AIConfigModal {
         // Create modal HTML
         this.createModal();
         
-        // Load initial config
+        // Load initial config (also loads models when config resolves)
         this.loadConfig();
-        
-        // Load available models for current provider
-        this.loadModels();
 
         // Prepare sanitization list
         this.renderSanitizationEntities();
@@ -55,33 +52,29 @@ class AIConfigModal {
                         </button>
                     </div>
                     
-                    <!-- Tab Navigation -->
-                    <div class="ai-modal-tabs">
-                        <button class="ai-modal-tab active" data-tab="config">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                                <circle cx="12" cy="12" r="3"/>
-                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-                            </svg>
-                            Configuration
-                        </button>
-                        <button class="ai-modal-tab" data-tab="sanitization">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                                <path d="M12 1l3 5 5 3-5 3-3 5-3-5-5-3 5-3z"/>
-                            </svg>
-                            Sanitization
-                        </button>
+                    <!-- Tab row + compact status -->
+                    <div class="ai-modal-tabs-bar">
+                        <div class="ai-modal-tabs">
+                            <button type="button" class="ai-modal-tab active" data-tab="config">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                    <circle cx="12" cy="12" r="3"/>
+                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                                </svg>
+                                Configuration
+                            </button>
+                            <button type="button" class="ai-modal-tab" data-tab="sanitization">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                    <path d="M12 1l3 5 5 3-5 3-3 5-3-5-5-3 5-3z"/>
+                                </svg>
+                                Sanitization
+                            </button>
+                        </div>
+                        <div class="ai-status-compact" id="aiStatusCompact" role="status" aria-live="polite"></div>
                     </div>
                     
                     <div class="ai-modal-body">
                         <!-- Config Tab Content -->
                         <div class="ai-tab-content active" data-tab-content="config">
-                            <div class="ai-config-status not-configured" id="aiConfigStatus">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <path d="M12 8v4M12 16h.01"/>
-                                </svg>
-                                <span>API key not configured</span>
-                            </div>
                             
                             <!-- AI Enable Toggle -->
                         <div class="ai-form-group">
@@ -112,25 +105,14 @@ class AIConfigModal {
                         </div>
                         
                         <!-- Provider Selection -->
-                        <div class="ai-form-group ai-provider-section" id="providerSection">
-                            <label>AI Provider</label>
-                            <div class="ai-provider-toggle">
-                                <button type="button" class="ai-provider-btn active" data-provider="gemini" id="btnGemini">
-                                    <span class="provider-icon">✨</span>
-                                    <span class="provider-name">Google Gemini</span>
-                                    <span class="provider-tag free">Free Tier</span>
-                                </button>
-                                <button type="button" class="ai-provider-btn" data-provider="openrouter" id="btnOpenRouter">
-                                    <span class="provider-icon">🔀</span>
-                                    <span class="provider-name">OpenRouter</span>
-                                    <span class="provider-tag">Multi-Model</span>
-                                </button>
-                                <button type="button" class="ai-provider-btn" data-provider="lmstudio" id="btnLMStudio">
-                                    <span class="provider-icon">🖥️</span>
-                                    <span class="provider-name">LM Studio</span>
-                                    <span class="provider-tag local">Local</span>
-                                </button>
-                            </div>
+                        <div class="ai-form-group ai-provider-section ai-provider-select-wrap" id="providerSection">
+                            <label for="aiProviderSelect">AI Provider</label>
+                            <select id="aiProviderSelect" class="ai-select">
+                                <option value="lmstudio">LM Studio (local)</option>
+                                <option value="gemini">Google Gemini</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                            <p class="ai-help-text">Saved when you click Save. Your last choice is restored on the next visit.</p>
                         </div>
                         
                         <!-- Gemini API Key Section -->
@@ -162,7 +144,6 @@ class AIConfigModal {
                             <p class="ai-help-text">
                                 In LM Studio: Developer tab → Start Server (default port 1234).
                                 <br><span style="color: #22c55e;">✓ No API key needed — runs fully locally.</span>
-                                <br><span style="color: #6b7280;">Tavily MCP configured in LM Studio is used automatically for web search.</span>
                             </p>
 
                             <!-- Model generation parameters -->
@@ -231,13 +212,22 @@ class AIConfigModal {
                             </p>
                         </div>
                         
+                        <!-- Cloud-only: web search, cloud sanitization notice, Tavily -->
+                        <div id="aiCloudExtras" class="ai-cloud-extras">
+
+                        <!-- Mandatory log sanitization (cloud only — LM Studio hides this block) -->
+                        <div class="ai-sanitize-mandatory-notice" id="aiCloudSanitizeNotice">
+                            <strong>Log sanitization is required</strong> for Google Gemini and OpenRouter. Identifiers are redacted before any log-derived content is sent to the cloud. This is always on for these providers and cannot be turned off.
+                            <br><span style="color: var(--text-muted, #585b70);">LM Studio runs locally and does not use this cloud sanitization path.</span>
+                        </div>
+
                         <!-- Web Search Option -->
                         <div class="ai-form-group">
                             <label class="ai-checkbox-label">
                                 <input type="checkbox" id="aiWebSearchEnabled">
                                 <span>Enable Web Search</span>
                             </label>
-                            <p class="ai-help-text" style="margin-left: 24px;">
+                            <p class="ai-help-text ai-cloud-extras-note">
                                 Allow the AI to search the web for additional context about errors and issues.
                                 <br><span style="color: #f59e0b;">⚠️ May increase response time and cost.</span>
                             </p>
@@ -256,10 +246,12 @@ class AIConfigModal {
                                     </svg>
                                 </button>
                             </div>
-                            <p class="ai-help-text">
+                            <p class="ai-help-text ai-cloud-extras-note">
                                 Used for manual error resolution searches (Tavily advanced answer).
                             </p>
                         </div>
+
+                        </div><!-- aiCloudExtras -->
                         </div><!-- End Config Tab -->
                         
                         <!-- Sanitization Tab Content -->
@@ -267,8 +259,11 @@ class AIConfigModal {
                             <div class="ai-sanitization-header">
                                 <h3>Sanitization Rules</h3>
                                 <p class="ai-sanitization-desc">
-                                    Log data is sanitized before any model call. KB articles stay unmodified.
-                                    Preview detections and replacements below.
+                                    For <strong>Google Gemini</strong> and <strong>OpenRouter</strong>, log-derived content is always sanitized before it is sent to the model (required; cannot be disabled).
+                                    <strong>LM Studio</strong> runs locally and does not use this cloud sanitization path for prompts.
+                                    KB articles are never modified.
+                                    Embeddings in the vector index are still sanitized to protect stored chunks.
+                                    Use this tab to preview rules and test samples.
                                 </p>
                             </div>
 
@@ -364,15 +359,9 @@ class AIConfigModal {
             this.updateProviderSectionVisibility();
         });
         
-        // Provider toggle buttons
-        document.getElementById('btnGemini').addEventListener('click', () => {
-            this.switchProvider('gemini');
-        });
-        document.getElementById('btnOpenRouter').addEventListener('click', () => {
-            this.switchProvider('openrouter');
-        });
-        document.getElementById('btnLMStudio').addEventListener('click', () => {
-            this.switchProvider('lmstudio');
+        // Provider dropdown
+        document.getElementById('aiProviderSelect').addEventListener('change', (e) => {
+            this.switchProvider(e.target.value);
         });
         
         // Toggle password visibility - Gemini
@@ -425,24 +414,30 @@ class AIConfigModal {
     
     switchProvider(provider) {
         this.selectedProvider = provider;
-        
-        // Update button states
-        document.getElementById('btnGemini').classList.toggle('active', provider === 'gemini');
-        document.getElementById('btnOpenRouter').classList.toggle('active', provider === 'openrouter');
-        document.getElementById('btnLMStudio').classList.toggle('active', provider === 'lmstudio');
-        
-        // Show/hide relevant sections
-        document.getElementById('geminiSection').style.display = provider === 'gemini' ? 'block' : 'none';
-        document.getElementById('openrouterSection').style.display = provider === 'openrouter' ? 'block' : 'none';
-        document.getElementById('lmstudioSection').style.display = provider === 'lmstudio' ? 'block' : 'none';
-        // Custom model route only makes sense for OpenRouter
-        document.getElementById('customModelSection').style.display = provider === 'openrouter' ? 'block' : 'none';
-        
+
+        const sel = document.getElementById('aiProviderSelect');
+        if (sel && sel.value !== provider) {
+            sel.value = provider;
+        }
+
+        this._applyProviderUi();
         // Reload models for the selected provider
         this.loadModels();
         
         // Update status display
         this.updateStatusDisplay();
+    }
+
+    _applyProviderUi() {
+        const provider = this.selectedProvider;
+        document.getElementById('geminiSection').style.display = provider === 'gemini' ? 'block' : 'none';
+        document.getElementById('openrouterSection').style.display = provider === 'openrouter' ? 'block' : 'none';
+        document.getElementById('lmstudioSection').style.display = provider === 'lmstudio' ? 'block' : 'none';
+        document.getElementById('customModelSection').style.display = provider === 'openrouter' ? 'block' : 'none';
+        const cloudExtras = document.getElementById('aiCloudExtras');
+        if (cloudExtras) {
+            cloudExtras.style.display = provider === 'lmstudio' ? 'none' : 'block';
+        }
     }
     
     async loadConfig() {
@@ -452,9 +447,13 @@ class AIConfigModal {
                 this.currentConfig = await response.json();
                 // Set provider from config
                 if (this.currentConfig.provider) {
-                    this.selectedProvider = this.currentConfig.provider;
-                    this.switchProvider(this.selectedProvider);
+                    this.selectedProvider = String(this.currentConfig.provider).toLowerCase();
                 }
+                const provSelect = document.getElementById('aiProviderSelect');
+                if (provSelect) {
+                    provSelect.value = this.selectedProvider;
+                }
+                this._applyProviderUi();
                 // Populate LM Studio fields
                 if (this.currentConfig.lmstudio_base_url) {
                     const urlInput = document.getElementById('aiLMStudioUrl');
@@ -469,6 +468,7 @@ class AIConfigModal {
                     if (maxTokInput) maxTokInput.value = this.currentConfig.lmstudio_max_tokens;
                 }
                 this.updateStatusDisplay();
+                await this.loadModels();
             }
         } catch (error) {
             console.error('Failed to load AI config:', error);
@@ -491,7 +491,14 @@ class AIConfigModal {
     populateModelSelect() {
         const select = document.getElementById('aiDefaultModel');
         const customInput = document.getElementById('aiCustomModel');
-        
+        if (!select) return;
+
+        const cfg = this.currentConfig;
+        const savedProv = cfg?.provider ? String(cfg.provider).toLowerCase() : null;
+        const applySavedModel = savedProv === this.selectedProvider;
+        const savedDefault =
+            applySavedModel && cfg?.default_model ? cfg.default_model : null;
+
         // Group models by free/paid
         const freeModels = this.models.filter(m => m.prompt_price === 0);
         const paidModels = this.models.filter(m => m.prompt_price > 0);
@@ -517,22 +524,25 @@ class AIConfigModal {
         select.innerHTML = optionsHtml || this.models.map(model => 
             `<option value="${model.id}">${model.name}</option>`
         ).join('');
-        
-        // Set current default if configured
-        if (this.currentConfig && this.currentConfig.default_model) {
-            const isKnownModel = this.models.some(m => m.id === this.currentConfig.default_model);
+
+        if (customInput) {
+            customInput.value = '';
+        }
+
+        if (savedDefault) {
+            const isKnownModel = this.models.some(m => m.id === savedDefault);
             if (isKnownModel) {
-                select.value = this.currentConfig.default_model;
-                if (customInput) customInput.value = '';
+                select.value = savedDefault;
+            } else if (this.selectedProvider === 'openrouter') {
+                if (customInput) customInput.value = savedDefault;
+                if (this.models[0]) select.value = this.models[0].id;
             } else {
-                // It's a custom model - show it in the custom input field
-                if (customInput) {
-                    customInput.value = this.currentConfig.default_model;
-                }
+                if (this.models[0]) select.value = this.models[0].id;
             }
+        } else if (this.models[0]) {
+            select.value = this.models[0].id;
         }
         
-        // Update model info display
         this.updateModelInfo(select.value);
     }
     
@@ -545,7 +555,7 @@ class AIConfigModal {
         // If there's a custom model entered, show info for that instead
         if (customModel) {
             infoDiv.innerHTML = `
-                <div class="model-description">Custom model: <code>${customModel}</code></div>
+                <div class="model-description">Custom model: <code>${this.escapeHtml(customModel)}</code></div>
                 <div class="model-pricing">
                     <span style="color: #f59e0b;">Pricing depends on the model - check OpenRouter</span>
                 </div>
@@ -556,101 +566,125 @@ class AIConfigModal {
         if (model) {
             const isFree = model.prompt_price === 0 && model.completion_price === 0;
             const pricingHtml = isFree 
-                ? '<span style="color: #22c55e; font-weight: 600;">✓ FREE - No cost per token</span>'
+                ? '<span style="color: #22c55e; font-weight: 600;">Free — no cost per token</span>'
                 : `<span>Input: $${model.prompt_price.toFixed(2)}/M tokens</span>
                    <span>Output: $${model.completion_price.toFixed(2)}/M tokens</span>`;
+
+            let lmLoadHint = '';
+            if (this.selectedProvider === 'lmstudio') {
+                const desc = model.description || '';
+                const loaded =
+                    /\bLoaded\b/i.test(desc) ||
+                    (typeof model.name === 'string' && model.name.includes('(loaded)'));
+                lmLoadHint = loaded
+                    ? '<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#22c55e;font-weight:500;">Status: loaded in LM Studio — ready to generate.</div>'
+                    : '<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#f59e0b;">Status: not loaded — load this model in LM Studio before generating reports.</div>';
+            }
             
             infoDiv.innerHTML = `
-                <div class="model-description">${model.description || 'No description available'}</div>
+                <div class="model-description">${this.escapeHtml(model.description || 'No description available')}</div>
+                ${lmLoadHint}
                 <div class="model-pricing">
                     ${pricingHtml}
+                </div>
+            `;
+        } else {
+            infoDiv.innerHTML = `
+                <div class="model-description">Select a model to see details</div>
+                <div class="model-pricing">
+                    <span>Input: $--/M tokens</span>
+                    <span>Output: $--/M tokens</span>
                 </div>
             `;
         }
     }
     
     updateStatusDisplay() {
-        const statusDiv = document.getElementById('aiConfigStatus');
+        const host = document.getElementById('aiStatusCompact');
+        if (!host) return;
+
+        if (!this.currentConfig) {
+            host.innerHTML = this._renderStatusPills([
+                { icon: '✨', ok: false, title: 'Gemini API key not saved', mark: '−' },
+                { icon: '🔀', ok: false, title: 'OpenRouter API key not saved', mark: '−' },
+                { icon: '🖥️', ok: true, title: 'LM Studio — local inference (no cloud API key)', mark: '✓' },
+                { icon: '🌐', ok: false, title: 'Tavily not configured (optional)', mark: '−' },
+            ]);
+            return;
+        }
+
+        this._applyKeyPlaceholders();
+
+        const c = this.currentConfig;
+        const geminiOk = !!c.gemini_configured;
+        const orOk = !!c.openrouter_configured;
+        const tavOk = !!c.tavily_configured;
+
+        host.innerHTML = this._renderStatusPills([
+            {
+                icon: '✨',
+                ok: geminiOk,
+                title: geminiOk
+                    ? `Gemini key: ${c.gemini_api_key_preview || 'saved'}`
+                    : 'Gemini API key not saved',
+                mark: geminiOk ? '✓' : '−',
+            },
+            {
+                icon: '🔀',
+                ok: orOk,
+                title: orOk
+                    ? `OpenRouter key: ${c.openrouter_api_key_preview || 'saved'}`
+                    : 'OpenRouter API key not saved',
+                mark: orOk ? '✓' : '−',
+            },
+            {
+                icon: '🖥️',
+                ok: true,
+                title: `LM Studio base URL: ${c.lmstudio_base_url || 'http://localhost:1234'}`,
+                mark: '✓',
+            },
+            {
+                icon: '🌐',
+                ok: tavOk,
+                title: tavOk
+                    ? `Tavily key: ${c.tavily_api_key_preview || 'saved'}`
+                    : 'Tavily not configured (optional)',
+                mark: tavOk ? '✓' : '−',
+            },
+        ]);
+    }
+
+    _applyKeyPlaceholders() {
+        const c = this.currentConfig;
         const geminiInput = document.getElementById('aiGeminiKey');
         const openrouterInput = document.getElementById('aiApiKey');
         const tavilyInput = document.getElementById('aiTavilyKey');
-        
-        if (!this.currentConfig) {
-            statusDiv.className = 'ai-config-status not-configured';
-            statusDiv.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M12 8v4M12 16h.01"/>
-                </svg>
-                <span>No API keys configured</span>
-            `;
-            return;
+        if (!c) return;
+        if (c.gemini_api_key_preview && geminiInput) {
+            geminiInput.placeholder = c.gemini_api_key_preview;
         }
-        
-        const geminiConfigured = this.currentConfig.gemini_configured;
-        const openrouterConfigured = this.currentConfig.openrouter_configured;
-        const lmstudioConfigured = this.currentConfig.lmstudio_configured;
-        const activeProvider = this.currentConfig.provider || 'gemini';
-        
-        // Update placeholders with key previews
-        if (this.currentConfig.gemini_api_key_preview) {
-            geminiInput.placeholder = this.currentConfig.gemini_api_key_preview;
+        if (c.openrouter_api_key_preview && openrouterInput) {
+            openrouterInput.placeholder = c.openrouter_api_key_preview;
         }
-        if (this.currentConfig.openrouter_api_key_preview) {
-            openrouterInput.placeholder = this.currentConfig.openrouter_api_key_preview;
+        if (c.tavily_api_key_preview && tavilyInput) {
+            tavilyInput.placeholder = c.tavily_api_key_preview;
         }
-        if (this.currentConfig.tavily_api_key_preview && tavilyInput) {
-            tavilyInput.placeholder = this.currentConfig.tavily_api_key_preview;
-        }
-        
-        // LM Studio is always "configured" — no key required
-        const activeConfigured = (activeProvider === 'gemini' && geminiConfigured) ||
-                                 (activeProvider === 'openrouter' && openrouterConfigured) ||
-                                 (activeProvider === 'lmstudio');
-        
-        if (activeConfigured) {
-            statusDiv.className = 'ai-config-status configured';
-            
-            // Build status text showing all configured providers
-            let statusParts = [];
-            if (geminiConfigured) statusParts.push(`✨ Gemini: ${this.currentConfig.gemini_api_key_preview || '✓'}`);
-            if (openrouterConfigured) statusParts.push(`🔀 OpenRouter: ${this.currentConfig.openrouter_api_key_preview || '✓'}`);
-            if (lmstudioConfigured || activeProvider === 'lmstudio') {
-                const lmUrl = this.currentConfig.lmstudio_base_url || 'localhost:1234';
-                statusParts.push(`🖥️ LM Studio: ${lmUrl}`);
-            }
-            if (this.currentConfig.tavily_configured) statusParts.push(`🌐 Tavily: ${this.currentConfig.tavily_api_key_preview || '✓'}`);
-            
-            statusDiv.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                    <polyline points="22 4 12 14.01 9 11.01"/>
-                </svg>
-                <span>${statusParts.join(' • ') || 'Configured'}</span>
-            `;
-        } else {
-            // Active provider not configured but maybe another one is
-            let providerName;
-            if (activeProvider === 'gemini') providerName = 'Gemini';
-            else if (activeProvider === 'openrouter') providerName = 'OpenRouter';
-            else providerName = 'LM Studio';
+    }
 
-            statusDiv.className = 'ai-config-status not-configured';
-            
-            let message = `${providerName} API key not configured`;
-            if (geminiConfigured || openrouterConfigured) {
-                const configured = geminiConfigured ? 'Gemini' : 'OpenRouter';
-                message += ` (${configured} is configured)`;
-            }
-            
-            statusDiv.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M12 8v4M12 16h.01"/>
-                </svg>
-                <span>${message}</span>
-            `;
-        }
+    _renderStatusPills(items) {
+        return items.map(p => {
+            const tip = this.escapeAttr(p.title);
+            const ok = p.ok ? 'true' : 'false';
+            return `<span class="ai-status-pill" data-ok="${ok}" title="${tip}"><span class="ai-status-ico">${p.icon}</span><span class="ai-status-mark">${p.mark}</span></span>`;
+        }).join('');
+    }
+
+    escapeAttr(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;');
     }
     
     async testConnection() {
@@ -775,6 +809,9 @@ class AIConfigModal {
                 ai_enabled: aiEnabled,
                 auto_generate: autoGenerate
             };
+            if (!isLMStudio) {
+                payload.sanitize_log_for_cloud_llm = true;
+            }
             if (tavilyKey) {
                 payload.tavily_api_key = tavilyKey;
             }
@@ -832,7 +869,6 @@ class AIConfigModal {
     
     open() {
         this.loadConfig();
-        this.loadModels();
         this.overlay.classList.add('active');
         this.isOpen = true;
         
@@ -842,14 +878,6 @@ class AIConfigModal {
         document.getElementById('aiGeminiKey').value = '';
         document.getElementById('aiCustomModel').value = '';
         document.getElementById('aiTavilyKey').value = '';
-        
-        // If current model is not in our predefined list, show it in custom field
-        if (this.currentConfig && this.currentConfig.default_model) {
-            const isKnownModel = this.models.some(m => m.id === this.currentConfig.default_model);
-            if (!isKnownModel) {
-                document.getElementById('aiCustomModel').value = this.currentConfig.default_model;
-            }
-        }
         
         // Set web search checkbox
         const webSearchCheckbox = document.getElementById('aiWebSearchEnabled');
@@ -929,7 +957,7 @@ class AIConfigModal {
                 <div class="ai-sanitize-card">
                     <div class="ai-sanitize-card-title">Sanitized</div>
                     <ul>
-                        <li>Log summaries, errors, anomalies</li>
+                        <li>Log summaries, errors, anomalies (cloud LLMs: mandatory redaction)</li>
                         <li>File metadata (paths, filenames)</li>
                     </ul>
                 </div>

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
@@ -111,21 +112,40 @@ async def upload_log(
 @router.get("/files")
 def list_files(db: Session = Depends(get_db)):
     files = db.query(LogFile).order_by(LogFile.upload_time.desc()).limit(20).all()
-    return [
-        {
-            "id": f.id,
-            "filename": f.filename,
-            "file_path": f.file_path,
-            "status": f.status,
-            "line_count": f.line_count,
-            "size_bytes": f.size_bytes,
-            "upload_time": f.upload_time.isoformat() if f.upload_time else None,
-            "indexed_at": f.upload_time.isoformat() if f.upload_time else None,
-            "vectorized": f.vectorized if hasattr(f, 'vectorized') else False,
-            "error": f.error_message
-        }
-        for f in files
-    ]
+    file_ids = [f.id for f in files]
+    range_map = {}
+    if file_ids:
+        rows = (
+            db.query(
+                LogIndex.file_id,
+                func.min(LogIndex.timestamp).label("tmin"),
+                func.max(LogIndex.timestamp).label("tmax"),
+            )
+            .filter(LogIndex.file_id.in_(file_ids), LogIndex.timestamp.isnot(None))
+            .group_by(LogIndex.file_id)
+            .all()
+        )
+        range_map = {r.file_id: (r.tmin, r.tmax) for r in rows}
+
+    out = []
+    for f in files:
+        tmin, tmax = range_map.get(f.id, (None, None))
+        out.append(
+            {
+                "id": f.id,
+                "filename": f.filename,
+                "file_path": f.file_path,
+                "status": f.status,
+                "line_count": f.line_count,
+                "size_bytes": f.size_bytes,
+                "upload_time": f.upload_time.isoformat() if f.upload_time else None,
+                "indexed_at": f.upload_time.isoformat() if f.upload_time else None,
+                "log_time_start": tmin.isoformat() if tmin else None,
+                "log_time_end": tmax.isoformat() if tmax else None,
+                "error": f.error_message,
+            }
+        )
+    return out
 
 @router.get("/files/{file_id}")
 def get_file_status(file_id: int, db: Session = Depends(get_db)):
