@@ -454,16 +454,35 @@ class AIReportManager {
             const response = await fetch(`/api/llm/report/${this.currentFileId}/export/${reportId}`);
             if (response.ok) {
                 const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
                 const disposition = response.headers.get('Content-Disposition');
-                const filenameMatch = disposition && disposition.match(/filename=([^;]+)/);
-                a.download = filenameMatch ? filenameMatch[1] : 'report.docx';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
+                let suggestedName = 'report.docx';
+                if (disposition) {
+                    const m = disposition.match(/filename\*?=UTF-8''([^;]+)/i)
+                        || disposition.match(/filename=([^;]+)/);
+                    if (m) {
+                        suggestedName = decodeURIComponent(m[1].trim().replace(/^["']|["']$/g, ''));
+                    }
+                }
+                const api = window.pywebview && window.pywebview.api;
+                if (api && typeof api.save_binary_file === 'function') {
+                    const b64 = await new Promise((resolve, reject) => {
+                        const r = new FileReader();
+                        r.onload = () => resolve(r.result.split(',')[1]);
+                        r.onerror = () => reject(new Error('Failed to read export data'));
+                        r.readAsDataURL(blob);
+                    });
+                    const saved = await api.save_binary_file(suggestedName, b64);
+                    if (saved && window.showToast) window.showToast('File saved');
+                } else {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = suggestedName;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }
             }
         } catch (error) {
             console.error('Export failed:', error);

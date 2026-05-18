@@ -29,6 +29,7 @@ from backend.llm.prompts import (
     count_prompt_tokens,
     sanitize_dict,
     sanitize_list,
+    extract_error_codes_for_prompt,
 )
 from backend.llm.tavily_client import TavilyClient
 
@@ -599,29 +600,99 @@ class ReportGenerator:
         """
         Query the KB for articles relevant to detected errors, endpoint
         types, and performance symptoms.
+
+        Uses a multi-strategy approach:
+        1. Error code queries (most precise — short codes embed well)
+        2. Symptom keyword queries (extracted from error text, not raw log)
+        3. Endpoint + component queries (contextual)
+        4. Performance symptom queries (when telemetry present)
         """
-        queries = []
+        import re
+
+        queries_high: List[str] = []   # precise, run first
+        queries_medium: List[str] = [] # symptom-level
+        queries_broad: List[str] = []  # contextual / fallback
+
         endpoints = self._get_endpoint_types(file_id, summary)
         source_type = endpoints["source"]
         target_type = endpoints["target"]
 
-        if source_type:
-            queries.append(f"Qlik Replicate {source_type} source")
-        if target_type:
-            queries.append(f"Qlik Replicate {target_type} target")
+        # --- Strategy 1: Error code-based queries (high precision) ---
+        error_snippets = self._distinct_error_snippets(file_id, max_snippets=8)
+        code_hits = extract_error_codes_for_prompt(error_snippets)
+        for code in code_hits[:6]:
+            queries_high.append(f"Qlik Replicate error {code}")
 
-        for snippet in self._distinct_error_snippets(file_id, max_snippets=6):
-            queries.append(f'Qlik Replicate troubleshooting "{snippet}"')
+        # Extract SQLSTATE and NativeError values directly
+        _sqlstate_re = re.compile(r"SqlState:\s*(\w+)", re.IGNORECASE)
+        _native_re = re.compile(r"NativeError:\s*(\d+)", re.IGNORECASE)
+        _vendor_re = re.compile(
+            r"\b(SAP\s*ASE|Oracle|SQL\s*Server|PostgreSQL|MySQL|DB2|Sybase|ODBC)\b",
+            re.IGNORECASE,
+        )
+
+        sqlstates: set = set()
+        native_errors: set = set()
+        vendors: set = set()
+
+        combined_error_text = " ".join(error_snippets)
+        for m in _sqlstate_re.finditer(combined_error_text):
+            sqlstates.add(m.group(1).upper())
+        for m in _native_re.finditer(combined_error_text):
+            native_errors.add(m.group(1))
+        for m in _vendor_re.finditer(combined_error_text):
+            vendors.add(m.group(1).strip())
+
+        for state in list(sqlstates)[:3]:
+            queries_high.append(f"SQLSTATE {state} Qlik Replicate")
+        for ne in list(native_errors)[:3]:
+            queries_high.append(f"NativeError {ne} ODBC timeout Qlik Replicate")
+
+        # --- Strategy 2: Symptom keyword extraction ---
+        _symptom_patterns = [
+            (re.compile(r"command\s+has\s+timed?\s*out", re.I), "ODBC command timeout"),
+            (re.compile(r"FETCH.{0,20}table.{0,10}data", re.I), "fetch table data error"),
+            (re.compile(r"stream\s+component.*terminat", re.I), "stream component terminated"),
+            (re.compile(r"source\s+loop", re.I), "source loop error"),
+            (re.compile(r"recoverable\s+error", re.I), "task recoverable error"),
+            (re.compile(r"one.by.one|1by1", re.I), "one by one apply fallback"),
+            (re.compile(r"PK\s*conflict|primary\s*key.*violat", re.I), "primary key conflict target"),
+            (re.compile(r"ORA-\d{5}", re.I), "Oracle ORA error"),
+            (re.compile(r"supplemental\s+logging", re.I), "supplemental logging"),
+            (re.compile(r"memory.*warning|swap.*disk", re.I), "sorter memory warning"),
+            (re.compile(r"disconnect|connection\s+(lost|reset|closed)", re.I), "connection lost disconnection"),
+        ]
+
+        for pat, symptom in _symptom_patterns:
+            if pat.search(combined_error_text):
+                vendor_ctx = list(vendors)[0] if vendors else ""
+                queries_medium.append(
+                    f"Qlik Replicate {vendor_ctx} {symptom} troubleshooting".strip()
+                )
+
+        # Vendor + endpoint specific queries
+        for vendor in list(vendors)[:2]:
+            if source_type:
+                queries_medium.append(f"Qlik Replicate {vendor} {source_type} source configuration")
+            else:
+                queries_medium.append(f"Qlik Replicate {vendor} source endpoint troubleshooting")
+
+        # --- Strategy 3: Component and endpoint queries (broader) ---
+        if source_type:
+            queries_broad.append(f"Qlik Replicate {source_type} source endpoint")
+        if target_type:
+            queries_broad.append(f"Qlik Replicate {target_type} target endpoint")
 
         error_summary = summary.get("error_summary", {})
         if error_summary.get("by_component"):
             top = sorted(error_summary["by_component"].items(), key=lambda x: x[1], reverse=True)[:3]
             for comp, _ in top:
-                queries.append(f"Qlik Replicate {comp} error troubleshooting")
+                queries_broad.append(f"Qlik Replicate {comp} error troubleshooting")
 
         if summary.get("cdc_pipeline", {}).get("memory_warnings", 0) > 0:
-            queries.append("Qlik Replicate sorter CDC memory warning troubleshooting")
+            queries_broad.append("Qlik Replicate sorter CDC memory warning troubleshooting")
 
+        # --- Strategy 4: Performance symptom queries ---
         lp_dp = (summary.get("latency_profile") or {}).get("data_points", 0) or 0
         has_latency_telemetry = lp_dp > 0
         if has_latency_telemetry and (
@@ -630,22 +701,37 @@ class ReportGenerator:
             or summary.get("bottleneck", {}).get("primary", "unknown") not in ("unknown", "balanced", "")
         ):
             bottleneck = summary.get("bottleneck", {}).get("primary", "") or ""
-            queries.append(f"Qlik Replicate high latency {bottleneck} performance troubleshooting")
+            queries_broad.append(f"Qlik Replicate high latency {bottleneck} performance troubleshooting")
 
         if (
             summary.get("oracle_redo_read_analysis") or {}
         ).get("has_red_flags") or (
             summary.get("oracle_redo_log_processing") or {}
         ).get("session_count", 0) > 0:
-            queries.append("Qlik Replicate Oracle source redo archived log performance")
+            queries_broad.append("Qlik Replicate Oracle source redo archived log performance")
 
-        if not queries:
-            queries = ["Qlik Replicate troubleshooting"]
+        # Combine queries in priority order
+        all_queries = queries_high + queries_medium + queries_broad
+        if not all_queries:
+            all_queries = ["Qlik Replicate troubleshooting"]
 
         results = []
-        seen_urls = set()
+        seen_urls: set = set()
 
-        for q in queries[:12]:
+        # Run high-priority queries with more results per query
+        for q in queries_high[:8]:
+            try:
+                hits = self.vector_store.query_kb(query=q, n_results=5)
+                for h in hits:
+                    url = h.get("url", "")
+                    if url and url not in seen_urls and h.get("similarity", 0) >= 0.22:
+                        seen_urls.add(url)
+                        results.append(h)
+            except Exception as e:
+                logger.debug(f"KB query (high) failed for '{q}': {e}")
+
+        # Medium and broad queries
+        for q in (queries_medium + queries_broad)[:10]:
             try:
                 hits = self.vector_store.query_kb(query=q, n_results=4)
                 for h in hits:
@@ -654,7 +740,7 @@ class ReportGenerator:
                         seen_urls.add(url)
                         results.append(h)
             except Exception as e:
-                logger.debug(f"KB query failed for '{q}': {e}")
+                logger.debug(f"KB query (medium/broad) failed for '{q}': {e}")
 
         results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
         return results[:max_results]
@@ -839,6 +925,23 @@ class ReportGenerator:
         except Exception as e:
             logger.warning(f"Error getting KB context (continuing anyway): {e}")
         
+        # Build endpoint-specific tuning reference from ar_props.json
+        tuning_reference = None
+        try:
+            from backend.llm.ar_props_lookup import format_tuning_reference
+            endpoints = self._get_endpoint_types(file_id, summary)
+            source_type = endpoints.get("source", "")
+            if source_type:
+                tuning_reference = format_tuning_reference(source_type, role="SOURCE")
+            if not tuning_reference:
+                target_type = endpoints.get("target", "")
+                if target_type:
+                    tuning_reference = format_tuning_reference(target_type, role="TARGET")
+            if tuning_reference:
+                logger.info(f"Tuning reference built for endpoint: {source_type or target_type}")
+        except Exception as e:
+            logger.debug(f"ar_props tuning reference lookup failed (using fallback): {e}")
+
         # Build messages
         compact = self.provider == PROVIDER_LMSTUDIO
         set_progress(
@@ -868,6 +971,7 @@ class ReportGenerator:
                 sanitize_log_payload=self.sanitize_log_payload,
                 compact=compact,
                 focus_mode=focus_mode,
+                tuning_reference=tuning_reference,
             )
             est_tokens = count_prompt_tokens(messages)
             logger.info(

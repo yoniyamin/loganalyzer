@@ -321,18 +321,24 @@ SYSTEM_PROMPT_LOCAL = """You are an expert Qlik Replicate (Attunity Replicate) l
 - Qlik Replicate error codes (RECOB-xxxx, ORA-xxxxx, SQLSTATE)
 
 ## Rules
-- When the prompt provides error/warning excerpts with LINE numbers, treat them as primary evidence. Explain each distinct symptom.
+- The prompt begins with a **Data Available** inventory — use it to calibrate depth per section.
+- When the prompt includes a **Log Aggregates** section, those counts are **computed from the full log** and authoritative. You MUST NOT contradict them. Lead your Key Findings with these counts.
+- When the prompt provides error/warning excerpts with LINE numbers, treat them as primary evidence. Quote at least one full `LINE …` log line per major finding.
 - If structured performance telemetry is marked absent, keep Performance Analysis to one brief paragraph — do not invent bottleneck conclusions.
 - Do NOT fabricate URLs or hyperlinks. Only reference titles/IDs from the prompt.
 - Reference LINE numbers, metrics, and table names from the data provided.
-- The prompt begins with a **Data Available** inventory — use it to calibrate depth per section.
+- If a **Tuning Reference** section is provided, use those specific parameter names and defaults in your recommendations instead of generic advice.
 
 ## Report Structure
-1. **Executive Summary** — 2-3 sentences
-2. **Key Findings** — Bullets, errors/warnings first
-3. **Performance Analysis** — Only substantive when telemetry is present
-4. **Issues & Recommendations** — Map each error to probable cause & next steps
-5. **Health Score** — Healthy / Warning / Critical
+1. **Executive Summary** — 2-3 sentences stating severity and root cause
+2. **Key Findings** — Bullets; lead each with occurrence count from Log Aggregates where available
+3. **Performance Analysis** — Only substantive when telemetry is present; otherwise one sentence
+4. **Issues & Recommendations** — For EACH major issue use these subsections:
+   - **Evidence**: Quote the relevant `LINE …` excerpt(s)
+   - **Interpretation**: Explain what the error means and why it matters
+   - **Recommendations**: Concrete next steps with specific parameter names / settings where available
+5. **Error Code Reference** — Short bullet per distinct code found (vendor code + Replicate internal code)
+6. **Health Score** — **X/5** (where 1=Critical, 5=Healthy) plus **one sentence** justification
 
 If Release Notes or KB Articles are provided, incorporate them into your analysis referencing fix IDs (RECOB-XXXX) or article titles.
 """
@@ -487,6 +493,118 @@ FOCUS_MODES: Dict[str, Dict[str, str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: Domain-specific tuning hints injected when patterns match
+# ---------------------------------------------------------------------------
+
+_TUNING_CHEAT_SHEET_ODBC_TIMEOUT = """## Tuning Reference — ODBC / Source Timeout Parameters
+
+When recommending timeout or connectivity adjustments, use these **exact parameter names**:
+
+| Parameter | Where to set | Default | Notes |
+|---|---|---|---|
+| `executeTimeout` | Source endpoint → Advanced → Internal parameters | 60 s | Governs individual SQL statement execution. Increase for slow Full Load SELECTs. |
+| `cdcTimeout` | Source endpoint → Advanced → Internal parameters | 600 s | Governs CDC log-read operations. Increase if source log reader times out. |
+| `connectTimeout` | Source endpoint → Advanced → Internal parameters | 60 s | TCP connection establishment timeout. |
+| `fetchTimeout` | Source endpoint → Advanced → Internal parameters | 60 s | Row-fetch timeout during Full Load. |
+| `commandTimeout` | ODBC DSN / driver level | varies | Driver-level timeout; separate from Replicate internal params. |
+
+**Typical remediation**: Double `executeTimeout` (e.g. 120→240→600) iteratively; verify source DB is not holding locks during Full Load windows.
+"""
+
+_TUNING_TRIGGERS_ODBC_TIMEOUT = re.compile(
+    r"(?:timed?\s*out|timeout|HYT00|30149|executeTimeout|cdcTimeout|SOURCE_UNLOAD.*error)",
+    re.IGNORECASE,
+)
+
+
+_NORMALIZE_PATTERNS = [
+    re.compile(r"\bLINE\s+\d+\b", re.IGNORECASE),
+    re.compile(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"),
+    re.compile(r"\bst_\d+_\w+"),
+    re.compile(r"\b(subtask|line)\s+\d+", re.IGNORECASE),
+]
+
+_CODE_EXTRACT = re.compile(r"\[\d{5,8}\]")
+
+
+def _build_error_aggregates(error_contexts: List[str]) -> str:
+    """Build a deterministic per-pattern aggregation block from error excerpts.
+
+    Groups errors by normalized message pattern and produces a concise summary
+    the model can cite directly.
+    """
+    if not error_contexts:
+        return ""
+
+    from collections import Counter, defaultdict
+
+    pattern_lines: Dict[str, List[int]] = defaultdict(list)
+    pattern_example: Dict[str, str] = {}
+    code_counter: Counter = Counter()
+
+    for block in error_contexts:
+        if not block or not isinstance(block, str):
+            continue
+        lines = block.strip().split("\n")
+        line_num = None
+        component = ""
+        body = block
+
+        if lines and lines[0].startswith("LINE "):
+            header = lines[0]
+            parts = header.split("|")
+            try:
+                line_num = int(parts[0].replace("LINE", "").strip())
+            except (ValueError, IndexError):
+                pass
+            if len(parts) >= 3:
+                component = parts[2].strip()
+            body = "\n".join(lines[1:]) if len(lines) > 1 else header
+
+        normalized = body
+        for pat in _NORMALIZE_PATTERNS:
+            normalized = pat.sub("", normalized)
+        normalized = " ".join(normalized.split())[:160]
+
+        if not normalized:
+            normalized = body[:120]
+
+        pattern_lines[normalized].append(line_num if line_num is not None else 0)
+        if normalized not in pattern_example:
+            pattern_example[normalized] = block.strip()[:300]
+
+        for m in _CODE_EXTRACT.finditer(block):
+            code_counter[m.group(0)] += 1
+
+    if not pattern_lines:
+        return ""
+
+    sorted_patterns = sorted(pattern_lines.items(), key=lambda x: -len(x[1]))
+
+    parts: List[str] = ["## Log Aggregates (computed — authoritative)\n"]
+    parts.append("| # | Occurrences | First LINE | Last LINE | Pattern (normalized) |")
+    parts.append("|---|---|---|---|---|")
+    for idx, (norm, line_nums) in enumerate(sorted_patterns[:10], 1):
+        count = len(line_nums)
+        valid = [ln for ln in line_nums if ln > 0]
+        first = str(min(valid)) if valid else "?"
+        last = str(max(valid)) if valid else "?"
+        display = norm[:100] + ("…" if len(norm) > 100 else "")
+        parts.append(f"| {idx} | {count} | {first} | {last} | {display} |")
+
+    if code_counter:
+        parts.append("\n**Distinct error codes:**")
+        for code, cnt in code_counter.most_common(10):
+            parts.append(f"- `{code}` × {cnt}")
+
+    parts.append(
+        "\nThese counts are computed from the full parsed log. "
+        "Your report MUST reference them; do not say \"several\" or \"multiple\" when a count is given.\n"
+    )
+    return "\n".join(parts)
+
+
 def _build_context_inventory(
     summary_data: Dict[str, Any],
     error_contexts: List[str],
@@ -572,6 +690,7 @@ def build_analysis_prompt(
     sanitize_log_payload: bool = True,
     compact: bool = False,
     focus_mode: Optional[str] = None,
+    tuning_reference: Optional[str] = None,
 ) -> str:
     """
     Build the user prompt for log analysis.
@@ -582,6 +701,7 @@ def build_analysis_prompt(
         anomaly_contexts: List of detected anomalies
         file_info: Optional file metadata (name, size, line count)
         sanitize_log_payload: When True, redact PII from log-derived fields before formatting
+        tuning_reference: Optional pre-built endpoint-specific tuning parameter reference
     
     Returns:
         Formatted prompt string
@@ -618,6 +738,21 @@ def build_analysis_prompt(
         summary_data, error_contexts, anomaly_contexts,
         file_info, release_notes_context, kb_context,
     ))
+
+    # Deterministic aggregates — give local models grounded counts to cite
+    if compact and error_contexts:
+        agg_block = _build_error_aggregates(error_contexts)
+        if agg_block:
+            sections.append(agg_block)
+
+    # Domain-specific tuning hints — prefer dynamic ar_props lookup, fallback to static
+    if error_contexts:
+        combined_text = " ".join(error_contexts[:20])
+        if _TUNING_TRIGGERS_ODBC_TIMEOUT.search(combined_text):
+            if tuning_reference:
+                sections.append(tuning_reference)
+            else:
+                sections.append(_TUNING_CHEAT_SHEET_ODBC_TIMEOUT)
 
     # === CRITICAL ISSUES FIRST (if any) ===
     # Highlight critical issues at the top for immediate attention
@@ -1127,6 +1262,7 @@ def get_messages_for_analysis(
     sanitize_log_payload: bool = True,
     compact: bool = False,
     focus_mode: Optional[str] = None,
+    tuning_reference: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """
     Build the complete messages list for the LLM.
@@ -1143,6 +1279,7 @@ def get_messages_for_analysis(
         sanitize_log_payload: When True, redact PII from log-derived fields
         compact: When True, use condensed prompts for local / small models
         focus_mode: Optional user-chosen analysis focus (general_review, performance, errors, configuration)
+        tuning_reference: Optional endpoint-specific parameter reference from ar_props
     
     Returns:
         List of message dicts ready for the LLM API
@@ -1169,6 +1306,7 @@ def get_messages_for_analysis(
         sanitize_log_payload=sanitize_log_payload,
         compact=compact,
         focus_mode=focus_mode,
+        tuning_reference=tuning_reference,
     )
     
     # Select system prompt: compact (local) → short; web_search → augmented; default → full

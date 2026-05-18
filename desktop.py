@@ -3,6 +3,7 @@ import threading
 import uvicorn
 import sys
 import os
+import base64
 import time
 import logging
 import urllib.request
@@ -51,6 +52,26 @@ class Api:
                 return True
             except Exception as e:
                 print(f"Error saving file: {e}")
+                return False
+        return False
+
+    def save_binary_file(self, suggested_name, content_b64):
+        """Open a native save dialog and write binary content (base64 from JS)."""
+        file_types = ('Word Documents (*.docx)', 'All files (*.*)')
+        result = self._window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename=suggested_name,
+            file_types=file_types
+        )
+        if result:
+            save_path = result if isinstance(result, str) else result[0]
+            try:
+                raw = base64.b64decode(content_b64)
+                with open(save_path, 'wb') as f:
+                    f.write(raw)
+                return True
+            except Exception as e:
+                print(f"Error saving binary file: {e}")
                 return False
         return False
 
