@@ -664,16 +664,9 @@ class AIAssistant {
     }
     
     showToast(message, type = 'info') {
-        document.querySelectorAll('.toast-notification').forEach(t => t.remove());
-        const toast = document.createElement('div');
-        toast.className = `toast-notification ${type}`;
-        toast.innerHTML = `${type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ'} <span>${message}</span>`;
-        document.body.appendChild(toast);
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(100%)';
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type, 3000);
+        }
     }
     
     async handleThumbsUp(threadId) {

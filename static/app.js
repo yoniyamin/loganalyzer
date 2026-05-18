@@ -2424,6 +2424,8 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Reset performance cockpit data
     window.performanceCockpitData = null;
+    window.issuesData = null;
+    updateLogIssuesTimeline(null);
     
     // Clear issues view
     const issuesMainView = document.getElementById('issuesMainView');
@@ -4521,15 +4523,34 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   })();
   
+  const TOAST_ICONS = {
+    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+    warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>'
+  };
+
   // Lightweight toast notification
   // duration: ms before auto-dismiss (0 = stay until hideToast() is called)
   function showToast(message, type = 'info', duration = 2500) {
-    const existing = document.querySelector('.app-toast');
-    if (existing) existing.remove();
+    document.querySelectorAll('.app-toast:not(#compileEmailToast)').forEach(t => t.remove());
 
     const toast = document.createElement('div');
     toast.className = `app-toast app-toast-${type}`;
-    toast.textContent = message;
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+
+    const icon = document.createElement('div');
+    icon.className = 'app-toast-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = TOAST_ICONS[type] || TOAST_ICONS.info;
+
+    const text = document.createElement('div');
+    text.className = 'app-toast-text';
+    text.textContent = message;
+
+    toast.appendChild(icon);
+    toast.appendChild(text);
     document.body.appendChild(toast);
 
     setTimeout(() => toast.classList.add('visible'), 10);
@@ -4543,7 +4564,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function hideToast() {
-    const toast = document.querySelector('.app-toast');
+    const toast = document.querySelector('.app-toast:not(#compileEmailToast)');
     if (!toast) return;
     toast.classList.remove('visible');
     setTimeout(() => toast.remove(), 300);
@@ -5918,17 +5939,22 @@ document.addEventListener("DOMContentLoaded", () => {
         
         if (data.summary.total_issues === 0) {
           issuesLink.style.display = 'none';
+          window.issuesData = null;
+          updateLogIssuesTimeline(null);
           return;
         }
         
         issuesLink.style.display = 'flex';
         issuesCount.textContent = `(${data.summary.total_issues})`;
         window.issuesData = data;
+        updateLogIssuesTimeline(data);
       })
       .catch(err => {
         console.error('Failed to load issues:', err);
         issuesLink.style.display = 'none';
         issuesCount.style.opacity = '1';
+        window.issuesData = null;
+        updateLogIssuesTimeline(null);
       });
   }
   
@@ -6048,6 +6074,57 @@ document.addEventListener("DOMContentLoaded", () => {
     return escapeHtml(text);
   }
   
+  function buildIssuesTimelineHtml(timeline, onClickFn, scopeClass) {
+    if (!timeline || !timeline.events.length) return '';
+    const startTime = timeline.start_time || '';
+    const endTime = timeline.end_time || '';
+    const scope = scopeClass ? ` ${scopeClass}` : '';
+
+    return `
+      <div class="issues-timeline-inline${scope}">
+        <span class="timeline-time">${formatTimelineTime(startTime)}</span>
+        <div class="timeline-bar">
+          ${timeline.events.map(evt => `
+            <div class="timeline-dot ${evt.severity}"
+                 style="left: ${evt.position}%;"
+                 data-line="${evt.line_number}"
+                 onclick="${onClickFn}(${evt.line_number}, this)"
+                 title="${evt.severity.toUpperCase()} at ${formatTimelineTime(evt.timestamp)}">
+            </div>
+          `).join('')}
+        </div>
+        <span class="timeline-time">${formatTimelineTime(endTime)}</span>
+      </div>
+    `;
+  }
+
+  function updateLogIssuesTimeline(data) {
+    const el = document.getElementById('logIssuesTimeline');
+    if (!el) return;
+    if (!data || !data.timeline || !data.timeline.events.length) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+
+    const summary = data.summary;
+    const badges = [
+      `<span class="stat-badge total">${summary.total_issues} total</span>`,
+      summary.fatal_count > 0 ? `<span class="stat-badge fatal">${summary.fatal_count} fatal</span>` : '',
+      summary.error_count > 0 ? `<span class="stat-badge error">${summary.error_count} errors</span>` : '',
+      summary.warning_count > 0 ? `<span class="stat-badge warning">${summary.warning_count} warnings</span>` : ''
+    ].filter(Boolean).join('');
+
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div class="log-issues-timeline-header">
+        <span class="log-issues-timeline-label">Navigate issues</span>
+        <div class="log-issues-timeline-badges">${badges}</div>
+      </div>
+      ${buildIssuesTimelineHtml(data.timeline, 'scrollToLogIssueByLine', 'log-issues-timeline-bar')}
+    `;
+  }
+
     function renderIssues(data) {
     const issuesContent = document.getElementById('issuesMainContent');
     if (!issuesContent) return;
@@ -6055,25 +6132,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Build compact inline timeline
     let timelineHtml = '';
     if (data.timeline && data.timeline.events.length > 0) {
-      const startTime = data.timeline.start_time || '';
-      const endTime = data.timeline.end_time || '';
-      
-      timelineHtml = `
-        <div class="issues-timeline-inline">
-          <span class="timeline-time">${formatTimelineTime(startTime)}</span>
-          <div class="timeline-bar">
-            ${data.timeline.events.map((evt, idx) => `
-              <div class="timeline-dot ${evt.severity}" 
-                   style="left: ${evt.position}%;" 
-                   data-line="${evt.line_number}"
-                   onclick="scrollToIssueByLine(${evt.line_number}, this)"
-                   title="${evt.severity.toUpperCase()} at ${formatTimelineTime(evt.timestamp)}">
-              </div>
-            `).join('')}
-          </div>
-          <span class="timeline-time">${formatTimelineTime(endTime)}</span>
-        </div>
-      `;
+      timelineHtml = buildIssuesTimelineHtml(data.timeline, 'scrollToIssueByLine');
     }
     
     // Left side: Issues list container
@@ -6250,8 +6309,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
     
-    // Clear all active timeline dots
-    document.querySelectorAll('.timeline-dot.active').forEach(dot => dot.classList.remove('active'));
+    // Clear all active timeline dots in the issues report
+    document.querySelectorAll('#issuesMainView .timeline-dot.active').forEach(dot => dot.classList.remove('active'));
     
     // Toggle this group
     group.classList.toggle('expanded');
@@ -6260,7 +6319,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (isExpanding) {
       const lineNumbers = group.dataset.lines ? group.dataset.lines.split(',').map(Number) : [];
       lineNumbers.forEach(lineNum => {
-        const dot = document.querySelector(`.timeline-dot[data-line="${lineNum}"]`);
+        const dot = document.querySelector(`#issuesMainView .timeline-dot[data-line="${lineNum}"]`);
         if (dot) {
           dot.classList.add('active');
         }
@@ -6874,12 +6933,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
   
-  // Scroll to issue by line number (called from timeline marker click)
+  // Scroll to issue by line number (called from timeline marker click in Issues report)
   window.scrollToIssueByLine = function(lineNumber, clickedDot) {
     if (!window.issuesData || !window.issuesData.issues) return;
     
-    // Clear all active timeline dots first
-    document.querySelectorAll('.timeline-dot.active').forEach(dot => dot.classList.remove('active'));
+    // Clear all active timeline dots in the issues report
+    document.querySelectorAll('#issuesMainView .timeline-dot.active').forEach(dot => dot.classList.remove('active'));
     
     // Find the issue group that contains this line number
     let foundGroupIdx = -1;
@@ -6909,7 +6968,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Highlight all timeline dots for this group
         const lineNumbers = group.dataset.lines ? group.dataset.lines.split(',').map(Number) : [];
         lineNumbers.forEach(lineNum => {
-          const dot = document.querySelector(`.timeline-dot[data-line="${lineNum}"]`);
+          const dot = document.querySelector(`#issuesMainView .timeline-dot[data-line="${lineNum}"]`);
           if (dot) {
             dot.classList.add('active');
           }
@@ -6927,6 +6986,13 @@ document.addEventListener("DOMContentLoaded", () => {
         }, 50);
       }
     }
+  };
+
+  // Jump to an issue line in the log viewer (called from log timeline marker click)
+  window.scrollToLogIssueByLine = function(lineNumber, clickedDot) {
+    document.querySelectorAll('#logIssuesTimeline .timeline-dot.active').forEach(dot => dot.classList.remove('active'));
+    if (clickedDot) clickedDot.classList.add('active');
+    jumpToLineAndHighlight(lineNumber, '');
   };
   
   // Escape HTML to prevent XSS
@@ -7751,23 +7817,7 @@ document.addEventListener("DOMContentLoaded", () => {
     fetch(`/api/files/${currentFileId}/performance-cockpit`)
       .then(res => res.json())
       .then(data => {
-        // Check if there's meaningful data to show
-        const hasLatencyData = data.latency_profile?.data_points > 0;
-        const hasBatchData = data.batch_profile?.total_batches > 0;
-        const hasPainTables = data.pain_tables?.length > 0;
-        const hasFileOps = data.file_operations?.count > 0;
-        const hasConfig = data.config && Object.keys(data.config).length > 0;
-        const olp = data.oracle_redo_log_processing || {};
-        const ora = data.oracle_redo_read_analysis || {};
-        const hasOracleTrace =
-          (olp.session_count || 0) > 0 ||
-          (ora.total_events_over_floor || 0) > 0 ||
-          ora.has_red_flags;
-        
-        const hasMeaningfulData =
-          hasLatencyData || hasBatchData || hasPainTables || hasFileOps || hasConfig || hasOracleTrace;
-        
-        if (hasMeaningfulData) {
+        if (!isPerformanceCockpitSparse(data)) {
           window.performanceCockpitData = data;
           if (performanceCockpitLink) performanceCockpitLink.style.display = 'flex';
         } else {
@@ -7847,42 +7897,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
   /** Minimal cockpit when the log has little structured performance data. */
   function renderPerformanceCockpitSparse(data, content) {
-    const dp = data.latency_profile?.data_points ?? 0;
-    const parts = [];
-    parts.push(
+    content.innerHTML =
       '<div class="cockpit-container cockpit-sparse">' +
         '<div class="cockpit-header">' +
-        '<h2 style="margin:0;display:flex;align-items:center;gap:6px;">' +
-        '<svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>' +
-        'Performance Cockpit</h2>' +
-        `<span class="cockpit-sparse-badge">${dp} latency sample${dp === 1 ? '' : 's'}</span>` +
-        '</div>'
-    );
-    parts.push(
-      '<div class="cockpit-section cockpit-sparse-notice">' +
-      '<p style="margin:0 0 8px 0;font-size:0.78rem;color:#cbd5e1;line-height:1.5;">' +
-      (dp === 0
-        ? 'This file has <strong>no indexed latency measurements</strong> yet. That is normal for short logs, task-setup-only extracts, or when performance lines were not parsed into the database. Open a full task log and re-ingest if you expected throughput and timing data.'
-        : 'Only a <strong>few latency samples</strong> were found, so charts and bottleneck breakdowns would be misleading. The sections below are collapsed to essentials.') +
-      '</p>' +
-      '<p style="margin:0;font-size:0.72rem;color:#9ca3af;line-height:1.45;">When the log includes batch and latency lines, this view will populate bottleneck analysis, spikes, plateaus, and batch behavior automatically.</p>' +
-      '</div>'
-    );
-    if (data.config && Object.keys(data.config).length > 0) {
-      parts.push(
-        '<div class="cockpit-section config-section"><h3>Task configuration (from log)</h3>' +
-        renderConfig(data.config) +
-        '</div>'
-      );
-    }
-    const recs = (data.recommendations || []).slice(0, 2);
-    parts.push(
-      '<div class="cockpit-section recommendations-section"><h3>Recommendations</h3>' +
-      renderRecommendations(recs.length ? recs : []) +
-      '</div>'
-    );
-    parts.push('</div>');
-    content.innerHTML = parts.join('');
+          '<h2 style="margin:0;display:flex;align-items:center;gap:6px;">' +
+            '<svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>' +
+            'Performance Cockpit' +
+          '</h2>' +
+        '</div>' +
+        '<div class="cockpit-empty-state">' +
+          '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+            '<path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>' +
+            '<path d="M12 6v6l4 2"/>' +
+          '</svg>' +
+          '<p class="cockpit-empty-title">No performance metrics in this log</p>' +
+          '<p class="cockpit-empty-hint">Latency, batch, and throughput analysis appear when the log contains structured performance data.</p>' +
+        '</div>' +
+      '</div>';
   }
 
   function renderPerformanceCockpit(data) {

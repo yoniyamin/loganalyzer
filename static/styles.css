@@ -690,6 +690,48 @@ body {
     background: #f59e0b;
 }
 
+/* Log viewer issue timeline (bottom of log preview) */
+.log-issues-timeline {
+    flex: 0 0 auto;
+    padding: 8px 12px 10px;
+    background: #030712;
+    border-top: 1px solid #1f2937;
+}
+
+.log-issues-timeline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.log-issues-timeline-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.log-issues-timeline-badges {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.log-issues-timeline-badges .stat-badge {
+    font-size: 0.55rem;
+    padding: 2px 6px;
+}
+
+.issues-timeline-inline.log-issues-timeline-bar {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
 /* Issues Main View */
 #issuesMainView {
     flex: 1;
@@ -5681,11 +5723,7 @@ body {
 .compile-email-toast.app-toast {
     pointer-events: auto;
     max-width: min(420px, calc(100vw - 32px));
-    padding: 10px 16px;
     cursor: default;
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
     text-align: left;
 }
 
@@ -5754,42 +5792,109 @@ body {
     right: max(12px, env(safe-area-inset-right, 0px));
     left: auto;
     bottom: max(16px, env(safe-area-inset-bottom, 0px));
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
     width: max-content;
     max-width: min(390px, calc(100vw - 24px));
-    transform: translateX(calc(100% + 24px));
-    padding: 8px 20px;
-    background: #1f2937;
+    padding: 14px 16px;
+    background: rgba(22, 27, 38, 0.88);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     color: #e5e7eb;
-    border: 1px solid #374151;
-    border-radius: 6px;
-    font-size: 0.8rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    font-size: 0.82rem;
     font-weight: 500;
+    line-height: 1.45;
     z-index: 850;
     opacity: 0;
-    transition: opacity 0.3s ease, transform 0.3s ease;
+    transform: translateX(calc(100% + 24px)) scale(0.96);
+    transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+                transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
     pointer-events: none;
     box-sizing: border-box;
+    box-shadow:
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
 }
 
 .app-toast.visible {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateX(0) scale(1);
+}
+
+.app-toast-icon {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+}
+
+.app-toast-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+.app-toast-text {
+    flex: 1;
+    min-width: 0;
+    padding-top: 4px;
 }
 
 .app-toast-info {
-    border-left: 3px solid #3b82f6;
+    border-color: rgba(59, 130, 246, 0.22);
+    box-shadow:
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        0 0 20px rgba(59, 130, 246, 0.06),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.app-toast-info .app-toast-icon {
+    background: rgba(59, 130, 246, 0.14);
+    color: #60a5fa;
 }
 
 .app-toast-success {
-    border-left: 3px solid #22c55e;
+    border-color: rgba(34, 197, 94, 0.22);
+    box-shadow:
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        0 0 20px rgba(34, 197, 94, 0.06),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.app-toast-success .app-toast-icon {
+    background: rgba(34, 197, 94, 0.14);
+    color: #4ade80;
 }
 
 .app-toast-warning {
-    border-left: 3px solid #f59e0b;
+    border-color: rgba(245, 158, 11, 0.22);
+    box-shadow:
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        0 0 20px rgba(245, 158, 11, 0.06),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.app-toast-warning .app-toast-icon {
+    background: rgba(245, 158, 11, 0.14);
+    color: #fbbf24;
 }
 
 .app-toast-error {
-    border-left: 3px solid #ef4444;
+    border-color: rgba(239, 68, 68, 0.22);
+    box-shadow:
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        0 0 20px rgba(239, 68, 68, 0.06),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.app-toast-error .app-toast-icon {
+    background: rgba(239, 68, 68, 0.14);
+    color: #f87171;
 }
 
 /* Report context menu (right-click "Add to Findings") */
@@ -6127,6 +6232,34 @@ body {
     border: 1px solid rgba(139, 92, 246, 0.22);
     border-radius: 8px;
     padding: 12px 14px;
+}
+
+.cockpit-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 48px 24px;
+    margin-top: 8px;
+    background: rgba(17, 24, 39, 0.5);
+    border: 1px dashed #374151;
+    border-radius: 10px;
+}
+
+.cockpit-empty-title {
+    margin: 14px 0 6px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #d1d5db;
+}
+
+.cockpit-empty-hint {
+    margin: 0;
+    max-width: 360px;
+    font-size: 0.75rem;
+    color: #6b7280;
+    line-height: 1.5;
 }
 
 /* Non-expandable section (no content) */
@@ -6695,51 +6828,6 @@ body {
     font-size: 0.85rem;
     color: #9ca3af;
     font-style: italic;
-}
-
-/* Toast Notification (AI assistant panel) — bottom-right, clear of main chrome */
-.toast-notification {
-    position: fixed;
-    top: auto;
-    right: max(12px, env(safe-area-inset-right, 0px));
-    bottom: max(16px, env(safe-area-inset-bottom, 0px));
-    left: auto;
-    max-width: min(390px, calc(100vw - 24px));
-    padding: 12px 20px;
-    background: #1f2937;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    color: #e5e7eb;
-    font-size: 0.9rem;
-    z-index: 840;
-    animation: slideInRight 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    box-sizing: border-box;
-}
-
-.toast-notification.success {
-    border-left: 4px solid #10b981;
-}
-
-.toast-notification.error {
-    border-left: 4px solid #ef4444;
-}
-
-.toast-notification.info {
-    border-left: 4px solid #3b82f6;
-}
-
-@keyframes slideInRight {
-    from {
-        transform: translateX(100%);
-        opacity: 0;
-    }
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
 }
 
 /* Collapsible info sections */
