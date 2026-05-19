@@ -20,6 +20,10 @@ class AIReportManager {
         this._timerInterval = null;
         this.currentProvider = 'gemini';
         this._generateReportAbort = null;
+        this._generateReportFileId = null;
+        this._generationEpoch = 0;
+        this._runsByFileId = {};
+        this._reportToastFileId = null;
         this._reportToastTimer = null;
         this._reportToastStart = null;
         this._reportToastProviderHint = '';
@@ -132,21 +136,22 @@ class AIReportManager {
 
     // ── Report generation toast (same pattern as compile-email toast) ──
 
-    _removeGenerateReportToast() {
-        const t = document.getElementById('generateReportToast');
-        if (t) {
-            t.classList.remove('visible');
-            setTimeout(() => t.remove(), 300);
-        }
-        this._stopReportGenerationToastTimer();
-    }
-
     _stopReportGenerationToastTimer() {
         if (this._reportToastTimer) {
             clearInterval(this._reportToastTimer);
             this._reportToastTimer = null;
         }
         this._reportToastStart = null;
+    }
+
+    _removeGenerateReportToast(clearFileId = true) {
+        const t = document.getElementById('generateReportToast');
+        if (t) {
+            t.classList.remove('visible');
+            setTimeout(() => t.remove(), 300);
+        }
+        if (clearFileId) this._reportToastFileId = null;
+        this._stopReportGenerationToastTimer();
     }
 
     _ensureGenerateReportToast() {
@@ -174,14 +179,10 @@ class AIReportManager {
         const dismiss = toast.querySelector('.compile-email-toast-dismiss');
         if (!dismiss) return;
         dismiss.style.display = 'block';
-        dismiss.onclick = (e) => {
+        dismiss.onclick = async (e) => {
             e.stopPropagation();
-            if (this._generateReportAbort) {
-                try { this._generateReportAbort.abort(); } catch (_) { /* ignore */ }
-            }
-            this._generateReportAbort = null;
-            this._removeGenerateReportToast();
-            if (window.showToast) window.showToast('Report generation cancelled', 'info');
+            const fileId = this._reportToastFileId;
+            if (fileId != null) this.cancelGeneration(fileId);
         };
     }
 
@@ -197,8 +198,9 @@ class AIReportManager {
             : 'Analyzing the log with the model. You can keep working — open the report from Resources when finished.';
     }
 
-    _startReportGenerationToast() {
-        this._removeGenerateReportToast();
+    _startReportGenerationToast(fileId) {
+        this._reportToastFileId = fileId;
+        this._removeGenerateReportToast(false);
         this._reportToastProviderHint = this._getProviderHint();
         this._reportToastStatusDetail = '';
         this._reportToastStart = Date.now();
@@ -258,6 +260,86 @@ class AIReportManager {
         this._removeGenerateReportToast();
     }
 
+    cancelGeneration(fileId, { silent = false } = {}) {
+        if (fileId == null) return;
+        fetch(`/api/llm/report/${fileId}/cancel`, { method: 'POST' }).catch(() => {});
+
+        const tracked = this._runsByFileId[fileId];
+        if (tracked?.abort) {
+            try { tracked.abort.abort(); } catch (_) { /* ignore */ }
+        }
+        delete this._runsByFileId[fileId];
+
+        const wasPrimary = this._generateReportFileId === fileId;
+        if (wasPrimary) {
+            this._generationEpoch += 1;
+            this._generateReportAbort = null;
+            this._generateReportFileId = null;
+            this.isGenerating = false;
+        }
+
+        if (this._reportToastFileId === fileId) {
+            this._removeGenerateReportToast();
+        }
+
+        const affectsCurrentView = this.currentFileId === fileId;
+        if (affectsCurrentView && (wasPrimary || tracked)) {
+            this._stopTimer();
+            this._resetGenerateButtonHtml();
+            this.updateStatusBadge('none');
+
+            const cached = this._cachedReportByFileId[fileId];
+            if (cached) {
+                this.displayReport(cached);
+                this.updateStatusBadge('ready');
+            } else {
+                const bodyEl = document.getElementById('aiReportBody');
+                if (bodyEl) bodyEl.innerHTML = this.getPlaceholderHTML();
+            }
+        }
+
+        if (!silent && window.showToast) window.showToast('Report generation cancelled', 'info');
+    }
+
+    _beginReportGenerationRun(fileId) {
+        const prev = this._runsByFileId[fileId];
+        if (prev?.abort) {
+            try { prev.abort.abort(); } catch (_) { /* ignore */ }
+        }
+
+        this._generationEpoch += 1;
+        const epoch = this._generationEpoch;
+        const abort = new AbortController();
+        this._generateReportAbort = abort;
+        this._generateReportFileId = fileId;
+        this._runsByFileId[fileId] = { abort, epoch };
+        return {
+            fileId,
+            epoch,
+            signal: abort.signal,
+        };
+    }
+
+    _isStaleGenerationRun(epoch, fileId) {
+        const tracked = this._runsByFileId[fileId];
+        return !tracked || tracked.epoch !== epoch;
+    }
+
+    _cleanupGenerationRun(epoch, fileId) {
+        const tracked = this._runsByFileId[fileId];
+        if (!tracked || tracked.epoch !== epoch) return;
+        delete this._runsByFileId[fileId];
+        if (this._generateReportFileId === fileId) {
+            this._generateReportAbort = null;
+            this._generateReportFileId = null;
+        }
+        if (this.currentFileId === fileId) {
+            this._stopTimer();
+            this.isGenerating = false;
+            this._resetGenerateButtonHtml();
+        }
+    }
+
     async loadModels() {
         try {
             // Models are loaded based on current provider config
@@ -296,17 +378,13 @@ class AIReportManager {
      */
     render(container, fileId) {
         this.container = container;
-        this.currentFileId = fileId;
         this.renderSection();
-        
-        const cached = this._cachedReportByFileId[fileId];
-        if (cached && !this.isGenerating) {
+
+        const viewFileId = fileId ?? this.currentFileId;
+        const cached = viewFileId && this._cachedReportByFileId[viewFileId];
+        const generatingForView = this.isGenerating && this._generateReportFileId === viewFileId;
+        if (cached && !generatingForView) {
             this.displayReport(cached);
-        }
-        
-        // Don't race GET with in-flight auto-generation POST
-        if (!this.isGenerating) {
-            this.checkExistingReport();
         }
     }
     
@@ -747,6 +825,11 @@ class AIReportManager {
             if (!resp.ok) return;
             const data = await resp.json();
             if (!data || data.phase === 'idle') return;
+            if (data.phase === 'cancelled') {
+                this._reportToastStatusDetail = 'Stopping model…';
+                this._syncReportToastRunning();
+                return;
+            }
             this._updateProgressUI(data);
         } catch (e) {
             // Ignore polling errors
@@ -898,37 +981,33 @@ class AIReportManager {
             </div>
         `;
 
-        if (this._generateReportAbort) {
-            try { this._generateReportAbort.abort(); } catch (_) { /* ignore */ }
-        }
-        this._generateReportAbort = new AbortController();
-        const reportSignal = this._generateReportAbort.signal;
+        const run = this._beginReportGenerationRun(this.currentFileId);
 
-        this._startReportGenerationToast();
+        this._startReportGenerationToast(run.fileId);
         this._startTimer();
-        
-        // Get cost estimate
+
         try {
-            const estimateUrl = `/api/llm/report/${this.currentFileId}/estimate`;
-            const estimateResp = await fetch(estimateUrl);
-            if (estimateResp.ok) {
-                const estimate = await estimateResp.json();
-                const costDiv = document.getElementById('aiCostEstimate');
-                if (costDiv) {
-                    if (estimate.estimated_cost_usd === 0) {
-                        costDiv.innerHTML = `Estimated: ~${estimate.total_tokens.toLocaleString()} tokens <span style="color: #22c55e; font-weight: 600;">FREE</span>`;
-                    } else {
-                        costDiv.textContent = `Estimated: ~${estimate.total_tokens.toLocaleString()} tokens ($${estimate.estimated_cost_usd.toFixed(4)})`;
+            try {
+                const estimateUrl = `/api/llm/report/${run.fileId}/estimate`;
+                const estimateResp = await fetch(estimateUrl);
+                if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
+                if (estimateResp.ok) {
+                    const estimate = await estimateResp.json();
+                    const costDiv = document.getElementById('aiCostEstimate');
+                    if (costDiv) {
+                        if (estimate.estimated_cost_usd === 0) {
+                            costDiv.innerHTML = `Estimated: ~${estimate.total_tokens.toLocaleString()} tokens <span style="color: #22c55e; font-weight: 600;">FREE</span>`;
+                        } else {
+                            costDiv.textContent = `Estimated: ~${estimate.total_tokens.toLocaleString()} tokens ($${estimate.estimated_cost_usd.toFixed(4)})`;
+                        }
                     }
                 }
+            } catch (e) {
+                // Ignore estimate errors
             }
-        } catch (e) {
-            // Ignore estimate errors
-        }
-        
-        // Generate report - uses default model and web search from config
-        try {
-            const response = await fetch(`/api/llm/report/${this.currentFileId}`, {
+
+            if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
+            const response = await fetch(`/api/llm/report/${run.fileId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -937,12 +1016,12 @@ class AIReportManager {
                     web_search: this.webSearchEnabled || false,
                     focus_mode: this._currentFocusMode || null
                 }),
-                signal: reportSignal
+                signal: run.signal
             });
-            
+
+            if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
             if (response.ok) {
                 const report = await response.json();
-                this._generateReportAbort = null;
                 const elapsed = this._reportToastStart != null
                     ? Math.floor((Date.now() - this._reportToastStart) / 1000)
                     : 0;
@@ -951,32 +1030,21 @@ class AIReportManager {
                     : this._reportToastProviderHint;
                 this._setReportToastSuccess(`Done in ${elapsed}s · ${modelBit}`);
                 this.displayReport(report);
+            } else if (response.status === 499) {
+                return;
             } else {
                 const error = await response.json();
-                this._generateReportAbort = null;
                 this._setReportToastError(error.detail || 'Failed to generate report');
                 this.showError(error.detail || 'Failed to generate report');
             }
         } catch (error) {
-            if (error.name === 'AbortError') {
-                this._generateReportAbort = null;
-                const cached = this._cachedReportByFileId[this.currentFileId];
-                if (cached) {
-                    this.displayReport(cached);
-                } else {
-                    const bodyEl = document.getElementById('aiReportBody');
-                    if (bodyEl) bodyEl.innerHTML = this.getPlaceholderHTML();
-                }
+            if (error.name === 'AbortError' || this._isStaleGenerationRun(run.epoch, run.fileId)) {
                 return;
             }
-            this._generateReportAbort = null;
             this._setReportToastError(error.message || 'Network error — report not generated');
             this.showError('Network error: ' + error.message);
         } finally {
-            this._stopTimer();
-            this.isGenerating = false;
-            // Always query fresh node: renderSection() may have replaced the DOM (tab switch, config save)
-            this._resetGenerateButtonHtml();
+            this._cleanupGenerationRun(run.epoch, run.fileId);
         }
     }
     
@@ -1296,7 +1364,11 @@ class AIReportManager {
     /**
      * Update the file being analyzed
      */
-    setFileId(fileId) {
+    setFileId(fileId, prevFileId = null) {
+        const prevId = prevFileId != null ? prevFileId : this.currentFileId;
+        if (prevId != null && prevId !== fileId) {
+            this.cancelGeneration(prevId, { silent: true });
+        }
         this.currentFileId = fileId;
         this.hasReport = Boolean(fileId && this._cachedReportByFileId[fileId]);
         this.updateStatusBadge('none');
@@ -1315,28 +1387,35 @@ class AIReportManager {
      * Auto-generate report in background when file is loaded
      */
     async autoGenerate() {
-        if (!this.currentFileId || this.isGenerating) return;
-        await this.syncProviderFromServer();
-        if (!this.isConfigured || !this.autoGenerateEnabled) return;
-        this._manualGeneration = false;
+        if (!this.currentFileId) return;
+        const runForFileId = this.currentFileId;
+        if (this._runsByFileId[runForFileId]) return;
 
-        // Loading state during cache GET and POST (fixes empty UI when config was still loading or container mounted late)
+        const run = this._beginReportGenerationRun(runForFileId);
+        this._manualGeneration = false;
         this.isGenerating = true;
         this.updateStatusBadge('loading');
         this._applyGeneratingBodyToDom();
         this._startTimer();
 
         try {
-            // Cached report?
+            await this.syncProviderFromServer();
+            if (this._isStaleGenerationRun(run.epoch, runForFileId)) return;
+            if (this.currentFileId !== runForFileId) return;
+            if (!this.isConfigured || !this.autoGenerateEnabled) return;
+
             try {
-                const response = await fetch(`/api/llm/report/${this.currentFileId}`);
+                const response = await fetch(`/api/llm/report/${run.fileId}`);
+                if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
                 if (response.ok) {
                     const data = await response.json();
                     if (data.exists !== false) {
-                        this.hasReport = true;
-                        this.updateStatusBadge('ready');
-                        if (this.container) {
-                            this.displayReport(data);
+                        if (!this._isStaleGenerationRun(run.epoch, run.fileId)) {
+                            this.hasReport = true;
+                            this.updateStatusBadge('ready');
+                            if (this.container) {
+                                this.displayReport(data);
+                            }
                         }
                         return;
                     }
@@ -1345,25 +1424,23 @@ class AIReportManager {
                 // No cache, generate below
             }
 
-            // Preflight: auto-gen defaults to general_review when data is sparse
+            if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
+
             let autoFocus = null;
             try {
-                const pf = await fetch(`/api/llm/report/${this.currentFileId}/preflight`);
+                const pf = await fetch(`/api/llm/report/${run.fileId}/preflight`);
+                if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
                 if (pf.ok) {
                     const pfData = await pf.json();
                     if (pfData.needs_focus) autoFocus = 'general_review';
                 }
             } catch (e) { /* proceed without focus */ }
 
-            if (this._generateReportAbort) {
-                try { this._generateReportAbort.abort(); } catch (_) { /* ignore */ }
-            }
-            this._generateReportAbort = new AbortController();
-            const reportSignal = this._generateReportAbort.signal;
+            if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
 
-            this._startReportGenerationToast();
+            this._startReportGenerationToast(run.fileId);
 
-            const response = await fetch(`/api/llm/report/${this.currentFileId}`, {
+            const response = await fetch(`/api/llm/report/${run.fileId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1373,12 +1450,13 @@ class AIReportManager {
                     web_search: this.webSearchEnabled || false,
                     focus_mode: autoFocus,
                 }),
-                signal: reportSignal,
+                signal: run.signal,
             });
+
+            if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
 
             if (response.ok) {
                 const report = await response.json();
-                this._generateReportAbort = null;
                 const elapsed = this._reportToastStart != null
                     ? Math.floor((Date.now() - this._reportToastStart) / 1000)
                     : 0;
@@ -1391,9 +1469,10 @@ class AIReportManager {
                 if (this.container) {
                     this.displayReport(report);
                 }
+            } else if (response.status === 499) {
+                return;
             } else {
                 const error = await response.json();
-                this._generateReportAbort = null;
                 this._setReportToastError(error.detail || 'Failed to auto-generate report');
                 this.updateStatusBadge('error', error.detail || 'Generation failed');
                 if (this.container) {
@@ -1401,29 +1480,16 @@ class AIReportManager {
                 }
             }
         } catch (error) {
-            if (error.name === 'AbortError') {
-                this._generateReportAbort = null;
-                const cached = this._cachedReportByFileId[this.currentFileId];
-                if (cached && this.container) {
-                    this.displayReport(cached);
-                    this.updateStatusBadge('ready');
-                } else {
-                    this.updateStatusBadge('none');
-                    const bodyEl = document.getElementById('aiReportBody');
-                    if (bodyEl) bodyEl.innerHTML = this.getPlaceholderHTML();
-                }
+            if (error.name === 'AbortError' || this._isStaleGenerationRun(run.epoch, run.fileId)) {
                 return;
             }
-            this._generateReportAbort = null;
             this._setReportToastError(error.message || 'Network error — report not generated');
             this.updateStatusBadge('error', error.message);
             if (this.container) {
                 this.showError('Network error: ' + error.message);
             }
         } finally {
-            this._stopTimer();
-            this.isGenerating = false;
-            this._resetGenerateButtonHtml();
+            this._cleanupGenerationRun(run.epoch, run.fileId);
         }
     }
 }

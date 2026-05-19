@@ -531,14 +531,33 @@ class SavedFindingsManager {
     }
 
     _clearCompiledEmailTransientState() {
+        const fileId = this._compileEmailFileId;
         this._compiledEmailPending = null;
-        this._compileEmailFileId = null;
         this._dismissCompiledEmailBanner();
+        if (fileId != null) {
+            this.cancelCompileEmail(fileId, { silent: true });
+            return;
+        }
         if (this._compileEmailAbort) {
             try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
         }
         this._compileEmailAbort = null;
         this._removeCompileEmailToast();
+    }
+
+    cancelCompileEmail(fileId, { silent = false } = {}) {
+        if (fileId == null) return;
+        fetch(`/api/llm/findings/${fileId}/export/cancel`, { method: 'POST' }).catch(() => {});
+        const activeForFile = this._compileEmailFileId === fileId;
+        if (!activeForFile) return;
+        if (this._compileEmailAbort) {
+            try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
+        }
+        this._compileEmailAbort = null;
+        this._compileEmailFileId = null;
+        this._removeCompileEmailToast();
+        this._dismissCompiledEmailBanner();
+        if (!silent && window.showToast) window.showToast('Compile email cancelled', 'info');
     }
 
     _syncCompiledEmailUiForCurrentFile() {
@@ -646,12 +665,8 @@ class SavedFindingsManager {
         dismiss.style.display = 'block';
         dismiss.onclick = (e) => {
             e.stopPropagation();
-            if (this._compileEmailAbort) {
-                try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
-            }
-            this._compileEmailAbort = null;
-            this._removeCompileEmailToast();
-            if (window.showToast) window.showToast('Compile email cancelled', 'info');
+            const fileId = this._compileEmailFileId ?? this.currentFileId;
+            this.cancelCompileEmail(fileId);
         };
     }
 
@@ -749,6 +764,9 @@ class SavedFindingsManager {
                 throw new Error(errText || 'Export failed');
             }
             if (!resp.ok) {
+                if (resp.status === 499) {
+                    return;
+                }
                 const detail = data.detail;
                 const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg || d).join(' ') : (data.message || errText));
                 throw new Error(msg || 'Export failed');

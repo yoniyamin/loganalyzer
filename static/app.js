@@ -2200,7 +2200,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 1000);
   }
 
+  function cancelInFlightModelRequests(fileId) {
+    if (fileId == null) return;
+    if (window.aiReportManager?.cancelGeneration) {
+      window.aiReportManager.cancelGeneration(fileId, { silent: true });
+    }
+    if (window.savedFindingsManager?.cancelCompileEmail) {
+      window.savedFindingsManager.cancelCompileEmail(fileId, { silent: true });
+    }
+  }
+
   function loadFile(id) {
+    const prevId = currentFileId;
+    if (prevId != null && prevId !== id) {
+      cancelInFlightModelRequests(prevId);
+    }
     // Clear all state from previous file
     clearAllFileData();
     
@@ -2483,6 +2497,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function closeLogFile() {
     if (!currentFileId) return;
+    const closingId = currentFileId;
+    cancelInFlightModelRequests(closingId);
     if (window.pollInterval) {
       clearInterval(window.pollInterval);
       window.pollInterval = null;
@@ -8989,11 +9005,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Also render AI report when a file is loaded
   const originalLoadFile = loadFile;
   loadFile = function(id) {
+    const prevAiFileId = window.aiReportManager?.currentFileId ?? null;
     originalLoadFile(id);
     // Mount AI Insights markup before setFileId so container exists when auto-generate updates the UI
     renderAIReportSection();
     if (window.aiReportManager) {
-      window.aiReportManager.setFileId(id);
+      window.aiReportManager.setFileId(id, prevAiFileId);
     }
   };
 

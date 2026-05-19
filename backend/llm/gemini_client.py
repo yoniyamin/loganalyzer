@@ -191,6 +191,8 @@ class GeminiClient:
         web_search: bool = False,
         image_data: Optional[bytes] = None,
         image_mime_type: str = "image/png",
+        cancel_file_id: Optional[int] = None,
+        cancel_kind: str = "report",
     ) -> GeminiCompletionResult:
         """
         Generate a completion using Gemini.
@@ -264,67 +266,94 @@ class GeminiClient:
         url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
         
         logger.info(f"Calling Gemini API: model={model}, max_tokens={max_tokens}")
-        
+
+        from backend.llm.generation_cancel import (
+            check_cancelled,
+            maybe_raise_cancelled,
+            register_client,
+            unregister_client,
+        )
+
+        client = httpx.Client(timeout=120.0)
+        if cancel_file_id is not None:
+            register_client(cancel_file_id, client, kind=cancel_kind)
+        response = None
         try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(url, json=payload)
-                
-                if response.status_code != 200:
-                    error_detail = response.text
-                    try:
-                        error_json = response.json()
-                        error_detail = error_json.get("error", {}).get("message", error_detail)
-                    except Exception:
-                        pass
-                    logger.error(f"Gemini API error ({response.status_code}): {error_detail}")
-                    raise Exception(f"Gemini API error ({response.status_code}): {error_detail}")
-                
-                data = response.json()
-                
-                # Extract response
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    raise Exception("No response candidates from Gemini")
-                
-                candidate = candidates[0]
-                content_parts = candidate.get("content", {}).get("parts", [])
-                content = "".join(p.get("text", "") for p in content_parts)
-                finish_reason = candidate.get("finishReason", "STOP")
-                
-                # Get token counts
-                usage = data.get("usageMetadata", {})
-                prompt_tokens = usage.get("promptTokenCount", 0)
-                completion_tokens = usage.get("candidatesTokenCount", 0)
-                total_tokens = usage.get("totalTokenCount", prompt_tokens + completion_tokens)
-                
-                # Calculate cost
-                model_info = self.get_model_info(model)
-                cost = 0.0
-                if model_info:
-                    cost = model_info.estimate_cost(prompt_tokens, completion_tokens)
-                
-                logger.info(f"Gemini response: {prompt_tokens} prompt + {completion_tokens} completion tokens, finish_reason={finish_reason}")
-                
-                if completion_tokens == 0 and finish_reason != "STOP":
-                    logger.warning(
-                        f"Gemini returned 0 completion tokens with finish_reason={finish_reason}. "
-                        f"Candidate: {json.dumps(candidate, default=str)[:500]}"
-                    )
-                
-                return GeminiCompletionResult(
-                    content=content,
-                    model=model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    cost_usd=round(cost, 6),
-                    finish_reason=finish_reason
-                )
-                
-        except httpx.TimeoutException:
-            logger.error("Gemini API request timed out")
-            raise Exception("Gemini API request timed out")
+            if cancel_file_id is not None:
+                check_cancelled(cancel_file_id, kind=cancel_kind)
+            response = client.post(url, json=payload)
         except Exception as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
+            raise
+        finally:
+            if cancel_file_id is not None:
+                unregister_client(cancel_file_id, client, kind=cancel_kind)
+            client.close()
+
+        if response is None:
+            if cancel_file_id is not None:
+                check_cancelled(cancel_file_id, kind=cancel_kind)
+            raise Exception("Gemini request ended without a response")
+
+        try:
+            if response.status_code != 200:
+                error_detail = response.text
+                try:
+                    error_json = response.json()
+                    error_detail = error_json.get("error", {}).get("message", error_detail)
+                except Exception:
+                    pass
+                logger.error(f"Gemini API error ({response.status_code}): {error_detail}")
+                raise Exception(f"Gemini API error ({response.status_code}): {error_detail}")
+
+            data = response.json()
+
+            # Extract response
+            candidates = data.get("candidates", [])
+            if not candidates:
+                raise Exception("No response candidates from Gemini")
+
+            candidate = candidates[0]
+            content_parts = candidate.get("content", {}).get("parts", [])
+            content = "".join(p.get("text", "") for p in content_parts)
+            finish_reason = candidate.get("finishReason", "STOP")
+
+            # Get token counts
+            usage = data.get("usageMetadata", {})
+            prompt_tokens = usage.get("promptTokenCount", 0)
+            completion_tokens = usage.get("candidatesTokenCount", 0)
+            total_tokens = usage.get("totalTokenCount", prompt_tokens + completion_tokens)
+
+            # Calculate cost
+            model_info = self.get_model_info(model)
+            cost = 0.0
+            if model_info:
+                cost = model_info.estimate_cost(prompt_tokens, completion_tokens)
+
+            logger.info(f"Gemini response: {prompt_tokens} prompt + {completion_tokens} completion tokens, finish_reason={finish_reason}")
+
+            if completion_tokens == 0 and finish_reason != "STOP":
+                logger.warning(
+                    f"Gemini returned 0 completion tokens with finish_reason={finish_reason}. "
+                    f"Candidate: {json.dumps(candidate, default=str)[:500]}"
+                )
+
+            return GeminiCompletionResult(
+                content=content,
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost_usd=round(cost, 6),
+                finish_reason=finish_reason
+            )
+
+        except httpx.TimeoutException as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
+            logger.error("Gemini API request timed out")
+            raise Exception("Gemini API request timed out") from e
+        except Exception as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
             logger.error(f"Gemini API error: {e}")
             raise
 

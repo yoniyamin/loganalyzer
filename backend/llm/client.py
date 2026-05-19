@@ -525,6 +525,8 @@ class OpenRouterClient:
         web_search: bool = False,
         image_data: Optional[bytes] = None,
         image_mime_type: str = "image/png",
+        cancel_file_id: Optional[int] = None,
+        cancel_kind: str = "report",
     ) -> CompletionResult:
         """
         Generate a completion.
@@ -579,14 +581,40 @@ class OpenRouterClient:
         # See: https://openrouter.ai/docs/requests#web-search
         if web_search:
             payload["plugins"] = [{"id": "web", "max_results": 5}]
-        
-        with httpx.Client(timeout=120.0) as client:
+
+        from backend.llm.generation_cancel import (
+            check_cancelled,
+            maybe_raise_cancelled,
+            register_client,
+            unregister_client,
+        )
+
+        client = httpx.Client(timeout=120.0)
+        if cancel_file_id is not None:
+            register_client(cancel_file_id, client, kind=cancel_kind)
+        response = None
+        try:
+            if cancel_file_id is not None:
+                check_cancelled(cancel_file_id, kind=cancel_kind)
             response = client.post(
                 f"{self.base_url}/chat/completions",
                 headers=self._get_headers(),
                 json=payload
             )
-            
+        except Exception as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
+            raise
+        finally:
+            if cancel_file_id is not None:
+                unregister_client(cancel_file_id, client, kind=cancel_kind)
+            client.close()
+
+        if response is None:
+            if cancel_file_id is not None:
+                check_cancelled(cancel_file_id, kind=cancel_kind)
+            raise Exception("OpenRouter request ended without a response")
+
+        try:
             if response.status_code != 200:
                 error_detail = response.text
                 try:
@@ -595,21 +623,21 @@ class OpenRouterClient:
                 except Exception:
                     pass
                 raise Exception(f"OpenRouter API error ({response.status_code}): {error_detail}")
-            
+
             data = response.json()
-            
+
             choice = data["choices"][0]
             usage = data.get("usage", {})
-            
+
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
-            
+
             # Calculate cost
             model_info = self.get_model_info(model)
             cost = 0.0
             if model_info:
                 cost = model_info.estimate_cost(prompt_tokens, completion_tokens)
-            
+
             return CompletionResult(
                 content=choice["message"]["content"],
                 model=data.get("model", model),
@@ -619,7 +647,10 @@ class OpenRouterClient:
                 cost_usd=round(cost, 6),
                 finish_reason=choice.get("finish_reason", "unknown")
             )
-    
+        except Exception as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
+            raise
+
     def complete_stream(
         self,
         messages: List[Dict[str, str]],

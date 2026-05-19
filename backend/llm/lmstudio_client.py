@@ -198,6 +198,8 @@ class LMStudioClient:
         model: Optional[str] = None,
         max_tokens: int = LMSTUDIO_DEFAULT_MAX_TOKENS,
         temperature: float = 0.3,
+        cancel_file_id: Optional[int] = None,
+        cancel_kind: str = "report",
         **kwargs,
     ) -> CompletionResult:
         """
@@ -222,18 +224,44 @@ class LMStudioClient:
         if model:
             payload["model"] = model
 
+        from backend.llm.generation_cancel import (
+            check_cancelled,
+            maybe_raise_cancelled,
+            register_client,
+            unregister_client,
+        )
+
+        client = httpx.Client(timeout=180.0)
+        if cancel_file_id is not None:
+            register_client(cancel_file_id, client, kind=cancel_kind)
+        response = None
         try:
-            with httpx.Client(timeout=180.0) as client:
-                response = client.post(f"{self.base_url}/api/v1/chat", json=payload)
+            if cancel_file_id is not None:
+                check_cancelled(cancel_file_id, kind=cancel_kind)
+            response = client.post(f"{self.base_url}/api/v1/chat", json=payload)
         except httpx.ConnectError as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
             raise ValueError(
                 f"Cannot connect to LM Studio at {self.base_url}. "
                 "Make sure the server is running."
             ) from e
         except httpx.TimeoutException as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
             raise ValueError(
                 "LM Studio request timed out. The model may still be loading or processing."
             ) from e
+        except Exception as e:
+            maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
+            raise
+        finally:
+            if cancel_file_id is not None:
+                unregister_client(cancel_file_id, client, kind=cancel_kind)
+            client.close()
+
+        if response is None:
+            if cancel_file_id is not None:
+                check_cancelled(cancel_file_id, kind=cancel_kind)
+            raise ValueError("LM Studio request ended without a response")
 
         if response.status_code != 200:
             raise ValueError(

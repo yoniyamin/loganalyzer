@@ -47,6 +47,8 @@ PROVIDER_LMSTUDIO = "lmstudio"
 import threading
 import time as _time
 
+from backend.llm.generation_cancel import GenerationCancelled, begin as begin_generation, check_cancelled, clear as clear_generation_cancel
+
 _progress_lock = threading.Lock()
 _progress_store: Dict[int, Dict[str, Any]] = {}
 
@@ -853,6 +855,7 @@ class ReportGenerator:
                 model = DEFAULT_MODEL
         
         logger.info(f"Starting report generation for file_id={file_id}, provider={self.provider}, model={model}, quick={quick}")
+        begin_generation(file_id, kind="report")
         set_progress(file_id, "preparing", "Collecting log data and building context...")
 
         # Check if the appropriate client is configured
@@ -877,6 +880,8 @@ class ReportGenerator:
         except Exception as e:
             logger.error(f"Error getting file info: {e}\n{traceback.format_exc()}")
             raise ValueError(f"Failed to get file info: {e}")
+
+        check_cancelled(file_id)
         
         # Build performance summary
         try:
@@ -886,6 +891,8 @@ class ReportGenerator:
         except Exception as e:
             logger.error(f"Error building performance summary: {e}\n{traceback.format_exc()}")
             raise ValueError(f"Failed to build performance summary: {e}")
+
+        check_cancelled(file_id)
         
         # Ensure embeddings exist
         try:
@@ -896,6 +903,8 @@ class ReportGenerator:
         except Exception as e:
             logger.warning(f"Error with embeddings (continuing anyway): {e}")
             # Don't fail - embeddings are nice to have but not required
+
+        check_cancelled(file_id)
         
         # Get RAG context
         try:
@@ -941,6 +950,8 @@ class ReportGenerator:
                 logger.info(f"Tuning reference built for endpoint: {source_type or target_type}")
         except Exception as e:
             logger.debug(f"ar_props tuning reference lookup failed (using fallback): {e}")
+
+        check_cancelled(file_id)
 
         # Build messages
         compact = self.provider == PROVIDER_LMSTUDIO
@@ -1027,6 +1038,8 @@ class ReportGenerator:
         elif quick:
             logger.debug("Chart rendering skipped: quick report mode")
 
+        check_cancelled(file_id)
+
         # Generate completion using appropriate provider
         try:
             if use_gemini:
@@ -1064,6 +1077,7 @@ class ReportGenerator:
                         temperature=0.3,
                         web_search=use_web_search,
                         image_data=chart_image_data,
+                        cancel_file_id=file_id,
                     )
                 elif use_lmstudio:
                     # LM Studio handles web search via its own Tavily MCP;
@@ -1073,6 +1087,7 @@ class ReportGenerator:
                         model=model,
                         max_tokens=max_output,
                         temperature=lmstudio_temp,
+                        cancel_file_id=file_id,
                     )
                 else:
                     return self.llm_client.complete(
@@ -1082,6 +1097,7 @@ class ReportGenerator:
                         temperature=0.3,
                         web_search=use_web_search,
                         image_data=chart_image_data,
+                        cancel_file_id=file_id,
                     )
             
             result = _call_llm(web_search)
@@ -1107,6 +1123,9 @@ class ReportGenerator:
                 prompt_tokens=result.prompt_tokens,
                 completion_tokens=result.completion_tokens,
             )
+        except GenerationCancelled:
+            set_progress(file_id, "cancelled", "Report generation cancelled")
+            raise
         except Exception as e:
             set_progress(file_id, "error", str(e)[:200])
             logger.error(f"LLM API call failed: {e}\n{traceback.format_exc()}")
@@ -1140,6 +1159,8 @@ class ReportGenerator:
         chart_b64 = None
         if chart_image_data:
             chart_b64 = base64.b64encode(chart_image_data).decode("utf-8")
+
+        check_cancelled(file_id)
 
         return {
             "file_id": file_id,

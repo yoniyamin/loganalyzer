@@ -946,7 +946,9 @@ def generate_report(
     
     # Generate report
     from backend.llm.report_generator import clear_progress
+    from backend.llm.generation_cancel import GenerationCancelled, clear as clear_generation_cancel, is_cancelled
 
+    was_cancelled = False
     try:
         logger.info(f"Generating report for file_id={file_id}, model={model}")
         generator = ReportGenerator(db)
@@ -958,16 +960,28 @@ def generate_report(
             focus_mode=request.focus_mode,
         )
         logger.info(f"Report generated successfully for file_id={file_id}")
+    except GenerationCancelled:
+        was_cancelled = True
+        logger.info(f"Report generation cancelled for file_id={file_id}")
+        raise HTTPException(status_code=499, detail="Report generation cancelled")
     except ValueError as e:
         clear_progress(file_id)
+        clear_generation_cancel(file_id, kind="report")
         logger.error(f"ValueError during report generation: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         clear_progress(file_id)
+        clear_generation_cancel(file_id, kind="report")
         logger.error(f"Unexpected error during report generation: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
     finally:
+        was_cancelled = was_cancelled or is_cancelled(file_id, kind="report")
         clear_progress(file_id)
+        clear_generation_cancel(file_id, kind="report")
+
+    if was_cancelled:
+        logger.info(f"Report generation cancelled for file_id={file_id} (after model returned)")
+        raise HTTPException(status_code=499, detail="Report generation cancelled")
     
     # Save report to database
     report = LLMReport(
@@ -1545,6 +1559,23 @@ def get_generation_progress(file_id: int):
         return {"phase": "idle", "detail": ""}
 
     return progress
+
+
+@router.post("/report/{file_id}/cancel")
+def cancel_report_generation(file_id: int):
+    """
+    Cancel an in-flight report generation for a file.
+
+    Closes the active provider HTTP request (e.g. LM Studio) so the model stops
+    processing the current prediction when the client disconnects.
+    """
+    from backend.llm.generation_cancel import request_cancel
+    from backend.llm.report_generator import set_progress
+
+    request_cancel(file_id, kind="report")
+    set_progress(file_id, "cancelled", "Stopping model…")
+    logger.info(f"Cancel requested for report generation file_id={file_id}")
+    return {"success": True, "cancelled": True}
 
 
 # ============================================================
@@ -2622,78 +2653,117 @@ def _findings_export_audience_guidance(audience: str) -> str:
 
 def _compile_findings_email_with_llm(
     db: Session,
+    file_id: int,
     raw_markdown: str,
     filename_label: str,
     audience: str,
     additional_observations: str,
 ) -> dict:
     """Call configured LLM to produce email-ready text. Returns dict with content and usage."""
-    config = db.query(LLMConfig).first()
-    if not config:
-        raise HTTPException(status_code=400, detail="LLM not configured. Add Insights API keys in Settings.")
-
-    provider = (config.provider or PROVIDER_GEMINI).lower()
-    model = _effective_compile_model(config, provider)
-    if provider == PROVIDER_GEMINI:
-        if not config.gemini_api_key_encrypted:
-            raise HTTPException(status_code=400, detail="Gemini API key not configured.")
-        _ensure_gemini_configured(db)
-        client = get_gemini_client()
-        if not client.is_configured:
-            raise HTTPException(status_code=400, detail="Gemini API key not configured.")
-    elif provider == PROVIDER_LMSTUDIO:
-        lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
-        client = get_lmstudio_client()
-        client.set_base_url(lmstudio_url)
-    else:
-        if not config.api_key_encrypted:
-            raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
-        _ensure_client_configured(db)
-        client = get_llm_client()
-        if not client.is_configured:
-            raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
-
-    audience_guide = _findings_export_audience_guidance(audience)
-
-    system_prompt = (
-        "You compile findings from log analysis into a single email-ready message. "
-        "Output plain text suitable for pasting into an email body. Do not include a Subject line unless the user "
-        "explicitly asked for one. Use clear headings (e.g. plain lines in CAPS or **bold** markdown). "
-        "Do not invent facts beyond the provided material. If information is missing, say so briefly."
+    from backend.llm.generation_cancel import (
+        GenerationCancelled,
+        begin,
+        check_cancelled,
+        clear,
     )
 
-    user_parts = [
-        f"Log file: {filename_label}",
-        f"Target audience: {audience}",
-        f"Audience guidance: {audience_guide}",
-    ]
-    if additional_observations.strip():
-        user_parts.append(
-            "Analyst additional context (weave in prominently):\n" + additional_observations.strip()
+    begin(file_id, kind="compile")
+    try:
+        check_cancelled(file_id, kind="compile")
+        config = db.query(LLMConfig).first()
+        if not config:
+            raise HTTPException(status_code=400, detail="LLM not configured. Add Insights API keys in Settings.")
+
+        provider = (config.provider or PROVIDER_GEMINI).lower()
+        model = _effective_compile_model(config, provider)
+        if provider == PROVIDER_GEMINI:
+            if not config.gemini_api_key_encrypted:
+                raise HTTPException(status_code=400, detail="Gemini API key not configured.")
+            _ensure_gemini_configured(db)
+            gemini = get_gemini_client()
+            if not gemini.is_configured:
+                raise HTTPException(status_code=400, detail="Gemini API key not configured.")
+        elif provider == PROVIDER_LMSTUDIO:
+            lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
+            lmstudio = get_lmstudio_client()
+            lmstudio.set_base_url(lmstudio_url)
+        else:
+            if not config.api_key_encrypted:
+                raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
+            _ensure_client_configured(db)
+            openrouter = get_llm_client()
+            if not openrouter.is_configured:
+                raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
+
+        audience_guide = _findings_export_audience_guidance(audience)
+
+        system_prompt = (
+            "You compile findings from log analysis into a single email-ready message. "
+            "Output plain text suitable for pasting into an email body. Do not include a Subject line unless the user "
+            "explicitly asked for one. Use clear headings (e.g. plain lines in CAPS or **bold** markdown). "
+            "Do not invent facts beyond the provided material. If information is missing, say so briefly."
         )
-    user_parts.append("Source material (Markdown):\n\n" + raw_markdown)
-    user_prompt = "\n\n".join(user_parts)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-    max_tokens = 4096
-    result = client.complete(
-        messages=messages,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=0.3,
-        web_search=False,
-    )
+        user_parts = [
+            f"Log file: {filename_label}",
+            f"Target audience: {audience}",
+            f"Audience guidance: {audience_guide}",
+        ]
+        if additional_observations.strip():
+            user_parts.append(
+                "Analyst additional context (weave in prominently):\n" + additional_observations.strip()
+            )
+        user_parts.append("Source material (Markdown):\n\n" + raw_markdown)
+        user_prompt = "\n\n".join(user_parts)
 
-    return {
-        "content": (result.content or "").strip(),
-        "model_used": result.model,
-        "prompt_tokens": result.prompt_tokens,
-        "completion_tokens": result.completion_tokens,
-        "cost_usd": result.cost_usd,
-    }
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        max_tokens = 4096
+        check_cancelled(file_id, kind="compile")
+
+        if provider == PROVIDER_GEMINI:
+            result = gemini.complete(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0.3,
+                web_search=False,
+                cancel_file_id=file_id,
+                cancel_kind="compile",
+            )
+        elif provider == PROVIDER_LMSTUDIO:
+            result = lmstudio.complete(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0.3,
+                cancel_file_id=file_id,
+                cancel_kind="compile",
+            )
+        else:
+            result = openrouter.complete(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0.3,
+                web_search=False,
+                cancel_file_id=file_id,
+                cancel_kind="compile",
+            )
+
+        return {
+            "content": (result.content or "").strip(),
+            "model_used": result.model,
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "cost_usd": result.cost_usd,
+        }
+    except GenerationCancelled:
+        raise
+    finally:
+        clear(file_id, kind="compile")
 
 
 @router.post("/findings/from-thread/{thread_id}", response_model=SavedFindingResponse)
@@ -2749,6 +2819,7 @@ def export_findings(
 ):
     """Export findings as Markdown and optionally compile email-ready text with the configured LLM."""
     from backend.database import SavedFinding
+    from backend.llm.generation_cancel import GenerationCancelled
 
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not file:
@@ -2773,11 +2844,14 @@ def export_findings(
         try:
             compiled = _compile_findings_email_with_llm(
                 db,
+                file_id=file_id,
                 raw_markdown=md,
                 filename_label=file.filename or "",
                 audience=body.audience or "technical",
                 additional_observations=extra_obs,
             )
+        except GenerationCancelled:
+            raise HTTPException(status_code=499, detail="Compile email cancelled")
         except HTTPException:
             raise
         except Exception as e:
@@ -2805,6 +2879,22 @@ def export_findings(
         "format": "markdown",
         "raw_markdown": None,
     }
+
+
+@router.post("/findings/{file_id}/export/cancel")
+def cancel_compile_email(file_id: int):
+    """
+    Cancel an in-flight compile-email export for a file.
+
+    Closes the active provider HTTP request so the model stops processing.
+    """
+    from backend.llm.generation_cancel import is_running, request_cancel
+
+    if not is_running(file_id, kind="compile"):
+        return {"success": True, "cancelled": False, "message": "No active compile to cancel"}
+
+    request_cancel(file_id, kind="compile")
+    return {"success": True, "cancelled": True}
 
 
 @router.get("/findings/{file_id}", response_model=SavedFindingsListResponse)
