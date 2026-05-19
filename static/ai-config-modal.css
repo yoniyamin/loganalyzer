@@ -139,6 +139,38 @@
     margin-bottom: 8px;
 }
 
+.ai-models-section-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary, #cdd6f4);
+    margin: 0 0 6px;
+}
+
+.ai-models-section-intro {
+    margin-bottom: 16px;
+}
+
+.ai-model-task-block {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-color, #313244);
+}
+
+.ai-model-task-block:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.ai-model-task-block > label {
+    margin-bottom: 4px;
+}
+
+.ai-model-task-block > .ai-help-text:first-of-type {
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+
 .ai-input-wrapper {
     position: relative;
     display: flex;

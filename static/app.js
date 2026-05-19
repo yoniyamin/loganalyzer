@@ -4530,10 +4530,23 @@ document.addEventListener("DOMContentLoaded", () => {
     error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>'
   };
 
+  function cleanToastMessage(message) {
+    if (typeof message !== 'string') return message;
+    return message
+      .replace(/^[\s\uFE0F\u200D]*(?:[\p{Extended_Pictographic}\p{So}\p{Sk}]|✓|✕|ℹ|⌛|⏳|⚡|⚠|❌|✅|⏱|🔄|📊|🔍)+[\s]*/u, '')
+      .trimStart();
+  }
+
+  function isJobProgressToast(el) {
+    return el && (el.id === 'compileEmailToast' || el.id === 'generateReportToast');
+  }
+
   // Lightweight toast notification
   // duration: ms before auto-dismiss (0 = stay until hideToast() is called)
   function showToast(message, type = 'info', duration = 2500) {
-    document.querySelectorAll('.app-toast:not(#compileEmailToast)').forEach(t => t.remove());
+    document.querySelectorAll('.app-toast').forEach(t => {
+      if (!isJobProgressToast(t)) t.remove();
+    });
 
     const toast = document.createElement('div');
     toast.className = `app-toast app-toast-${type}`;
@@ -4547,7 +4560,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const text = document.createElement('div');
     text.className = 'app-toast-text';
-    text.textContent = message;
+    text.textContent = cleanToastMessage(message);
 
     toast.appendChild(icon);
     toast.appendChild(text);
@@ -4564,7 +4577,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function hideToast() {
-    const toast = document.querySelector('.app-toast:not(#compileEmailToast)');
+    const toast = Array.from(document.querySelectorAll('.app-toast')).find(t => !isJobProgressToast(t));
     if (!toast) return;
     toast.classList.remove('visible');
     setTimeout(() => toast.remove(), 300);

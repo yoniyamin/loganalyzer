@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
 from sqlalchemy import text
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -58,7 +58,8 @@ class ConfigRequest(BaseModel):
     lmstudio_base_url: Optional[str] = None       # LM Studio server URL
     lmstudio_temperature: Optional[float] = None  # 0.0–2.0, default 0.3
     lmstudio_max_tokens: Optional[int] = None     # response length cap, default 1500
-    default_model: Optional[str] = None  # Provider-specific model ID
+    default_model: Optional[str] = None  # Report / insights model (provider-specific)
+    compile_model: Optional[str] = None  # Findings compile-email model; empty = same as default_model
     web_search_enabled: Optional[bool] = None  # Enable web search in reports
     sanitize_log_for_cloud_llm: Optional[bool] = None  # Gemini/OpenRouter only; LM Studio skips sanitization regardless
 
@@ -68,6 +69,7 @@ class ConfigResponse(BaseModel):
     is_configured: bool
     provider: str = "gemini"
     default_model: Optional[str] = None
+    compile_model: Optional[str] = None
     gemini_configured: bool = False
     openrouter_configured: bool = False
     lmstudio_configured: bool = False
@@ -236,6 +238,39 @@ def _ensure_tavily_column(db: Session):
             logger.warning("Failed to add tavily_api_key_encrypted column: %s", e)
 
 
+def _ensure_compile_model_column(db: Session):
+    """Ensure compile_model exists; backfill from default_model for existing rows."""
+    try:
+        db.execute(text("SELECT compile_model FROM llm_config LIMIT 1"))
+    except Exception:
+        try:
+            db.execute(text("ALTER TABLE llm_config ADD COLUMN compile_model VARCHAR"))
+            db.execute(
+                text(
+                    "UPDATE llm_config SET compile_model = default_model "
+                    "WHERE compile_model IS NULL AND default_model IS NOT NULL"
+                )
+            )
+            db.commit()
+        except Exception as e:
+            logger.warning("Failed to add compile_model column: %s", e)
+
+
+def _effective_compile_model(config: Optional[LLMConfig], provider: str) -> str:
+    """Model ID for findings email compile; falls back to report default_model."""
+    stored = getattr(config, "compile_model", None) if config else None
+    if stored and str(stored).strip():
+        return str(stored).strip()
+    report = config.default_model if config else None
+    if report and str(report).strip():
+        return str(report).strip()
+    if provider == PROVIDER_GEMINI:
+        return DEFAULT_GEMINI_MODEL
+    if provider == PROVIDER_LMSTUDIO:
+        return ""
+    return DEFAULT_MODEL
+
+
 def _ensure_lmstudio_column(db: Session):
     """Ensure all lmstudio_* columns exist (runtime guard alongside the migration)."""
     for col, ddl in [
@@ -347,6 +382,7 @@ def get_config(db: Session = Depends(get_db)):
     """Get current LLM configuration status."""
     _ensure_tavily_column(db)
     _ensure_lmstudio_column(db)
+    _ensure_compile_model_column(db)
     _ensure_sanitize_cloud_column(db)
     config = db.query(LLMConfig).first()
     
@@ -355,6 +391,7 @@ def get_config(db: Session = Depends(get_db)):
             is_configured=False,
             provider=PROVIDER_LMSTUDIO,
             default_model=None,
+            compile_model=None,
             gemini_configured=False,
             openrouter_configured=False,
             lmstudio_configured=False,
@@ -410,10 +447,14 @@ def get_config(db: Session = Depends(get_db)):
     stored_sanitize = getattr(config, "sanitize_log_for_cloud_llm", True)
     sanitize_pref = stored_sanitize if stored_sanitize is not None else True
 
+    report_model = config.default_model or (
+        DEFAULT_GEMINI_MODEL if provider == PROVIDER_GEMINI else DEFAULT_MODEL
+    )
     return ConfigResponse(
         is_configured=is_configured,
         provider=provider,
-        default_model=config.default_model or (DEFAULT_GEMINI_MODEL if provider == PROVIDER_GEMINI else DEFAULT_MODEL),
+        default_model=report_model,
+        compile_model=_effective_compile_model(config, provider),
         gemini_configured=gemini_configured,
         openrouter_configured=openrouter_configured,
         lmstudio_configured=lmstudio_configured,
@@ -435,6 +476,7 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     """Save LLM configuration (API keys and preferences)."""
     _ensure_tavily_column(db)
     _ensure_lmstudio_column(db)
+    _ensure_compile_model_column(db)
     _ensure_sanitize_cloud_column(db)
     # Get or create config
     config = db.query(LLMConfig).first()
@@ -484,12 +526,18 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="OpenRouter API key required")
     # LM Studio: no key required — URL defaults to localhost:1234
     
-    # Update default model
+    # Update report model
     if request.default_model:
         config.default_model = request.default_model
     elif not config.default_model:
         # Set default based on provider
         config.default_model = DEFAULT_GEMINI_MODEL if provider == PROVIDER_GEMINI else DEFAULT_MODEL
+
+    # Update compile-email model (null = same as report model)
+    if request.compile_model is not None:
+        cm = (request.compile_model or "").strip()
+        dm = (config.default_model or "").strip()
+        config.compile_model = None if (not cm or cm == dm) else cm
     
     # Update web search setting
     if request.web_search_enabled is not None:
@@ -539,10 +587,12 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     stored_sanitize = getattr(config, "sanitize_log_for_cloud_llm", True)
     sanitize_pref = stored_sanitize if stored_sanitize is not None else True
 
+    provider_out = config.provider or PROVIDER_GEMINI
     return ConfigResponse(
         is_configured=True,
-        provider=config.provider,
+        provider=provider_out,
         default_model=config.default_model,
+        compile_model=_effective_compile_model(config, provider_out),
         gemini_configured=gemini_configured,
         openrouter_configured=openrouter_configured,
         lmstudio_configured=lmstudio_configured,
@@ -2583,6 +2633,7 @@ def _compile_findings_email_with_llm(
         raise HTTPException(status_code=400, detail="LLM not configured. Add Insights API keys in Settings.")
 
     provider = (config.provider or PROVIDER_GEMINI).lower()
+    model = _effective_compile_model(config, provider)
     if provider == PROVIDER_GEMINI:
         if not config.gemini_api_key_encrypted:
             raise HTTPException(status_code=400, detail="Gemini API key not configured.")
@@ -2590,12 +2641,10 @@ def _compile_findings_email_with_llm(
         client = get_gemini_client()
         if not client.is_configured:
             raise HTTPException(status_code=400, detail="Gemini API key not configured.")
-        model = config.default_model or DEFAULT_GEMINI_MODEL
     elif provider == PROVIDER_LMSTUDIO:
         lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
         client = get_lmstudio_client()
         client.set_base_url(lmstudio_url)
-        model = config.default_model or ""
     else:
         if not config.api_key_encrypted:
             raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
@@ -2603,7 +2652,6 @@ def _compile_findings_email_with_llm(
         client = get_llm_client()
         if not client.is_configured:
             raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
-        model = config.default_model or DEFAULT_MODEL
 
     audience_guide = _findings_export_audience_guidance(audience)
 
@@ -2694,22 +2742,13 @@ def save_finding_from_thread(
 
 
 @router.post("/findings/{file_id}/export")
-async def export_findings(
+def export_findings(
     file_id: int,
-    request: Request,
+    body: FindingsExportRequest = Body(default=FindingsExportRequest()),
     db: Session = Depends(get_db)
 ):
     """Export findings as Markdown and optionally compile email-ready text with the configured LLM."""
     from backend.database import SavedFinding
-
-    raw = await request.body()
-    if raw:
-        try:
-            body = FindingsExportRequest.model_validate_json(raw)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid JSON body for export")
-    else:
-        body = FindingsExportRequest()
 
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not file:

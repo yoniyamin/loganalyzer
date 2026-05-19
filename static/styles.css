@@ -5719,7 +5719,7 @@ body {
     background: rgba(255, 255, 255, 0.06);
 }
 
-/* Compile-email job toast (clickable, progress) */
+/* Long-running job toasts: compile email + insights report (clickable, progress) */
 .compile-email-toast.app-toast {
     pointer-events: auto;
     max-width: min(420px, calc(100vw - 32px));

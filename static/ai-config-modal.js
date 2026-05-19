@@ -185,30 +185,53 @@ class AIConfigModal {
                         
                         <div id="aiTestResult" class="ai-test-result" style="display: none;"></div>
                         
-                        <div class="ai-form-group">
-                            <label for="aiDefaultModel">Default Model</label>
-                            <select id="aiDefaultModel" class="ai-select">
+                        <div class="ai-form-group ai-models-section" id="aiModelsSection">
+                            <p class="ai-models-section-title">Models by task</p>
+                            <p class="ai-help-text ai-models-section-intro">
+                                Choose which model runs each workflow. By default, compile email uses the same model as insights reports until you select another.
+                            </p>
+                            <div class="ai-model-task-block">
+                            <label for="aiReportModel">Insights report model</label>
+                            <p class="ai-help-text">Log summary and full insights reports in the Findings tab.</p>
+                            <select id="aiReportModel" class="ai-select">
                                 <option value="gemini-2.5-flash">Loading models...</option>
                             </select>
-                            <div class="ai-model-info" id="aiModelInfo">
+                            <div class="ai-model-info" id="aiReportModelInfo">
                                 <div class="model-description">Select a model to see details</div>
                                 <div class="model-pricing">
                                     <span>Input: $--/M tokens</span>
                                     <span>Output: $--/M tokens</span>
                                 </div>
                             </div>
+                            </div>
+                            <div class="ai-model-task-block">
+                                <label for="aiCompileModel">Compile email model</label>
+                                <p class="ai-help-text">
+                                    Findings → export → Compile email. Pick a faster local model here if reports use a heavy reasoning model.
+                                </p>
+                                <select id="aiCompileModel" class="ai-select">
+                                    <option value="gemini-2.5-flash">Loading models...</option>
+                                </select>
+                                <div class="ai-model-info" id="aiCompileModelInfo">
+                                    <div class="model-description">Select a model to see details</div>
+                                    <div class="model-pricing">
+                                        <span>Input: $--/M tokens</span>
+                                        <span>Output: $--/M tokens</span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         
                         <!-- Custom Model (OpenRouter only) -->
                         <div class="ai-form-group ai-custom-model-section" id="customModelSection" style="display: none;">
-                            <label for="aiCustomModel">Or Enter Custom Model Route</label>
+                            <label for="aiCustomModel">Custom report model route (OpenRouter)</label>
                             <div class="ai-input-wrapper">
                                 <input type="text" id="aiCustomModel" class="ai-input" 
                                        placeholder="e.g., x-ai/grok-4.1-fast:free" autocomplete="off">
                             </div>
                             <p class="ai-help-text">
                                 Enter any <a href="https://openrouter.ai/models" target="_blank">OpenRouter model</a> route name. 
-                                Custom model overrides the dropdown selection.
+                                Overrides the insights report dropdown only (not compile email).
                             </p>
                         </div>
                         
@@ -385,19 +408,22 @@ class AIConfigModal {
             input.type = isPassword ? 'text' : 'password';
         });
         
-        // Model selection change
-        document.getElementById('aiDefaultModel').addEventListener('change', (e) => {
-            // Clear custom model when dropdown is changed
+        // Report model selection
+        document.getElementById('aiReportModel').addEventListener('change', (e) => {
             const customInput = document.getElementById('aiCustomModel');
             if (customInput) customInput.value = '';
-            this.updateModelInfo(e.target.value);
+            this.updateModelInfo(e.target.value, 'report');
+        });
+
+        document.getElementById('aiCompileModel').addEventListener('change', (e) => {
+            this.updateModelInfo(e.target.value, 'compile');
         });
         
-        // Custom model input change (OpenRouter only)
+        // Custom model input change (OpenRouter report model only)
         const customModelInput = document.getElementById('aiCustomModel');
         if (customModelInput) {
-            customModelInput.addEventListener('input', (e) => {
-                this.updateModelInfo(document.getElementById('aiDefaultModel').value);
+            customModelInput.addEventListener('input', () => {
+                this.updateModelInfo(document.getElementById('aiReportModel').value, 'report');
             });
         }
         
@@ -488,69 +514,84 @@ class AIConfigModal {
         }
     }
     
-    populateModelSelect() {
-        const select = document.getElementById('aiDefaultModel');
-        const customInput = document.getElementById('aiCustomModel');
-        if (!select) return;
-
-        const cfg = this.currentConfig;
-        const savedProv = cfg?.provider ? String(cfg.provider).toLowerCase() : null;
-        const applySavedModel = savedProv === this.selectedProvider;
-        const savedDefault =
-            applySavedModel && cfg?.default_model ? cfg.default_model : null;
-
-        // Group models by free/paid
+    _buildModelOptionsHtml() {
         const freeModels = this.models.filter(m => m.prompt_price === 0);
         const paidModels = this.models.filter(m => m.prompt_price > 0);
-        
         let optionsHtml = '';
-        
         if (freeModels.length > 0) {
             optionsHtml += '<optgroup label="🆓 Free Models">';
-            optionsHtml += freeModels.map(model => 
+            optionsHtml += freeModels.map(model =>
                 `<option value="${model.id}">${model.name}</option>`
             ).join('');
             optionsHtml += '</optgroup>';
         }
-        
         if (paidModels.length > 0) {
             optionsHtml += '<optgroup label="💰 Paid Models">';
-            optionsHtml += paidModels.map(model => 
+            optionsHtml += paidModels.map(model =>
                 `<option value="${model.id}">${model.name}</option>`
             ).join('');
             optionsHtml += '</optgroup>';
         }
-        
-        select.innerHTML = optionsHtml || this.models.map(model => 
+        return optionsHtml || this.models.map(model =>
             `<option value="${model.id}">${model.name}</option>`
         ).join('');
+    }
 
-        if (customInput) {
-            customInput.value = '';
+    _setSelectToSavedModel(select, savedId, customInput, allowCustomRoute) {
+        if (!select) return;
+        if (!savedId) {
+            if (this.models[0]) select.value = this.models[0].id;
+            return;
         }
-
-        if (savedDefault) {
-            const isKnownModel = this.models.some(m => m.id === savedDefault);
-            if (isKnownModel) {
-                select.value = savedDefault;
-            } else if (this.selectedProvider === 'openrouter') {
-                if (customInput) customInput.value = savedDefault;
-                if (this.models[0]) select.value = this.models[0].id;
-            } else {
-                if (this.models[0]) select.value = this.models[0].id;
-            }
+        const isKnownModel = this.models.some(m => m.id === savedId);
+        if (isKnownModel) {
+            select.value = savedId;
+        } else if (allowCustomRoute && customInput) {
+            customInput.value = savedId;
+            if (this.models[0]) select.value = this.models[0].id;
         } else if (this.models[0]) {
             select.value = this.models[0].id;
         }
-        
-        this.updateModelInfo(select.value);
+    }
+
+    populateModelSelect() {
+        const reportSelect = document.getElementById('aiReportModel');
+        const compileSelect = document.getElementById('aiCompileModel');
+        const customInput = document.getElementById('aiCustomModel');
+        if (!reportSelect || !compileSelect) return;
+
+        const cfg = this.currentConfig;
+        const savedProv = cfg?.provider ? String(cfg.provider).toLowerCase() : null;
+        const applySaved = savedProv === this.selectedProvider;
+        const savedReport = applySaved && cfg?.default_model ? cfg.default_model : null;
+        const savedCompile = applySaved && cfg?.compile_model ? cfg.compile_model : null;
+
+        const optionsHtml = this._buildModelOptionsHtml();
+        reportSelect.innerHTML = optionsHtml;
+        compileSelect.innerHTML = optionsHtml;
+
+        if (customInput) customInput.value = '';
+
+        this._setSelectToSavedModel(
+            reportSelect,
+            savedReport,
+            customInput,
+            this.selectedProvider === 'openrouter'
+        );
+        this._setSelectToSavedModel(compileSelect, savedCompile || savedReport, null, false);
+
+        this.updateModelInfo(reportSelect.value, 'report');
+        this.updateModelInfo(compileSelect.value, 'compile');
     }
     
-    updateModelInfo(modelId) {
+    updateModelInfo(modelId, target = 'report') {
         const model = this.models.find(m => m.id === modelId);
-        const infoDiv = document.getElementById('aiModelInfo');
+        const infoDiv = document.getElementById(
+            target === 'compile' ? 'aiCompileModelInfo' : 'aiReportModelInfo'
+        );
+        if (!infoDiv) return;
         const customInput = document.getElementById('aiCustomModel');
-        const customModel = customInput ? customInput.value.trim() : '';
+        const customModel = (target === 'report' && customInput) ? customInput.value.trim() : '';
         
         // If there's a custom model entered, show info for that instead
         if (customModel) {
@@ -576,9 +617,10 @@ class AIConfigModal {
                 const loaded =
                     /\bLoaded\b/i.test(desc) ||
                     (typeof model.name === 'string' && model.name.includes('(loaded)'));
+                const taskHint = target === 'compile' ? 'compile email' : 'insights reports';
                 lmLoadHint = loaded
-                    ? '<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#22c55e;font-weight:500;">Status: loaded in LM Studio — ready to generate.</div>'
-                    : '<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#f59e0b;">Status: not loaded — load this model in LM Studio before generating reports.</div>';
+                    ? `<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#22c55e;font-weight:500;">Status: loaded in LM Studio — ready for ${taskHint}.</div>`
+                    : `<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#f59e0b;">Status: not loaded — LM Studio will load this model on first ${taskHint} request.</div>`;
             }
             
             infoDiv.innerHTML = `
@@ -720,7 +762,8 @@ class AIConfigModal {
             } else if (apiKey) {
                 const savePayload = {
                     provider: this.selectedProvider,
-                    default_model: document.getElementById('aiDefaultModel').value
+                    default_model: document.getElementById('aiReportModel').value,
+                    compile_model: document.getElementById('aiCompileModel').value
                 };
                 
                 if (this.selectedProvider === 'gemini') {
@@ -774,15 +817,16 @@ class AIConfigModal {
         const geminiKey = document.getElementById('aiGeminiKey').value.trim();
         const openrouterKey = document.getElementById('aiApiKey').value.trim();
         const tavilyKey = document.getElementById('aiTavilyKey').value.trim();
-        const defaultModel = document.getElementById('aiDefaultModel').value;
+        const reportModel = document.getElementById('aiReportModel').value;
+        const compileModel = document.getElementById('aiCompileModel').value;
         const customModelInput = document.getElementById('aiCustomModel');
         const customModel = customModelInput ? customModelInput.value.trim() : '';
         const webSearchEnabled = document.getElementById('aiWebSearchEnabled')?.checked || false;
         const aiEnabled = document.getElementById('aiEnabled')?.checked ?? true;
         const autoGenerate = document.getElementById('aiAutoGenerate')?.checked ?? true;
         
-        // Use custom model if provided (OpenRouter only), otherwise use dropdown selection
-        const modelToUse = (this.selectedProvider === 'openrouter' && customModel) ? customModel : defaultModel;
+        // Use custom route for OpenRouter report model when provided
+        const modelToUse = (this.selectedProvider === 'openrouter' && customModel) ? customModel : reportModel;
         
         // Validate that selected provider has a key (LM Studio never needs one)
         const isGemini = this.selectedProvider === 'gemini';
@@ -805,6 +849,7 @@ class AIConfigModal {
             const payload = {
                 provider: this.selectedProvider,
                 default_model: modelToUse,
+                compile_model: compileModel,
                 web_search_enabled: webSearchEnabled,
                 ai_enabled: aiEnabled,
                 auto_generate: autoGenerate
@@ -903,7 +948,7 @@ class AIConfigModal {
         const aiEnabled = document.getElementById('aiEnabled')?.checked ?? true;
         const sections = [
             'providerSection', 'geminiSection', 'openrouterSection',
-            'lmstudioSection', 'customModelSection'
+            'lmstudioSection', 'customModelSection', 'aiModelsSection'
         ];
         for (const id of sections) {
             const el = document.getElementById(id);

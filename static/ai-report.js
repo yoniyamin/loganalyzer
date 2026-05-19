@@ -15,9 +15,15 @@ class AIReportManager {
         this.container = null;
         this.isGenerating = false;
         this.hasReport = false;
+        this._cachedReportByFileId = {};
         this.autoGenerateEnabled = true;
         this._timerInterval = null;
         this.currentProvider = 'gemini';
+        this._generateReportAbort = null;
+        this._reportToastTimer = null;
+        this._reportToastStart = null;
+        this._reportToastProviderHint = '';
+        this._reportToastStatusDetail = '';
 
         this.init();
     }
@@ -116,6 +122,142 @@ class AIReportManager {
         return (this.currentProvider || '').toLowerCase() === 'lmstudio';
     }
 
+    _getProviderHint() {
+        const p = (this.currentProvider || '').toLowerCase();
+        if (p === 'lmstudio') return 'local model (LM Studio)';
+        if (p === 'gemini') return 'Google Gemini';
+        if (p === 'openrouter') return 'OpenRouter';
+        return 'the configured model';
+    }
+
+    // ── Report generation toast (same pattern as compile-email toast) ──
+
+    _removeGenerateReportToast() {
+        const t = document.getElementById('generateReportToast');
+        if (t) {
+            t.classList.remove('visible');
+            setTimeout(() => t.remove(), 300);
+        }
+        this._stopReportGenerationToastTimer();
+    }
+
+    _stopReportGenerationToastTimer() {
+        if (this._reportToastTimer) {
+            clearInterval(this._reportToastTimer);
+            this._reportToastTimer = null;
+        }
+        this._reportToastStart = null;
+    }
+
+    _ensureGenerateReportToast() {
+        let toast = document.getElementById('generateReportToast');
+        if (toast) return toast;
+        toast = document.createElement('div');
+        toast.id = 'generateReportToast';
+        toast.className = 'app-toast app-toast-warning compile-email-toast';
+        toast.setAttribute('role', 'status');
+        toast.innerHTML = `
+            <div class="compile-email-toast-spinner" aria-hidden="true"></div>
+            <div class="compile-email-toast-body">
+                <div class="compile-email-toast-title">Generating insights report…</div>
+                <div class="compile-email-toast-meta"></div>
+                <div class="compile-email-toast-status"></div>
+            </div>
+            <button type="button" class="compile-email-toast-dismiss" title="Cancel">×</button>
+        `;
+        document.body.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add('visible'));
+        return toast;
+    }
+
+    _bindReportToastDismissRunning(toast) {
+        const dismiss = toast.querySelector('.compile-email-toast-dismiss');
+        if (!dismiss) return;
+        dismiss.style.display = 'block';
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            if (this._generateReportAbort) {
+                try { this._generateReportAbort.abort(); } catch (_) { /* ignore */ }
+            }
+            this._generateReportAbort = null;
+            this._removeGenerateReportToast();
+            if (window.showToast) window.showToast('Report generation cancelled', 'info');
+        };
+    }
+
+    _syncReportToastRunning() {
+        const toast = document.getElementById('generateReportToast');
+        if (!toast || this._reportToastStart == null) return;
+        const elapsed = Math.floor((Date.now() - this._reportToastStart) / 1000);
+        toast.querySelector('.compile-email-toast-meta').textContent =
+            `${elapsed}s elapsed · ${this._reportToastProviderHint}`;
+        const detail = this._reportToastStatusDetail;
+        toast.querySelector('.compile-email-toast-status').textContent = detail
+            ? `${detail} You can keep working — open the report from Resources when finished.`
+            : 'Analyzing the log with the model. You can keep working — open the report from Resources when finished.';
+    }
+
+    _startReportGenerationToast() {
+        this._removeGenerateReportToast();
+        this._reportToastProviderHint = this._getProviderHint();
+        this._reportToastStatusDetail = '';
+        this._reportToastStart = Date.now();
+        this._ensureGenerateReportToast();
+        this._syncReportToastRunning();
+        this._bindReportToastDismissRunning(document.getElementById('generateReportToast'));
+        this._reportToastTimer = setInterval(() => this._syncReportToastRunning(), 1000);
+    }
+
+    _setReportToastSuccess(metaLine) {
+        this._stopReportGenerationToastTimer();
+        const toast = document.getElementById('generateReportToast');
+        if (!toast) return;
+        toast.classList.remove('app-toast-warning', 'app-toast-error');
+        toast.classList.add('app-toast-success', 'compile-email-toast--clickable');
+        const spinner = toast.querySelector('.compile-email-toast-spinner');
+        if (spinner) spinner.style.display = 'none';
+        toast.querySelector('.compile-email-toast-title').textContent = 'Insights report ready';
+        toast.querySelector('.compile-email-toast-meta').textContent = metaLine || '';
+        toast.querySelector('.compile-email-toast-status').textContent =
+            'Click this notification to open the Resources tab.';
+        const dismiss = toast.querySelector('.compile-email-toast-dismiss');
+        dismiss.style.display = 'block';
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            this._removeGenerateReportToast();
+        };
+        toast.onclick = () => this._openResourcesTabFromToast();
+    }
+
+    _setReportToastError(message) {
+        this._stopReportGenerationToastTimer();
+        let toast = document.getElementById('generateReportToast');
+        if (!toast) toast = this._ensureGenerateReportToast();
+        toast.classList.remove('app-toast-warning', 'app-toast-success', 'compile-email-toast--clickable');
+        toast.classList.add('app-toast-error');
+        toast.onclick = null;
+        const spinner = toast.querySelector('.compile-email-toast-spinner');
+        if (spinner) spinner.style.display = 'none';
+        toast.querySelector('.compile-email-toast-title').textContent = 'Report generation failed';
+        toast.querySelector('.compile-email-toast-meta').textContent = '';
+        toast.querySelector('.compile-email-toast-status').textContent = message || 'Unknown error';
+        const dismiss = toast.querySelector('.compile-email-toast-dismiss');
+        dismiss.style.display = 'block';
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            this._removeGenerateReportToast();
+        };
+        setTimeout(() => {
+            const t = document.getElementById('generateReportToast');
+            if (t && t.classList.contains('app-toast-error')) this._removeGenerateReportToast();
+        }, 8000);
+    }
+
+    _openResourcesTabFromToast() {
+        document.querySelector('[data-tab="resources-tab"]')?.click();
+        this._removeGenerateReportToast();
+    }
+
     async loadModels() {
         try {
             // Models are loaded based on current provider config
@@ -156,6 +298,11 @@ class AIReportManager {
         this.container = container;
         this.currentFileId = fileId;
         this.renderSection();
+        
+        const cached = this._cachedReportByFileId[fileId];
+        if (cached && !this.isGenerating) {
+            this.displayReport(cached);
+        }
         
         // Don't race GET with in-flight auto-generation POST
         if (!this.isGenerating) {
@@ -621,17 +768,20 @@ class AIReportManager {
         const label = phaseLabels[progress.phase] || progress.phase;
 
         if (phaseEl) phaseEl.textContent = label;
-        if (detailEl) {
-            let detail = progress.detail || '';
-            if (progress.phase === 'generating' && progress.est_prompt_tokens) {
-                detail = `Sent ~${progress.est_prompt_tokens.toLocaleString()} tokens to ${progress.provider || 'model'}`;
-                if (progress.model && progress.model !== 'default') {
-                    const short = progress.model.includes('/') ? progress.model.split('/').pop() : progress.model;
-                    detail += ` (${short})`;
-                }
+        let detail = progress.detail || '';
+        if (progress.phase === 'generating' && progress.est_prompt_tokens) {
+            detail = `Sent ~${progress.est_prompt_tokens.toLocaleString()} tokens to ${progress.provider || 'model'}`;
+            if (progress.model && progress.model !== 'default') {
+                const short = progress.model.includes('/') ? progress.model.split('/').pop() : progress.model;
+                detail += ` (${short})`;
             }
-            detailEl.textContent = detail;
         }
+        if (detailEl) detailEl.textContent = detail;
+
+        const toastParts = [label];
+        if (detail) toastParts.push(detail);
+        this._reportToastStatusDetail = toastParts.filter(Boolean).join(' — ');
+        this._syncReportToastRunning();
     }
 
     /**
@@ -748,15 +898,13 @@ class AIReportManager {
             </div>
         `;
 
-        // Toast: provider-aware start notification (persistent until done)
-        if (typeof window.showToast === 'function') {
-            const isLocal = this._isLMStudioActive();
-            const msg = isLocal
-                ? '⏳ Generating report with local model — may take 30–120 s'
-                : '⚡ Generating report…';
-            window.showToast(msg, isLocal ? 'warning' : 'info', 0);
+        if (this._generateReportAbort) {
+            try { this._generateReportAbort.abort(); } catch (_) { /* ignore */ }
         }
+        this._generateReportAbort = new AbortController();
+        const reportSignal = this._generateReportAbort.signal;
 
+        this._startReportGenerationToast();
         this._startTimer();
         
         // Get cost estimate
@@ -788,29 +936,41 @@ class AIReportManager {
                     quick: false,
                     web_search: this.webSearchEnabled || false,
                     focus_mode: this._currentFocusMode || null
-                })
+                }),
+                signal: reportSignal
             });
             
             if (response.ok) {
                 const report = await response.json();
-                if (typeof window.hideToast === 'function') window.hideToast();
-                if (typeof window.showToast === 'function') {
-                    window.showToast('✓ Report generated', 'success', 3000);
-                }
+                this._generateReportAbort = null;
+                const elapsed = this._reportToastStart != null
+                    ? Math.floor((Date.now() - this._reportToastStart) / 1000)
+                    : 0;
+                const modelBit = report.model_used
+                    ? (report.model_used.includes('/') ? report.model_used.split('/').pop() : report.model_used)
+                    : this._reportToastProviderHint;
+                this._setReportToastSuccess(`Done in ${elapsed}s · ${modelBit}`);
                 this.displayReport(report);
             } else {
                 const error = await response.json();
-                if (typeof window.hideToast === 'function') window.hideToast();
-                if (typeof window.showToast === 'function') {
-                    window.showToast('Report generation failed', 'error', 4000);
-                }
+                this._generateReportAbort = null;
+                this._setReportToastError(error.detail || 'Failed to generate report');
                 this.showError(error.detail || 'Failed to generate report');
             }
         } catch (error) {
-            if (typeof window.hideToast === 'function') window.hideToast();
-            if (typeof window.showToast === 'function') {
-                window.showToast('Network error — report not generated', 'error', 4000);
+            if (error.name === 'AbortError') {
+                this._generateReportAbort = null;
+                const cached = this._cachedReportByFileId[this.currentFileId];
+                if (cached) {
+                    this.displayReport(cached);
+                } else {
+                    const bodyEl = document.getElementById('aiReportBody');
+                    if (bodyEl) bodyEl.innerHTML = this.getPlaceholderHTML();
+                }
+                return;
             }
+            this._generateReportAbort = null;
+            this._setReportToastError(error.message || 'Network error — report not generated');
             this.showError('Network error: ' + error.message);
         } finally {
             this._stopTimer();
@@ -824,6 +984,9 @@ class AIReportManager {
         const body = document.getElementById('aiReportBody');
         this.hasReport = true;
         this.currentReportId = report.report_id || null;
+        if (this.currentFileId) {
+            this._cachedReportByFileId[this.currentFileId] = report;
+        }
         
         // Dispatch event to notify other components (like Log Summary) that report is ready
         window.dispatchEvent(new CustomEvent('aiReportReady', { 
@@ -1135,7 +1298,7 @@ class AIReportManager {
      */
     setFileId(fileId) {
         this.currentFileId = fileId;
-        this.hasReport = false;
+        this.hasReport = Boolean(fileId && this._cachedReportByFileId[fileId]);
         this.updateStatusBadge('none');
         
         if (this.container) {
@@ -1192,14 +1355,13 @@ class AIReportManager {
                 }
             } catch (e) { /* proceed without focus */ }
 
-            // No cached report — show start toast before the POST
-            if (typeof window.showToast === 'function') {
-                const isLocal = this._isLMStudioActive();
-                const msg = isLocal
-                    ? '⏳ Generating report with local model — may take 30–120 s'
-                    : '⚡ Generating report…';
-                window.showToast(msg, isLocal ? 'warning' : 'info', 0);
+            if (this._generateReportAbort) {
+                try { this._generateReportAbort.abort(); } catch (_) { /* ignore */ }
             }
+            this._generateReportAbort = new AbortController();
+            const reportSignal = this._generateReportAbort.signal;
+
+            this._startReportGenerationToast();
 
             const response = await fetch(`/api/llm/report/${this.currentFileId}`, {
                 method: 'POST',
@@ -1211,14 +1373,19 @@ class AIReportManager {
                     web_search: this.webSearchEnabled || false,
                     focus_mode: autoFocus,
                 }),
+                signal: reportSignal,
             });
 
             if (response.ok) {
                 const report = await response.json();
-                if (typeof window.hideToast === 'function') window.hideToast();
-                if (typeof window.showToast === 'function') {
-                    window.showToast('✓ Report generated', 'success', 3000);
-                }
+                this._generateReportAbort = null;
+                const elapsed = this._reportToastStart != null
+                    ? Math.floor((Date.now() - this._reportToastStart) / 1000)
+                    : 0;
+                const modelBit = report.model_used
+                    ? (report.model_used.includes('/') ? report.model_used.split('/').pop() : report.model_used)
+                    : this._reportToastProviderHint;
+                this._setReportToastSuccess(`Done in ${elapsed}s · ${modelBit}`);
                 this.hasReport = true;
                 this.updateStatusBadge('ready');
                 if (this.container) {
@@ -1226,20 +1393,29 @@ class AIReportManager {
                 }
             } else {
                 const error = await response.json();
-                if (typeof window.hideToast === 'function') window.hideToast();
-                if (typeof window.showToast === 'function') {
-                    window.showToast('Report generation failed', 'error', 4000);
-                }
+                this._generateReportAbort = null;
+                this._setReportToastError(error.detail || 'Failed to auto-generate report');
                 this.updateStatusBadge('error', error.detail || 'Generation failed');
                 if (this.container) {
                     this.showError(error.detail || 'Failed to auto-generate report');
                 }
             }
         } catch (error) {
-            if (typeof window.hideToast === 'function') window.hideToast();
-            if (typeof window.showToast === 'function') {
-                window.showToast('Network error — report not generated', 'error', 4000);
+            if (error.name === 'AbortError') {
+                this._generateReportAbort = null;
+                const cached = this._cachedReportByFileId[this.currentFileId];
+                if (cached && this.container) {
+                    this.displayReport(cached);
+                    this.updateStatusBadge('ready');
+                } else {
+                    this.updateStatusBadge('none');
+                    const bodyEl = document.getElementById('aiReportBody');
+                    if (bodyEl) bodyEl.innerHTML = this.getPlaceholderHTML();
+                }
+                return;
             }
+            this._generateReportAbort = null;
+            this._setReportToastError(error.message || 'Network error — report not generated');
             this.updateStatusBadge('error', error.message);
             if (this.container) {
                 this.showError('Network error: ' + error.message);

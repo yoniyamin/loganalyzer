@@ -255,8 +255,10 @@ class LLMConfig(Base):
     api_key_encrypted = Column(String, nullable=True)  # OpenRouter key
     # Tavily API key for external search
     tavily_api_key_encrypted = Column(String, nullable=True)
-    # Default model (provider-specific)
+    # Default model (provider-specific) — insights reports and similar
     default_model = Column(String, default="gemini-2.5-flash")
+    # Compile-email model; when null, uses default_model
+    compile_model = Column(String, nullable=True)
     # LM Studio local server base URL
     lmstudio_base_url = Column(String, nullable=True)
     # LM Studio generation parameters (overrides client defaults when set)
@@ -428,6 +430,14 @@ def _migrate_llm_config():
         if 'sanitize_log_for_cloud_llm' not in columns:
             cursor.execute("ALTER TABLE llm_config ADD COLUMN sanitize_log_for_cloud_llm INTEGER DEFAULT 1")
             print("Migration: Added 'sanitize_log_for_cloud_llm' column to llm_config")
+
+        if 'compile_model' not in columns:
+            cursor.execute("ALTER TABLE llm_config ADD COLUMN compile_model TEXT")
+            cursor.execute(
+                "UPDATE llm_config SET compile_model = default_model "
+                "WHERE compile_model IS NULL AND default_model IS NOT NULL"
+            )
+            print("Migration: Added 'compile_model' column to llm_config")
 
         conn.commit()
         conn.close()

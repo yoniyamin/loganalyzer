@@ -46,13 +46,16 @@ class SavedFindingsManager {
     constructor() {
         this.findings = [];
         this.currentFileId = null;
+        this._loadedFileId = null;
         this.isLoading = false;
         this._orderKey = null;     // localStorage key for custom order
         this._dragSrcEl = null;
         /** Pending compiled email (after async LLM); opened from toast or Findings banner */
         this._compiledEmailPending = null;
-        /** Last successful compiled email for this file — survives closing the preview */
-        this._lastCompiledEmail = null;
+        /** Per log file: last successful compiled email (survives switching files and closing preview) */
+        this._compiledEmailsByFileId = {};
+        /** fileId for in-flight compile (detect stale completion after file switch) */
+        this._compileEmailFileId = null;
         this._compileEmailTimer = null;
         this._compileEmailAbort = null;
 
@@ -71,24 +74,24 @@ class SavedFindingsManager {
         this.bindEvents();
         
         document.addEventListener('fileLoaded', (e) => {
-            this.currentFileId = e.detail?.fileId;
+            const newFileId = e.detail?.fileId ?? null;
+            const prevFileId = this.currentFileId;
+            if (prevFileId != null && newFileId !== prevFileId) {
+                this._clearCompiledEmailTransientState();
+            }
+            this.currentFileId = newFileId;
             this._orderKey = `findings_order_${this.currentFileId}`;
+            this._syncCompiledEmailUiForCurrentFile();
             this.loadFindings();
         });
 
         document.addEventListener('fileClosed', () => {
             this.currentFileId = null;
+            this._loadedFileId = null;
             this._orderKey = null;
             this.findings = [];
-            this._compiledEmailPending = null;
-            this._lastCompiledEmail = null;
+            this._clearCompiledEmailTransientState();
             this._updateReopenCompiledEmailButton();
-            if (this._compileEmailAbort) {
-                try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
-            }
-            this._compileEmailAbort = null;
-            this._dismissCompiledEmailBanner();
-            this._removeCompileEmailToast();
             const container = document.getElementById('findingsList');
             if (container) {
                 container.innerHTML = '<p class="placeholder-text">Open a log file to view and save findings.</p>';
@@ -141,8 +144,10 @@ class SavedFindingsManager {
         
         this.isLoading = true;
         const container = document.getElementById('findingsList');
+        const hasExistingForFile = this.findings.length > 0
+            && this._loadedFileId === this.currentFileId;
         
-        if (container) {
+        if (container && !hasExistingForFile) {
             container.innerHTML = '<p class="placeholder-text">Loading findings...</p>';
         }
         
@@ -152,6 +157,7 @@ class SavedFindingsManager {
             
             const data = await response.json();
             this.findings = data.findings || [];
+            this._loadedFileId = this.currentFileId;
             this._orderKey = `findings_order_${this.currentFileId}`;
             
             this.renderFindings(container);
@@ -159,7 +165,7 @@ class SavedFindingsManager {
             
         } catch (error) {
             console.error('Failed to load findings:', error);
-            if (container) {
+            if (container && !hasExistingForFile) {
                 container.innerHTML = `<p class="placeholder-text">No findings yet. Use the AI assistant save button or right-click log lines.</p>`;
             }
         } finally {
@@ -502,10 +508,55 @@ class SavedFindingsManager {
     
     // ── Compiled email (async LLM): toast progress + Findings banner ──
 
+    _getCompiledEmailForFile(fileId) {
+        if (fileId == null) return null;
+        if (this._compiledEmailPending?.fileId === fileId) {
+            return this._compiledEmailPending;
+        }
+        return this._compiledEmailsByFileId[fileId] || null;
+    }
+
+    _getCompiledEmailForCurrentFile() {
+        return this._getCompiledEmailForFile(this.currentFileId);
+    }
+
+    _storeCompiledEmail(fileId, bundle) {
+        if (fileId == null || !bundle) return;
+        const entry = { ...bundle, fileId };
+        this._compiledEmailsByFileId[fileId] = entry;
+        if (this.currentFileId === fileId) {
+            this._compiledEmailPending = entry;
+            this._updateReopenCompiledEmailButton();
+        }
+    }
+
+    _clearCompiledEmailTransientState() {
+        this._compiledEmailPending = null;
+        this._compileEmailFileId = null;
+        this._dismissCompiledEmailBanner();
+        if (this._compileEmailAbort) {
+            try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
+        }
+        this._compileEmailAbort = null;
+        this._removeCompileEmailToast();
+    }
+
+    _syncCompiledEmailUiForCurrentFile() {
+        const bundle = this._getCompiledEmailForCurrentFile();
+        if (this._compiledEmailPending?.fileId !== this.currentFileId) {
+            this._compiledEmailPending = bundle;
+        }
+        const banner = document.getElementById('compiledEmailReadyBanner');
+        if (banner) {
+            banner.style.display = bundle ? 'flex' : 'none';
+        }
+        this._updateReopenCompiledEmailButton();
+    }
+
     _updateReopenCompiledEmailButton() {
         const btn = document.getElementById('reopenCompiledEmailBtn');
         if (!btn) return;
-        const show = Boolean(this._lastCompiledEmail);
+        const show = Boolean(this._getCompiledEmailForCurrentFile());
         btn.style.display = show ? '' : 'none';
         btn.disabled = !show;
     }
@@ -526,15 +577,17 @@ class SavedFindingsManager {
     }
 
     _openCompiledEmailPreviewFromPending() {
-        const bundle = this._compiledEmailPending || this._lastCompiledEmail;
+        const bundle = this._getCompiledEmailForCurrentFile();
         if (!bundle) {
-            if (window.showToast) window.showToast('No compiled email to show.', 'error');
+            if (window.showToast) window.showToast('No compiled email to show for this log file.', 'error');
             return;
         }
         const { filename, content, previewOpts } = bundle;
         this._goToFindingsTab();
         this._showExportPreview(filename, content, previewOpts);
-        this._compiledEmailPending = null;
+        if (this._compiledEmailPending?.fileId === this.currentFileId) {
+            this._compiledEmailPending = null;
+        }
         this._dismissCompiledEmailBanner();
         this._removeCompileEmailToast();
     }
@@ -661,11 +714,15 @@ class SavedFindingsManager {
     }
 
     async _runCompiledEmailExport(payload) {
+        if (!this.currentFileId) return;
+
         if (this._compileEmailAbort) {
             try { this._compileEmailAbort.abort(); } catch (_) { /* ignore */ }
         }
         const ac = new AbortController();
         this._compileEmailAbort = ac;
+        const compileForFileId = this.currentFileId;
+        this._compileEmailFileId = compileForFileId;
 
         const providerHint = await this._fetchProviderLabel();
         this._removeCompileEmailToast();
@@ -712,15 +769,19 @@ class SavedFindingsManager {
                 content: data.content,
                 previewOpts
             };
-            this._compiledEmailPending = bundle;
-            this._lastCompiledEmail = bundle;
-            this._updateReopenCompiledEmailButton();
+            this._storeCompiledEmail(compileForFileId, bundle);
 
             if (this._compileEmailTimer) {
                 clearInterval(this._compileEmailTimer);
                 this._compileEmailTimer = null;
             }
             this._compileEmailAbort = null;
+            this._compileEmailFileId = null;
+
+            if (this.currentFileId !== compileForFileId) {
+                this._removeCompileEmailToast();
+                return;
+            }
 
             const elapsed = Math.floor((Date.now() - start) / 1000);
             const modelBit = data.model_used ? String(data.model_used) : providerHint;
@@ -732,6 +793,7 @@ class SavedFindingsManager {
                 this._compileEmailTimer = null;
             }
             this._compileEmailAbort = null;
+            this._compileEmailFileId = null;
             if (e.name === 'AbortError') {
                 return;
             }
