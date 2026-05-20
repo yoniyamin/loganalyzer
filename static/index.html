@@ -34,7 +34,7 @@
   </style>
   <!-- Plotly deferred so it doesn't block first paint -->
   <script defer src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260322d">
+  <link rel="stylesheet" href="/static/styles.css?v=20260520c">
   <link rel="stylesheet" href="/static/log-colors.css?v=20251212">
   <link rel="stylesheet" href="/static/ai-config-modal.css?v=20260519">
   <link rel="stylesheet" href="/static/ai-report.css?v=20251212">
@@ -94,16 +94,39 @@
 
     <!-- File Info Bar - Always visible when file is loaded -->
     <div id="fileInfoBar" class="file-info-bar" style="display: none;">
-      <div class="file-info-content">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="file-info-icon">
-          <path d="M14 4.5V14a2 2 0 01-2 2H4a2 2 0 01-2-2V2a2 2 0 012-2h5.5L14 4.5zm-3 0A1.5 1.5 0 019.5 3V1H4a1 1 0 00-1 1v12a1 1 0 001 1h8a1 1 0 001-1V4.5h-2z"/>
-        </svg>
-        <span id="fileInfoName" class="file-info-name">No file loaded</span>
-        <span id="fileInfoSize" class="file-info-size"></span>
-        <span id="fileInfoLines" class="file-info-lines"></span>
+      <div class="file-info-group">
+        <div class="file-info-content">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="file-info-icon">
+            <path d="M14 4.5V14a2 2 0 01-2 2H4a2 2 0 01-2-2V2a2 2 0 012-2h5.5L14 4.5zm-3 0A1.5 1.5 0 019.5 3V1H4a1 1 0 00-1 1v12a1 1 0 001 1h8a1 1 0 001-1V4.5h-2z"/>
+          </svg>
+          <span id="fileInfoName" class="file-info-name">No file loaded</span>
+          <span id="fileInfoSize" class="file-info-size"></span>
+          <span id="fileInfoLines" class="file-info-lines"></span>
+        </div>
         <button type="button" id="closeLogFileBtn" class="file-info-close-btn" title="Close log and return to welcome screen" aria-label="Close log file">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.646 4.646a.5.5 0 01.708 0L8 7.293l2.646-2.647a.5.5 0 01.708.708L8.707 8l2.647 2.646a.5.5 0 01-.708.708L8 8.707l-2.646 2.647a.5.5 0 01-.708-.708L7.293 8 4.646 5.354a.5.5 0 010-.708z"/></svg>
         </button>
+      </div>
+      <div class="file-info-tabs-separator" aria-hidden="true"></div>
+      <div class="file-info-tabs-area">
+        <div class="log-view-tabs-wrapper">
+          <div class="log-view-tabs" id="logViewTabs">
+            <button class="log-view-tab log-view-tab-all active" data-view="all">All Lines (<span id="loadedCount">0</span>)</button>
+          </div>
+        </div>
+        <div id="searchTabsOverflow" class="search-tabs-overflow" style="display: none;">
+          <button id="searchTabsPrev" class="tab-nav-btn" title="Previous search tabs">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 010 .708L5.707 8l5.647 5.646a.5.5 0 01-.708.708l-6-6a.5.5 0 010-.708l6-6a.5.5 0 01.708 0z"/>
+            </svg>
+          </button>
+          <span id="searchTabsCount" class="search-tabs-count">0</span>
+          <button id="searchTabsNext" class="tab-nav-btn" title="Next search tabs">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -112,35 +135,45 @@
 
       <!-- TAB: Log View -->
       <div id="log-tab" class="tab-content active">
-        <aside class="left-panel left-panel-wide">
+        <aside id="logLeftPanel" class="left-panel left-panel-wide no-file-loaded">
           <!-- Panel Tabs -->
           <div class="left-panel-tabs">
-            <button class="left-panel-tab active" data-panel="files-panel" title="Recent Files">
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+            <button type="button" class="left-panel-tab active" data-panel="files-panel" id="filesPanelTab" title="Open log file">
+              <svg class="left-panel-tab-icon-open" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M.5 3l.04.87a1.99 1.99 0 00-.342 1.311l.637 7A2 2 0 002.826 14H13.18a2 2 0 001.992-1.819l.637-7A2 2 0 0013.81 3H9.828a2 2 0 01-1.414-.586l-.828-.828A2 2 0 006.172 1H2.5a2 2 0 00-2 2zm.694 2.09A1 1 0 012.19 4h11.62a1 1 0 01.996 1.09l-.636 7a1 1 0 01-.996.91H2.826a1 1 0 01-.995-.91l-.637-7z"/>
+                <path d="M6.646 5.646a.5.5 0 01.708 0L8 6.293l.646-.647a.5.5 0 01.708.708L8.707 7l.647.646a.5.5 0 01-.708.708L8 7.707l-.646.647a.5.5 0 01-.708-.708L7.293 7l-.647-.646a.5.5 0 01.708-.708z"/>
+              </svg>
+              <svg class="left-panel-tab-icon-files" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                 <path d="M.54 3.87L.5 3a2 2 0 012-2h3.672a2 2 0 011.414.586l.828.828A2 2 0 009.828 3h3.982a2 2 0 011.992 2.181l-.637 7A2 2 0 0113.174 14H2.826a2 2 0 01-1.991-1.819l-.637-7a1.99 1.99 0 01.342-1.31zM2.19 4a1 1 0 00-.996 1.09l.637 7a1 1 0 00.995.91h10.348a1 1 0 00.995-.91l.637-7A1 1 0 0013.81 4H2.19z"/>
               </svg>
+              <span class="left-panel-tab-label">Open File</span>
             </button>
-            <button class="left-panel-tab" data-panel="search-panel" title="Search">
+            <button class="left-panel-tab file-dependent-left-tab" data-panel="search-panel" title="Search">
               <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
               </svg>
             </button>
-            <button class="left-panel-tab" data-panel="threads-panel" title="Threads & Components">
+            <button class="left-panel-tab file-dependent-left-tab" data-panel="threads-panel" title="Threads & Components">
               <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M2.5 3.5a.5.5 0 010-1h11a.5.5 0 010 1h-11zm2-2a.5.5 0 010-1h7a.5.5 0 010 1h-7zM0 13a1.5 1.5 0 001.5 1.5h13A1.5 1.5 0 0016 13V6a1.5 1.5 0 00-1.5-1.5h-13A1.5 1.5 0 000 6v7zm1.5.5a.5.5 0 01-.5-.5V6a.5.5 0 01.5-.5h13a.5.5 0 01.5.5v7a.5.5 0 01-.5.5h-13z"/>
               </svg>
             </button>
-            <button class="left-panel-tab" data-panel="ai-panel" title="AI Assistant" style="display: none;">
+            <button class="left-panel-tab file-dependent-left-tab" data-panel="ai-panel" title="AI Assistant" style="display: none;">
               <svg width="18" height="18" viewBox="0 0 512 512" fill="currentColor">
                 <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2zM9.3 240C3.6 242.6 0 248.3 0 254.6s3.6 11.9 9.3 14.5L26.3 277l8.1 3.7 .6 .3 88.3 40.8L164.1 410l.3 .6 3.7 8.1 7.9 17.1c2.6 5.7 8.3 9.3 14.5 9.3s11.9-3.6 14.5-9.3l7.9-17.1 3.7-8.1 .3-.6 40.8-88.3L346 281l.6-.3 8.1-3.7 17.1-7.9c5.7-2.6 9.3-8.3 9.3-14.5s-3.6-11.9-9.3-14.5l-17.1-7.9-8.1-3.7-.6-.3-88.3-40.8L217 99.1l-.3-.6L213 90.3l-7.9-17.1c-2.6-5.7-8.3-9.3-14.5-9.3s-11.9 3.6-14.5 9.3l-7.9 17.1-3.7 8.1-.3 .6-40.8 88.3L35.1 228.1l-.6 .3-8.1 3.7L9.3 240z"/>
+              </svg>
+            </button>
+            <div id="logLeftPanelExpandZone" class="left-panel-rail-expand-zone" title="Expand sidebar" aria-hidden="true"></div>
+            <button type="button" id="toggleLogLeftPanel" class="toggle-left-panel-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 010 .708L5.707 8l5.647 5.646a.5.5 0 01-.708.708l-6-6a.5.5 0 010-.708l6-6a.5.5 0 01.708 0z"/>
               </svg>
             </button>
           </div>
 
           <!-- Files Panel -->
           <div id="files-panel" class="left-panel-content active">
-            <div class="panel-section-header">
-              <h3>Recent Files</h3>
+            <div class="left-panel-toolbar">
               <button id="nativeOpenBtn" class="open-file-btn" style="display: none;" title="Open log file from disk">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                   <path d="M.5 3l.04.87a1.99 1.99 0 00-.342 1.311l.637 7A2 2 0 002.826 14H13.18a2 2 0 001.992-1.819l.637-7A2 2 0 0013.81 3H9.828a2 2 0 01-1.414-.586l-.828-.828A2 2 0 006.172 1H2.5a2 2 0 00-2 2zm.694 2.09A1 1 0 012.19 4h11.62a1 1 0 01.996 1.09l-.636 7a1 1 0 01-.996.91H2.826a1 1 0 01-.995-.91l-.637-7z"/>
@@ -194,38 +227,28 @@
 
           <!-- Search Panel -->
           <div id="search-panel" class="left-panel-content">
-            <h3>Search Log</h3>
-            <input type="text" id="searchInput" placeholder="Enter regex pattern...">
+            <div class="search-input-row">
+              <input type="text" id="searchInput" placeholder="Enter regex pattern...">
+              <button type="button" id="searchBtn" class="search-submit-btn">Search</button>
+            </div>
             <div class="search-options">
               <label><input type="checkbox" id="caseSensitive"> Case sensitive</label>
-            </div>
-            <div class="search-actions">
-              <button id="searchBtn" class="small-btn">Search</button>
-              <button id="exportSearchBtn" class="small-btn" title="Export results to file" style="display: none;">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M.5 9.9a.5.5 0 01.5.5v2.5a1 1 0 001 1h12a1 1 0 001-1v-2.5a.5.5 0 011 0v2.5a2 2 0 01-2 2H2a2 2 0 01-2-2v-2.5a.5.5 0 01.5-.5z"/>
-                  <path d="M7.646 11.854a.5.5 0 00.708 0l3-3a.5.5 0 00-.708-.708L8.5 10.293V1.5a.5.5 0 00-1 0v8.793L5.354 8.146a.5.5 0 10-.708.708l3 3z"/>
-                </svg>
-                Export
-              </button>
+              <button type="button" id="saveAsPresetBtn" class="save-as-preset-btn" title="Save current search as a quick pattern">Save as pattern</button>
             </div>
 
             <div class="regex-presets">
-              <p style="font-size: 0.7rem; color: #9ca3af; margin: 8px 0 4px 0;">Quick patterns:</p>
+              <div class="regex-presets-header">
+                <span class="left-panel-section-label">Quick patterns</span>
+                <button type="button" id="managePresetsBtn" class="preset-manage-link" title="Manage quick patterns">Manage</button>
+              </div>
               <div class="preset-tags" id="presetTags">
                 <span class="preset-tag add-preset-btn" id="addPresetBtn" title="Add custom pattern">+</span>
-                <span class="preset-tag" data-pattern="\][EW]:" title="Find errors and warnings">Errors/Warnings</span>
-                <span class="preset-tag" data-pattern="latency\s+[0-9]+\.[0-9]+" title="Find latency measurements">Latency</span>
-                <span class="preset-tag" data-pattern="Failed to execute" title="Find failed executions">Failed Execute</span>
-                <span class="preset-tag" data-pattern="one-by-one" title="Find one-by-one applies">One-by-One</span>
-                <span class="preset-tag" data-pattern="Bulk finished" title="Find bulk finish events">Bulk Finish</span>
-                <span class="preset-tag" data-pattern="SQL_ERROR|SqlState" title="Find SQL errors">SQL Errors</span>
               </div>
             </div>
 
             <div id="searchResultsContainer" class="search-results-container search-results-expanded">
               <div id="searchResultsHeader" class="search-results-header" style="display: none;">
-                <span class="search-results-title">Search Results</span>
+                <span class="search-results-title left-panel-section-label">Search Results</span>
                 <span id="searchResultsCount" class="search-results-count">0 matches</span>
               </div>
               <div id="searchResults" class="search-results"></div>
@@ -234,7 +257,6 @@
 
           <!-- Threads & Components Panel -->
           <div id="threads-panel" class="left-panel-content">
-            <h3>Threads & Components</h3>
             <div class="analysis-search-box">
               <input type="text" id="logViewComponentSearch" placeholder="Search component or thread..." class="search-input-small">
             </div>
@@ -261,25 +283,7 @@
           <!-- Log preview -->
           <section class="log-preview-container">
             <div class="log-controls">
-              <div class="log-view-tabs-wrapper">
-                <div class="log-view-tabs" id="logViewTabs">
-                  <button class="log-view-tab active" data-view="all">All Lines (<span id="loadedCount">0</span>)</button>
-                </div>
-                <div id="searchTabsOverflow" class="search-tabs-overflow" style="display: none;">
-                  <button id="searchTabsPrev" class="tab-nav-btn" title="Previous search tabs">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                      <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 010 .708L5.707 8l5.647 5.646a.5.5 0 01-.708.708l-6-6a.5.5 0 010-.708l6-6a.5.5 0 01.708 0z"/>
-                    </svg>
-                  </button>
-                  <span id="searchTabsCount" class="search-tabs-count">0</span>
-                  <button id="searchTabsNext" class="tab-nav-btn" title="Next search tabs">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                      <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              <div style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
+              <div class="log-controls-actions">
                 <div style="display: flex; gap: 6px; align-items: center; margin-right: 10px;">
                   <button id="jumpToTopBtn" class="nav-btn" title="Jump to top (Ctrl+Home)" style="font-size: 0.7rem; padding: 4px 8px;">⬆ Top</button>
                   <button id="jumpToEndBtn" class="nav-btn" title="Jump to end (Ctrl+End)" style="font-size: 0.7rem; padding: 4px 8px;">⬇ End</button>
@@ -709,20 +713,76 @@ Content for section 2..." class="form-textarea"></textarea>
   </div>
 
   <script src="/static/log-colors.js"></script>
+  <script src="/static/preset-patterns-modal.js"></script>
   <script src="/static/ai-config-modal.js"></script>
   <script src="/static/ai-report.js?v=20260518a"></script>
   <script src="/static/ai-assistant.js"></script>
   <script src="/static/kb-sources.js?v=20251212"></script>
   <script src="/static/saved-findings.js?v=20260322a"></script>
-  <script src="/static/app.js?v=20260322d"></script>
+  <script src="/static/app.js?v=20260519"></script>
+  <!-- Quick Patterns Modal -->
+  <div id="presetPatternsModal" class="modal" style="display: none;">
+    <div class="modal-content preset-modal-content">
+      <div class="modal-header">
+        <h3>Quick Patterns</h3>
+        <button type="button" class="modal-close" id="closePresetModal" aria-label="Close">&times;</button>
+      </div>
+      <div class="preset-modal-tabs">
+        <button type="button" class="preset-modal-tab active" data-preset-tab="edit">Create / Edit</button>
+        <button type="button" class="preset-modal-tab" data-preset-tab="manage">Manage Patterns</button>
+      </div>
+      <div class="modal-body">
+        <div id="presetEditPanel" class="preset-tab-panel active">
+          <div class="preset-edit-grid">
+            <label for="presetLabelInput" class="preset-field-label preset-span-full">Label</label>
+            <input type="text" id="presetLabelInput" class="form-input preset-span-full" placeholder="e.g. Errors/Warnings">
+
+            <div class="preset-workspace">
+              <div class="preset-pattern-side">
+                <label for="presetPatternInput" class="preset-field-label">Pattern (regex)</label>
+                <textarea id="presetPatternInput" class="form-textarea preset-pattern-input" rows="3" placeholder="Enter regex pattern..."></textarea>
+                <button type="button" id="presetTestBtn" class="small-btn preset-test-btn">Test Pattern</button>
+                <div id="presetTestResult" class="preset-test-result"></div>
+              </div>
+              <div class="preset-regex-side">
+                <label class="preset-field-label preset-insert-label">Regex options</label>
+                <div class="regex-toolbox" id="regexToolbox"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="presetManagePanel" class="preset-tab-panel">
+          <div class="preset-table-wrap">
+            <table class="preset-table">
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Pattern</th>
+                  <th class="preset-table-actions-col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="presetTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="cancelPresetModal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="savePresetBtn">Save Pattern</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal Dialog -->
   <div id="modalOverlay" class="modal-overlay" style="display: none;">
-    <div class="modal-content">
-      <h3 id="modalTitle">Confirm</h3>
-      <div id="modalBody" class="modal-body"></div>
-      <div class="modal-buttons">
-        <button id="modalCancel" class="modal-btn cancel-btn">Cancel</button>
-        <button id="modalConfirm" class="modal-btn save-btn">Confirm</button>
+    <div class="modal-content confirm-dialog-content">
+      <div class="modal-header confirm-dialog-header">
+        <h3 id="modalTitle">Confirm</h3>
+      </div>
+      <div id="modalBody" class="modal-body confirm-dialog-body"></div>
+      <div class="modal-footer confirm-dialog-footer">
+        <button type="button" id="modalCancel" class="btn btn-secondary">Cancel</button>
+        <button type="button" id="modalConfirm" class="btn btn-primary confirm-dialog-danger">Confirm</button>
       </div>
     </div>
   </div>

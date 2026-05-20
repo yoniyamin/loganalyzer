@@ -8,7 +8,7 @@ import os
 import uuid
 from datetime import datetime
 
-from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, LogOracleRedoRead, LogOracleRedoLogSession, UserSettings
+from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, LogOracleRedoRead, LogOracleRedoLogSession, UserSettings, QuickPattern
 from backend.core.indexer import process_log_file
 from backend.core.reader import LogReader
 from backend.paths import upload_dir
@@ -2090,3 +2090,96 @@ async def get_all_settings(db: Session = Depends(get_db)):
         except:
             result[s.key] = s.value
     return result
+
+
+# ============== Quick Patterns Endpoints ==============
+
+class QuickPatternCreate(BaseModel):
+    label: str
+    pattern: str
+    description: Optional[str] = None
+
+class QuickPatternUpdate(BaseModel):
+    label: Optional[str] = None
+    pattern: Optional[str] = None
+    description: Optional[str] = None
+
+class QuickPatternResponse(BaseModel):
+    id: int
+    label: str
+    pattern: str
+    description: Optional[str] = None
+    is_builtin: bool = False
+    sort_order: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/quick-patterns", response_model=List[QuickPatternResponse])
+async def list_quick_patterns(db: Session = Depends(get_db)):
+    """List all quick search patterns."""
+    patterns = db.query(QuickPattern).order_by(QuickPattern.sort_order, QuickPattern.id).all()
+    return patterns
+
+
+@router.post("/quick-patterns", response_model=QuickPatternResponse)
+async def create_quick_pattern(request: QuickPatternCreate, db: Session = Depends(get_db)):
+    """Create a new quick search pattern."""
+    import re
+    try:
+        re.compile(request.pattern)
+    except re.error as e:
+        raise HTTPException(status_code=400, detail=f"Invalid regex: {e}")
+
+    max_order = db.query(func.max(QuickPattern.sort_order)).scalar() or 0
+    pattern = QuickPattern(
+        label=request.label.strip(),
+        pattern=request.pattern,
+        description=request.description,
+        is_builtin=False,
+        sort_order=max_order + 1,
+    )
+    db.add(pattern)
+    db.commit()
+    db.refresh(pattern)
+    return pattern
+
+
+@router.put("/quick-patterns/{pattern_id}", response_model=QuickPatternResponse)
+async def update_quick_pattern(
+    pattern_id: int,
+    request: QuickPatternUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update an existing quick search pattern."""
+    import re
+    pattern = db.query(QuickPattern).filter(QuickPattern.id == pattern_id).first()
+    if not pattern:
+        raise HTTPException(status_code=404, detail="Pattern not found")
+
+    if request.label is not None:
+        pattern.label = request.label.strip()
+    if request.pattern is not None:
+        try:
+            re.compile(request.pattern)
+        except re.error as e:
+            raise HTTPException(status_code=400, detail=f"Invalid regex: {e}")
+        pattern.pattern = request.pattern
+    if request.description is not None:
+        pattern.description = request.description
+
+    db.commit()
+    db.refresh(pattern)
+    return pattern
+
+
+@router.delete("/quick-patterns/{pattern_id}")
+async def delete_quick_pattern(pattern_id: int, db: Session = Depends(get_db)):
+    """Delete a quick search pattern."""
+    pattern = db.query(QuickPattern).filter(QuickPattern.id == pattern_id).first()
+    if not pattern:
+        raise HTTPException(status_code=404, detail="Pattern not found")
+    db.delete(pattern)
+    db.commit()
+    return {"status": "ok"}

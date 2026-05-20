@@ -371,12 +371,58 @@ class RoutingFeedback(Base):
     file = relationship("LogFile", backref="routing_feedback")
 
 
+class QuickPattern(Base):
+    """User-defined and built-in quick search regex patterns."""
+    __tablename__ = "quick_patterns"
+
+    id = Column(Integer, primary_key=True)
+    label = Column(String, nullable=False)
+    pattern = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    is_builtin = Column(Boolean, default=False)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+DEFAULT_QUICK_PATTERNS = [
+    {"label": "Errors/Warnings", "pattern": r"\][EW]:", "description": "Find errors and warnings", "sort_order": 0},
+    {"label": "Latency", "pattern": r"latency\s+[0-9]+\.[0-9]+", "description": "Find latency measurements", "sort_order": 1},
+    {"label": "Failed Execute", "pattern": "Failed to execute", "description": "Find failed executions", "sort_order": 2},
+    {"label": "One-by-One", "pattern": "one-by-one", "description": "Find one-by-one applies", "sort_order": 3},
+    {"label": "Bulk Finish", "pattern": "Bulk finished", "description": "Find bulk finish events", "sort_order": 4},
+    {"label": "SQL Errors", "pattern": "SQL_ERROR|SqlState", "description": "Find SQL errors", "sort_order": 5},
+]
+
+
 def init_db():
     """Initialize the database and run migrations."""
     Base.metadata.create_all(bind=engine)
     
     # Run migrations for LLMConfig table
     _migrate_llm_config()
+    _seed_quick_patterns()
+
+
+def _seed_quick_patterns():
+    """Seed built-in quick patterns when the table is empty."""
+    db = SessionLocal()
+    try:
+        if db.query(QuickPattern).count() > 0:
+            return
+        for item in DEFAULT_QUICK_PATTERNS:
+            db.add(QuickPattern(
+                label=item["label"],
+                pattern=item["pattern"],
+                description=item.get("description"),
+                is_builtin=True,
+                sort_order=item.get("sort_order", 0),
+            ))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Quick pattern seed warning: {e}")
+    finally:
+        db.close()
 
 
 def _migrate_llm_config():

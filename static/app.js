@@ -19,10 +19,10 @@ document.addEventListener("DOMContentLoaded", () => {
   let highlightedLines = {}; // { lineIndex: colorName }
   
   // Multiple search tabs state
-  let searchTabs = []; // Array of { id, query, matches }
+  let searchTabs = []; // Array of { id, query, matches, label? }
   let searchTabIdCounter = 0;
   let visibleSearchTabIndex = 0;
-  const MAX_VISIBLE_SEARCH_TABS = 3;
+  const MAX_VISIBLE_SEARCH_TABS = 8;
   
   // Recent files state
   const RECENT_FILES_KEY = 'logAnalyzer_recentFiles';
@@ -79,11 +79,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const welcomeOpenBtn = logPreview.querySelector('#welcomeOpenLogBtn');
       if (welcomeOpenBtn) {
         welcomeOpenBtn.addEventListener('click', () => {
-          if (window.pywebview && window.pywebview.api && nativeOpenBtn) {
-            nativeOpenBtn.click();
-          } else if (logFileInput) {
-            logFileInput.click();
-          }
+          openLogFile();
         });
       }
       const welcomeAiBtn = logPreview.querySelector('#welcomeAiSettingsBtn');
@@ -324,12 +320,24 @@ document.addEventListener("DOMContentLoaded", () => {
      if (window.pywebview) enableNativeMode(); 
   }, 500);
 
+  function openLogFile() {
+    if (window.pywebview?.api) {
+      window.pywebview.api.pick_file().then((path) => {
+        if (path) registerLocalFile(path);
+      });
+    } else if (logFileInput) {
+      logFileInput.click();
+    }
+  }
+
   function enableNativeMode() {
-      // Hide web controls and show native open button
+      // Hide web controls; toolbar Open is shown only when a file is loaded
       if (webControls) {
           webControls.style.display = "none";
       }
-      if (nativeOpenBtn) {
+      if (typeof window.updateLogLeftPanelTabs === 'function') {
+        window.updateLogLeftPanelTabs();
+      } else if (nativeOpenBtn && currentFileId) {
           nativeOpenBtn.style.display = "flex";
       }
       if (selectedFileId && filesCache.length) {
@@ -344,17 +352,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // --- Event Listeners ---
   
-  // Native Open
+  // Native Open (toolbar button when a file is already loaded)
   if (nativeOpenBtn) {
-      nativeOpenBtn.addEventListener("click", () => {
-         if (window.pywebview && window.pywebview.api) {
-             window.pywebview.api.pick_file().then(path => {
-                 if (path) {
-                     registerLocalFile(path);
-                 }
-             });
-         } 
-      });
+      nativeOpenBtn.addEventListener("click", () => openLogFile());
   }
   
   // Local Path Load (Web Mode)
@@ -424,19 +424,89 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Left Panel Tabs (Files/Search)
-  const leftPanelTabs = document.querySelectorAll('.left-panel-tab');
-  const leftPanelContents = document.querySelectorAll('.left-panel-content');
-  
+  // Log left panel: tabs, collapse, and file-dependent visibility
+  const logLeftPanel = document.getElementById('logLeftPanel');
+  const leftPanelTabs = logLeftPanel ? logLeftPanel.querySelectorAll('.left-panel-tab') : [];
+  const leftPanelContents = logLeftPanel ? logLeftPanel.querySelectorAll('.left-panel-content') : [];
+
+  function expandLogLeftPanel() {
+    if (!logLeftPanel?.classList.contains('collapsed')) return;
+    logLeftPanel.classList.remove('collapsed');
+    localStorage.setItem('logLeftPanelCollapsed', 'false');
+    const toggleBtn = document.getElementById('toggleLogLeftPanel');
+    if (toggleBtn) toggleBtn.title = 'Collapse sidebar';
+  }
+
+  function switchToFilesPanel() {
+    const filesTab = logLeftPanel?.querySelector('.left-panel-tab[data-panel="files-panel"]');
+    const filesPanel = document.getElementById('files-panel');
+    if (filesTab) {
+      leftPanelTabs.forEach((t) => t.classList.remove('active'));
+      filesTab.classList.add('active');
+    }
+    leftPanelContents.forEach((content) => {
+      content.classList.remove('active');
+      if (content.id === 'files-panel') content.classList.add('active');
+    });
+    if (filesPanel && !filesPanel.classList.contains('active')) {
+      filesPanel.classList.add('active');
+    }
+  }
+
+  function updateLogLeftPanelTabs() {
+    if (!logLeftPanel) return;
+    const hasFile = !!currentFileId;
+    logLeftPanel.classList.toggle('no-file-loaded', !hasFile);
+
+    if (nativeOpenBtn) {
+      nativeOpenBtn.style.display = hasFile && window.pywebview ? 'flex' : 'none';
+    }
+
+    const filesTab = logLeftPanel.querySelector('.left-panel-tab[data-panel="files-panel"]');
+    if (filesTab) {
+      filesTab.title = hasFile ? 'Recent Files' : 'Open log file';
+    }
+
+    logLeftPanel.querySelectorAll('.file-dependent-left-tab').forEach((tab) => {
+      if (!hasFile) {
+        tab.style.display = 'none';
+        return;
+      }
+      if (tab.dataset.panel === 'ai-panel') {
+        tab.style.display = window.aiAssistant?.isEnabled ? '' : 'none';
+      } else {
+        tab.style.display = '';
+      }
+    });
+
+    if (!hasFile) {
+      switchToFilesPanel();
+    }
+  }
+  window.updateLogLeftPanelTabs = updateLogLeftPanelTabs;
+
   leftPanelTabs.forEach(tab => {
     tab.addEventListener('click', () => {
       const panelId = tab.dataset.panel;
-      
-      // Update tab active states
+      const isFilesTab = panelId === 'files-panel';
+      const noFile = !currentFileId;
+
+      if (noFile && isFilesTab) {
+        if (logLeftPanel?.classList.contains('collapsed')) {
+          expandLogLeftPanel();
+          return;
+        }
+        openLogFile();
+        return;
+      }
+
+      if (logLeftPanel?.classList.contains('collapsed')) {
+        expandLogLeftPanel();
+      }
+
       leftPanelTabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      
-      // Update panel visibility
+
       leftPanelContents.forEach(content => {
         content.classList.remove('active');
         if (content.id === panelId) {
@@ -445,20 +515,93 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
   });
-  
+
+  const logLeftPanelExpandZone = document.getElementById('logLeftPanelExpandZone');
+  if (logLeftPanelExpandZone) {
+    logLeftPanelExpandZone.addEventListener('click', () => expandLogLeftPanel());
+  }
+
+  if (logLeftPanel) {
+    logLeftPanel.addEventListener('click', (e) => {
+      if (!logLeftPanel.classList.contains('collapsed')) return;
+      if (e.target.closest('.left-panel-tab, .toggle-left-panel-btn, .left-panel-rail-expand-zone')) return;
+      expandLogLeftPanel();
+    });
+  }
+
+  const toggleLogLeftPanelBtn = document.getElementById('toggleLogLeftPanel');
+  if (toggleLogLeftPanelBtn && logLeftPanel) {
+    if (localStorage.getItem('logLeftPanelCollapsed') === 'true') {
+      logLeftPanel.classList.add('collapsed');
+      toggleLogLeftPanelBtn.title = 'Expand sidebar';
+    }
+    toggleLogLeftPanelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const collapsed = logLeftPanel.classList.toggle('collapsed');
+      localStorage.setItem('logLeftPanelCollapsed', collapsed ? 'true' : 'false');
+      toggleLogLeftPanelBtn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    });
+  }
+
+  updateLogLeftPanelTabs();
+
   // Function to switch to search panel
   function switchToSearchPanel() {
-    const searchTab = document.querySelector('.left-panel-tab[data-panel="search-panel"]');
-    if (searchTab) {
+    const searchTab = logLeftPanel?.querySelector('.left-panel-tab[data-panel="search-panel"]');
+    if (searchTab && searchTab.style.display !== 'none') {
       searchTab.click();
     }
   }
 
   // Search
-  if (searchBtn) searchBtn.addEventListener("click", performSearch);
+  if (searchBtn) searchBtn.addEventListener("click", () => performSearch());
   if (searchInput) {
     searchInput.addEventListener("keypress", (e) => {
       if (e.key === "Enter") performSearch();
+    });
+  }
+
+  // Quick patterns (modal-driven)
+  if (window.PresetPatterns) {
+    window.PresetPatterns.init({
+      onPatternClick: (pattern, label) => {
+        if (searchInput) searchInput.value = pattern;
+        performSearch({ label });
+      },
+      getCurrentFileId: () => currentFileId,
+      searchPatternInLog: async (pattern) => {
+        if (!currentFileId) return null;
+        const res = await fetch(
+          `/api/files/${currentFileId}/search?q=${encodeURIComponent(pattern)}&limit=1`
+        );
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          const detail = errBody?.detail;
+          const msg = typeof detail === 'string'
+            ? detail
+            : Array.isArray(detail)
+              ? detail.map(d => d.msg || String(d)).join(', ')
+              : 'Search request failed';
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        return Array.isArray(data) ? (data[0] || null) : null;
+      },
+    });
+  }
+
+  const saveAsPresetBtn = document.getElementById('saveAsPresetBtn');
+  if (saveAsPresetBtn) {
+    saveAsPresetBtn.addEventListener('click', () => {
+      const pattern = searchInput?.value?.trim();
+      if (!pattern) {
+        if (window.showAlert) {
+          window.showAlert('Save Pattern', 'Enter a search pattern first.');
+        }
+        return;
+      }
+      const existingLabel = window.PresetPatterns?.getLabelForPattern(pattern) || '';
+      window.PresetPatterns?.openModalWithPattern(pattern, existingLabel);
     });
   }
 
@@ -524,16 +667,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (exportFindingsBtn) {
     exportFindingsBtn.addEventListener("click", exportFindings);
   }
-  
-  // Preset Tags
-  const presetTags = document.querySelectorAll('.preset-tag[data-pattern]');
-  presetTags.forEach(tag => {
-    tag.addEventListener('click', () => {
-      const pattern = tag.getAttribute('data-pattern');
-      searchInput.value = pattern;
-      performSearch();
-    });
-  });
   
   // Highlight Filter Dropdown
   const highlightFilterBtn = document.getElementById('highlightFilterBtn');
@@ -1358,8 +1491,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // Update the search input but DON'T switch to search panel - user stays on threads panel
     if (searchInput) {
       searchInput.value = searchQuery;
-      // Trigger search without switching panel
-      performSearch();
+      // Trigger search without switching panel — tab shows thread id, not regex
+      performSearch({ label: String(thread) });
     }
   }
   
@@ -1650,46 +1783,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
-  // Add Preset Button
-  const addPresetBtn = document.getElementById('addPresetBtn');
-  if (addPresetBtn) {
-    addPresetBtn.addEventListener('click', () => {
-      const pattern = prompt('Enter regex pattern:');
-      if (pattern && pattern.trim()) {
-        const label = prompt('Enter label for this pattern:');
-        if (label && label.trim()) {
-          addCustomPreset(pattern.trim(), label.trim());
-        }
-      }
-    });
-  }
-  
-  function addCustomPreset(pattern, label) {
-    const presetTagsContainer = document.getElementById('presetTags');
-    const newTag = document.createElement('span');
-    newTag.className = 'preset-tag';
-    newTag.setAttribute('data-pattern', pattern);
-    newTag.textContent = label;
-    newTag.title = pattern;
-    newTag.addEventListener('click', () => {
-      searchInput.value = pattern;
-      performSearch();
-    });
-    
-    // Add remove functionality on right-click
-    newTag.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      showModal(
-        'Remove Preset',
-        `<p>Remove preset "<strong>${label}</strong>"?</p>`,
-        () => newTag.remove(),
-        { confirmText: 'Remove', danger: true }
-      );
-    });
-    
-    presetTagsContainer.appendChild(newTag);
-  }
-
   // --- API Functions ---
 
   function fetchFileList() {
@@ -2067,9 +2160,11 @@ document.addEventListener("DOMContentLoaded", () => {
       
       // Style danger buttons differently
       if (danger) {
-        modalConfirm.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+        modalConfirm.classList.add('confirm-dialog-danger');
+        modalConfirm.classList.remove('btn-primary');
       } else {
-        modalConfirm.style.background = 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)';
+        modalConfirm.classList.remove('confirm-dialog-danger');
+        modalConfirm.classList.add('btn-primary');
       }
     }
     
@@ -2224,7 +2319,8 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Show file-dependent tabs
     document.querySelectorAll('.file-dependent-tab').forEach(t => t.style.display = '');
-    
+    updateLogLeftPanelTabs();
+
     // Dispatch fileLoaded event for components that need to know
     document.dispatchEvent(new CustomEvent('fileLoaded', { 
       detail: { fileId: id } 
@@ -2352,12 +2448,6 @@ document.addEventListener("DOMContentLoaded", () => {
       allSearchTabs.forEach(tab => tab.remove());
     }
     updateSearchTabsOverflow();
-    
-    // Hide export button
-    const exportBtn = document.getElementById('exportSearchBtn');
-    if (exportBtn) {
-      exportBtn.style.display = 'none';
-    }
     
     // Clear thread log view
     if (threadLogView) {
@@ -2514,6 +2604,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll('.file-dependent-tab').forEach((t) => {
       t.style.display = 'none';
     });
+    updateLogLeftPanelTabs();
     if (window.aiAssistant) window.aiAssistant.setFileId(null);
     if (window.aiReportManager && typeof window.aiReportManager.setFileId === 'function') {
       window.aiReportManager.setFileId(null);
@@ -2726,10 +2817,14 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  function performSearch() {
+  function performSearch(options = {}) {
     if (!currentFileId) return;
     const q = searchInput.value;
     if (!q) return;
+
+    const searchLabel = options.label
+      || (window.PresetPatterns ? window.PresetPatterns.getLabelForPattern(q) : null)
+      || null;
 
     const searchResultsDiv = document.getElementById('searchResults');
     const searchResultsHeader = document.getElementById('searchResultsHeader');
@@ -2745,7 +2840,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (matches.length === 0) {
           searchResultsDiv.innerHTML = '<p class="placeholder-text-small">No matches found.</p>';
           lastSearchMatches = [];
-          document.getElementById('exportSearchBtn').style.display = 'none';
           if (searchResultsHeader) searchResultsHeader.style.display = 'none';
           return;
         }
@@ -2758,9 +2852,6 @@ document.addEventListener("DOMContentLoaded", () => {
           searchResultsHeader.style.display = 'flex';
           searchResultsCount.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'}`;
         }
-        
-        // Show export button
-        document.getElementById('exportSearchBtn').style.display = 'flex';
         
         const ul = document.createElement("ul");
         ul.style.listStyle = "none";
@@ -2781,7 +2872,7 @@ document.addEventListener("DOMContentLoaded", () => {
         searchResultsDiv.appendChild(ul);
         
         // Create a search results tab (now supports multiple)
-        createSearchResultsTab(matches, q);
+        createSearchResultsTab(matches, q, searchLabel);
       })
       .catch(err => {
         console.error('Search error:', err);
@@ -2823,12 +2914,6 @@ document.addEventListener("DOMContentLoaded", () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     }
-  }
-  
-  // Initialize export button
-  const exportSearchBtn = document.getElementById('exportSearchBtn');
-  if (exportSearchBtn) {
-    exportSearchBtn.addEventListener('click', exportSearchResults);
   }
   
   function jumpToLineAndHighlight(lineNum, text) {
@@ -2885,7 +2970,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
   
-  function createSearchResultsTab(matches, query) {
+  function createSearchResultsTab(matches, query, label) {
     const logViewTabs = document.getElementById('logViewTabs');
     
     // Create unique tab ID
@@ -2895,7 +2980,8 @@ document.addEventListener("DOMContentLoaded", () => {
     searchTabs.push({
       id: tabId,
       query: query,
-      matches: matches
+      matches: matches,
+      label: label || null
     });
     
     // Create new search results tab
@@ -2904,16 +2990,19 @@ document.addEventListener("DOMContentLoaded", () => {
     searchTab.dataset.view = 'search';
     searchTab.dataset.tabId = tabId;
     
-    // Truncate query for display
-    const displayQuery = query.length > 15 ? query.substring(0, 15) + '...' : query;
+    const displayName = label
+      ? (label.length > 20 ? label.substring(0, 20) + '...' : label)
+      : (query.length > 15 ? query.substring(0, 15) + '...' : query);
     searchTab.innerHTML = `
       <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="opacity: 0.7;">
         <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
       </svg>
-      ${displayQuery} (${matches.length})
+      ${displayName} (${matches.length})
       <span class="close-tab-btn" title="Close this search tab">×</span>
     `;
-    searchTab.title = `Search: ${query} (${matches.length} results)`;
+    searchTab.title = label
+      ? `Search: ${label} — ${query} (${matches.length} results)`
+      : `Search: ${query} (${matches.length} results)`;
     
     // Add click handler for tab
     searchTab.addEventListener('click', (e) => {

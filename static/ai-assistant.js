@@ -62,7 +62,9 @@ class AIAssistant {
     }
     
     updateVisibility() {
-        if (this.aiTab) {
+        if (typeof window.updateLogLeftPanelTabs === 'function') {
+            window.updateLogLeftPanelTabs();
+        } else if (this.aiTab) {
             this.aiTab.style.display = this.isEnabled ? '' : 'none';
         }
     }
@@ -202,15 +204,10 @@ class AIAssistant {
         const canGoPrev = this.currentIndex > 0;
         const canGoNext = this.currentIndex < this.items.length - 1;
         
-        let html = `
+        let html = '';
+        if (hasItems) {
+            html += `
             <div class="ai-panel-header">
-                <h3>
-                    <svg viewBox="0 0 512 512" fill="currentColor">
-                        <path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/>
-                    </svg>
-                    Quick Insights
-                </h3>
-                ${hasItems ? `
                 <div class="ai-thread-navigation">
                     <button class="ai-nav-btn" id="aiNavPrev" ${canGoPrev ? '' : 'disabled'} title="Previous">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -224,9 +221,9 @@ class AIAssistant {
                         </svg>
                     </button>
                 </div>
-                ` : ''}
             </div>
-        `;
+            `;
+        }
         
         if (!hasItems) {
             html += `
