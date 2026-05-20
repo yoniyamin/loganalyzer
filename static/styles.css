@@ -3413,6 +3413,26 @@ body {
     background: rgba(0, 0, 0, 0.2);
 }
 
+.recent-file-item.pinned:not(.active) {
+    border-left: 2px solid rgba(245, 158, 11, 0.4);
+    padding-left: 8px;
+}
+
+.recent-file-item.pinned.active {
+    border-left: 2px solid rgba(252, 211, 77, 0.55);
+    padding-left: 8px;
+}
+
+.recent-file-pin-btn.is-pinned {
+    color: #d97706;
+    opacity: 1;
+}
+
+.recent-file-pin-btn.is-pinned:hover {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+}
+
 .recent-file-name {
     flex: 1;
     overflow: hidden;

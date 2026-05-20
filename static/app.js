@@ -26,7 +26,12 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Recent files state
   const RECENT_FILES_KEY = 'logAnalyzer_recentFiles';
+  const PINNED_FILES_KEY = 'logAnalyzer_pinnedFiles';
+  const PINNED_FILES_SETTING_KEY = 'pinned_files';
+  const RECENT_FILES_SETTING_KEY = 'recent_files';
   const MAX_RECENT_FILES = 20;
+  let pinnedFilesCache = null;
+  let recentFilesCache = null;
   let selectedFileId = null;
   let filesCache = [];
 
@@ -348,7 +353,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
   }
 
-  fetchFileList();
+  loadFileListsFromServer().then(() => fetchFileList());
 
   // --- Event Listeners ---
   
@@ -1867,40 +1872,55 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // --- API Functions ---
 
+  function limitFileList(files, pinnedIds, currentId) {
+    if (files.length <= MAX_RECENT_FILES) return files;
+    const mustKeep = new Set([currentId, ...pinnedIds].filter(id => id != null));
+    const priority = files.filter(f => mustKeep.has(f.id));
+    const rest = files.filter(f => !mustKeep.has(f.id));
+    const room = MAX_RECENT_FILES - priority.length;
+    return [...priority, ...rest.slice(0, Math.max(0, room))];
+  }
+
   function fetchFileList() {
-    fetch("/api/files")
+    const recentFiles = getRecentFiles();
+    const pinnedFiles = getPinnedFiles();
+    const includeIds = [...new Set(
+      [...pinnedFiles, ...recentFiles, currentFileId].filter(id => id != null)
+    )];
+    const params = includeIds.length ? `?include_ids=${includeIds.join(",")}` : "";
+
+    fetch(`/api/files${params}`)
       .then(res => res.json())
       .then(files => {
-        // Merge with recent files from localStorage
-        const recentFiles = getRecentFiles();
-        
-        // Create a map of files by id for quick lookup
         const fileMap = new Map();
         files.forEach(f => fileMap.set(f.id, f));
-        
-        // Sort: current file first, then by recent order
+
         const sortedFiles = [];
-        
-        // Add currently loaded file first if exists
+        const seen = new Set();
+        const addIfNew = (id) => {
+          id = normalizeFileId(id);
+          if (id !== currentFileId && fileMap.has(id) && !seen.has(id)) {
+            seen.add(id);
+            sortedFiles.push(fileMap.get(id));
+          }
+        };
+
         if (currentFileId && fileMap.has(currentFileId)) {
+          seen.add(currentFileId);
           sortedFiles.push(fileMap.get(currentFileId));
         }
-        
-        // Add recent files in order
-        recentFiles.forEach(recentId => {
-          if (recentId !== currentFileId && fileMap.has(recentId)) {
-            sortedFiles.push(fileMap.get(recentId));
-          }
-        });
-        
-        // Add any remaining files not in recent list
+
+        pinnedFiles.forEach(addIfNew);
+        recentFiles.forEach(addIfNew);
+
         files.forEach(f => {
-          if (!sortedFiles.find(sf => sf.id === f.id)) {
+          if (!seen.has(f.id)) {
+            seen.add(f.id);
             sortedFiles.push(f);
           }
         });
-        
-        renderFileList(sortedFiles.slice(0, MAX_RECENT_FILES));
+
+        renderFileList(limitFileList(sortedFiles, pinnedFiles, currentFileId));
       });
   }
   
@@ -1916,7 +1936,9 @@ document.addEventListener("DOMContentLoaded", () => {
     files.forEach(f => {
       const li = document.createElement("li");
       // Active = currently loaded, Selected = clicked but not loaded
+      const pinned = isFilePinned(f.id);
       let className = "recent-file-item";
+      if (pinned) className += " pinned";
       if (f.id === currentFileId) className += " active";
       if (f.id === selectedFileId && f.id !== currentFileId) className += " selected";
       li.className = className;
@@ -1948,6 +1970,19 @@ document.addEventListener("DOMContentLoaded", () => {
       actionsDiv.className = "recent-file-actions";
       actionsDiv.onclick = (e) => e.stopPropagation();
       
+      // Pin / unpin button
+      const pinBtn = document.createElement("button");
+      pinBtn.className = "recent-file-action-btn recent-file-pin-btn" + (pinned ? " is-pinned" : "");
+      pinBtn.title = pinned ? "Unpin from top" : "Pin to top";
+      pinBtn.innerHTML = pinned
+        ? `<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M9.828.722a.5.5 0 01.354.146l4.95 4.95a.5.5 0 01-.707.707L10.146 2.146 9.207 3.085 11.5 5.378V12.5a.5.5 0 01-.5.5h-6a.5.5 0 01-.5-.5V5.378L2.5 3.085l-.939.939a.5.5 0 11-.707-.707l4.95-4.95A.5.5 0 015.172.722L8 3.55l2.828-2.828z"/>
+          </svg>`
+        : `<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M9.828.722a.5.5 0 01.354.146l4.95 4.95a.5.5 0 01-.707.707L10.146 2.146 9.207 3.085 11.5 5.378V12.5a.5.5 0 01-.5.5h-6a.5.5 0 01-.5-.5V5.378L2.5 3.085l-.939.939a.5.5 0 11-.707-.707l4.95-4.95A.5.5 0 015.172.722L8 3.55l2.828-2.828z" fill-opacity="0.45"/>
+          </svg>`;
+      pinBtn.onclick = () => togglePinFile(f.id);
+      
       // Reindex button
       const reindexBtn = document.createElement("button");
       reindexBtn.className = "recent-file-action-btn";
@@ -1974,6 +2009,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       };
       
+      actionsDiv.appendChild(pinBtn);
       actionsDiv.appendChild(reindexBtn);
       actionsDiv.appendChild(removeBtn);
       
@@ -2142,31 +2178,127 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
-  // Recent files localStorage management
-  function getRecentFiles() {
+  // Recent files persistence (backend + localStorage fallback)
+  function normalizeFileId(id) {
+    const n = Number(id);
+    return Number.isFinite(n) ? n : id;
+  }
+
+  function normalizeFileIdList(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map(normalizeFileId).filter(id => id != null);
+  }
+
+  function readPinnedFilesFromLocalStorage() {
     try {
-      const stored = localStorage.getItem(RECENT_FILES_KEY);
-      return stored ? JSON.parse(stored) : [];
+      const stored = localStorage.getItem(PINNED_FILES_KEY);
+      return normalizeFileIdList(stored ? JSON.parse(stored) : []);
     } catch (e) {
       return [];
     }
   }
+
+  function readRecentFilesFromLocalStorage() {
+    try {
+      const stored = localStorage.getItem(RECENT_FILES_KEY);
+      return normalizeFileIdList(stored ? JSON.parse(stored) : []);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveFileListSetting(key, ids) {
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value: { ids } })
+    }).catch(err => console.error(`Failed to save ${key}:`, err));
+  }
+
+  function persistPinnedFiles(ids) {
+    pinnedFilesCache = normalizeFileIdList(ids);
+    try {
+      localStorage.setItem(PINNED_FILES_KEY, JSON.stringify(pinnedFilesCache));
+    } catch (e) {
+      console.error('Failed to save pinned files to localStorage:', e);
+    }
+    saveFileListSetting(PINNED_FILES_SETTING_KEY, pinnedFilesCache);
+  }
+
+  function persistRecentFiles(ids) {
+    recentFilesCache = normalizeFileIdList(ids).slice(0, MAX_RECENT_FILES);
+    try {
+      localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(recentFilesCache));
+    } catch (e) {
+      console.error('Failed to save recent files to localStorage:', e);
+    }
+    saveFileListSetting(RECENT_FILES_SETTING_KEY, recentFilesCache);
+  }
+
+  function loadFileListsFromServer() {
+    const loadSetting = (key) =>
+      fetch(`/api/settings/${key}`)
+        .then(res => res.json())
+        .then(data => data.value)
+        .catch(() => null);
+
+    return Promise.all([
+      loadSetting(PINNED_FILES_SETTING_KEY),
+      loadSetting(RECENT_FILES_SETTING_KEY)
+    ]).then(([pinnedData, recentData]) => {
+      if (pinnedData && Array.isArray(pinnedData.ids)) {
+        pinnedFilesCache = normalizeFileIdList(pinnedData.ids);
+      } else {
+        pinnedFilesCache = readPinnedFilesFromLocalStorage();
+        if (pinnedFilesCache.length) persistPinnedFiles(pinnedFilesCache);
+      }
+
+      if (recentData && Array.isArray(recentData.ids)) {
+        recentFilesCache = normalizeFileIdList(recentData.ids);
+      } else {
+        recentFilesCache = readRecentFilesFromLocalStorage();
+        if (recentFilesCache.length) persistRecentFiles(recentFilesCache);
+      }
+    });
+  }
+
+  function getRecentFiles() {
+    if (recentFilesCache !== null) return recentFilesCache;
+    return readRecentFilesFromLocalStorage();
+  }
+
+  function getPinnedFiles() {
+    if (pinnedFilesCache !== null) return pinnedFilesCache;
+    return readPinnedFilesFromLocalStorage();
+  }
+
+  function isFilePinned(fileId) {
+    return getPinnedFiles().includes(normalizeFileId(fileId));
+  }
+
+  function togglePinFile(fileId) {
+    fileId = normalizeFileId(fileId);
+    let pinned = getPinnedFiles();
+    if (pinned.includes(fileId)) {
+      pinned = pinned.filter(id => id !== fileId);
+    } else {
+      pinned = [fileId, ...pinned.filter(id => id !== fileId)];
+    }
+    persistPinnedFiles(pinned);
+    fetchFileList();
+  }
   
   function addToRecentFiles(fileId) {
-    let recent = getRecentFiles();
-    // Remove if already exists
-    recent = recent.filter(id => id !== fileId);
-    // Add to front
+    fileId = normalizeFileId(fileId);
+    let recent = getRecentFiles().filter(id => id !== fileId);
     recent.unshift(fileId);
-    // Keep only MAX_RECENT_FILES
-    recent = recent.slice(0, MAX_RECENT_FILES);
-    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(recent));
+    persistRecentFiles(recent);
   }
   
   function removeFromRecentFiles(fileId) {
-    let recent = getRecentFiles();
-    recent = recent.filter(id => id !== fileId);
-    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(recent));
+    fileId = normalizeFileId(fileId);
+    persistRecentFiles(getRecentFiles().filter(id => id !== fileId));
+    persistPinnedFiles(getPinnedFiles().filter(id => id !== fileId));
   }
   
   function reindexFile(fileId, filename) {

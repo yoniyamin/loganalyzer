@@ -110,8 +110,23 @@ async def upload_log(
     return {"id": log_file.id, "filename": log_file.filename, "status": "indexing"}
 
 @router.get("/files")
-def list_files(db: Session = Depends(get_db)):
+def list_files(include_ids: Optional[str] = Query(None), db: Session = Depends(get_db)):
     files = db.query(LogFile).order_by(LogFile.upload_time.desc()).limit(20).all()
+    seen = {f.id for f in files}
+
+    if include_ids:
+        for part in include_ids.split(","):
+            part = part.strip()
+            if not part.isdigit():
+                continue
+            fid = int(part)
+            if fid in seen:
+                continue
+            extra = db.query(LogFile).filter(LogFile.id == fid).first()
+            if extra:
+                files.append(extra)
+                seen.add(fid)
+
     file_ids = [f.id for f in files]
     range_map = {}
     if file_ids:
