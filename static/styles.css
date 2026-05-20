@@ -1757,13 +1757,33 @@ body {
 .log-line {
     position: relative;
     min-height: 1.2em;
-    cursor: pointer;
+    cursor: text;
+    user-select: text;
     white-space: pre-wrap;
     word-wrap: break-word;
 }
 
 .log-line:hover {
-    background: #1f2937;
+    background: transparent;
+    box-shadow: inset 3px 0 0 #374151;
+}
+
+.log-line:hover .line-number {
+    color: #d1d5db;
+}
+
+.log-line .line-number,
+.log-line .highlight-dot,
+.log-line .time-gap-indicator {
+    user-select: none;
+}
+
+.log-line .highlight-dot {
+    cursor: pointer;
+}
+
+.log-line .log-line-content {
+    user-select: text;
 }
 
 .log-line.time-gap {
@@ -4556,6 +4576,44 @@ body {
 .search-input-small:focus {
     outline: none;
     border-color: #3b82f6;
+}
+
+.log-quick-search-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.log-quick-search-input {
+    width: 200px;
+    padding-right: 28px;
+}
+
+.log-quick-search-clear {
+    position: absolute;
+    right: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: #9ca3af;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.log-quick-search-clear:hover {
+    background: #374151;
+    color: #e5e7eb;
+}
+
+.log-quick-search-clear[hidden] {
+    display: none;
 }
 
 .analysis-activity-controls {

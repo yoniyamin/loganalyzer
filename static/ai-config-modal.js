@@ -19,6 +19,8 @@ class AIConfigModal {
         this.currentConfig = null;
         this.selectedProvider = 'lmstudio';
         this.onConfigSaved = null; // Callback when config is saved
+        this._modelsInflight = null;
+        this._modelsInflightProvider = null;
         
         this.init();
     }
@@ -502,16 +504,33 @@ class AIConfigModal {
     }
     
     async loadModels() {
-        try {
-            const response = await fetch(`/api/llm/models?provider=${this.selectedProvider}&recommended_only=true`);
-            if (response.ok) {
-                const data = await response.json();
-                this.models = data.models;
-                this.populateModelSelect();
-            }
-        } catch (error) {
-            console.error('Failed to load models:', error);
+        const provider = this.selectedProvider;
+        if (this._modelsInflight && this._modelsInflightProvider === provider) {
+            return this._modelsInflight;
         }
+
+        this._modelsInflightProvider = provider;
+        this._modelsInflight = (async () => {
+            try {
+                const response = await fetch(
+                    `/api/llm/models?provider=${encodeURIComponent(provider)}&recommended_only=true`
+                );
+                if (response.ok) {
+                    const data = await response.json();
+                    this.models = data.models;
+                    this.populateModelSelect();
+                }
+            } catch (error) {
+                console.error('Failed to load models:', error);
+            } finally {
+                if (this._modelsInflightProvider === provider) {
+                    this._modelsInflight = null;
+                    this._modelsInflightProvider = null;
+                }
+            }
+        })();
+
+        return this._modelsInflight;
     }
     
     _buildModelOptionsHtml() {

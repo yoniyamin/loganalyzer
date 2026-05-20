@@ -294,8 +294,12 @@
                   </div>
                 </div>
                 <div style="display: flex; gap: 10px; align-items: center;">
-                  <input type="text" id="logQuickSearch" placeholder="Quick search in log..." class="search-input-small"
-                    style="width: 200px;">
+                  <div class="log-quick-search-wrap">
+                    <input type="text" id="logQuickSearch" placeholder="Quick search in log..."
+                      class="search-input-small log-quick-search-input">
+                    <button type="button" id="logQuickSearchClear" class="log-quick-search-clear"
+                      title="Clear search" aria-label="Clear search" hidden>&times;</button>
+                  </div>
                   <button id="logSearchPrev" class="nav-btn" title="Previous match" disabled>↑</button>
                   <button id="logSearchNext" class="nav-btn" title="Next match" disabled>↓</button>
                   <span id="logSearchCount" class="search-count"></span>

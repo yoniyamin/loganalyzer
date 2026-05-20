@@ -10,7 +10,6 @@ class AIReportManager {
         this.currentFileId = null;
         this.currentReportId = null;
         this.reportHistory = [];
-        this.models = [];
         this.isConfigured = false;
         this.container = null;
         this.isGenerating = false;
@@ -42,10 +41,7 @@ class AIReportManager {
     }
     
     setup() {
-        // Load models
-        this.loadModels();
-        
-        // Check if configured
+        // Config only — model list is owned by ai-config-modal
         this.checkConfig();
         
         // Set callback for config modal
@@ -119,7 +115,6 @@ class AIReportManager {
     
     async syncProviderFromServer() {
         await this.checkConfig();
-        await this.loadModels();
     }
 
     _isLMStudioActive() {
@@ -340,20 +335,6 @@ class AIReportManager {
         }
     }
 
-    async loadModels() {
-        try {
-            // Models are loaded based on current provider config
-            const response = await fetch('/api/llm/models?recommended_only=true');
-            if (response.ok) {
-                const data = await response.json();
-                this.models = data.models;
-                this.currentProvider = (data.provider || 'gemini').toLowerCase();
-            }
-        } catch (error) {
-            console.error('Failed to load models:', error);
-        }
-    }
-    
     async checkConfig() {
         try {
             const response = await fetch('/api/llm/config');

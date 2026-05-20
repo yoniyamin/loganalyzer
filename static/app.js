@@ -654,6 +654,16 @@ document.addEventListener("DOMContentLoaded", () => {
         showContextMenu(e, logLine.dataset.originalText, logLine);
       }
     });
+
+  }
+
+  if (threadLogView) {
+    threadLogView.addEventListener("contextmenu", (e) => {
+      const logLine = e.target.closest('.log-line');
+      if (logLine && logLine.dataset.originalText) {
+        showContextMenu(e, logLine.dataset.originalText, logLine);
+      }
+    });
   }
 
   // Findings
@@ -785,17 +795,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   // Log Quick Search with debounce
+  const logQuickSearchClear = document.getElementById('logQuickSearchClear');
   if (logQuickSearch) {
     logQuickSearch.addEventListener('input', () => {
-      // Clear existing timeout
+      updateLogQuickSearchClearBtn();
       if (logSearchTimeout) {
         clearTimeout(logSearchTimeout);
       }
-      // Set new timeout (500ms delay)
       logSearchTimeout = setTimeout(() => {
         performLogQuickSearch();
       }, 500);
     });
+  }
+  if (logQuickSearchClear) {
+    logQuickSearchClear.addEventListener('click', () => clearLogQuickSearch());
   }
   
   if (logSearchNext) {
@@ -1672,6 +1685,80 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
   
+  // Log line text selection helpers
+  function appendLogLineContent(parent, line) {
+    const contentSpan = document.createElement("span");
+    contentSpan.className = "log-line-content";
+    if (window.LogColors && window.LogColors.isEnabled()) {
+      contentSpan.innerHTML = window.LogColors.highlightLine(line);
+    } else {
+      contentSpan.textContent = line;
+    }
+    parent.appendChild(contentSpan);
+  }
+
+  function restoreLogLineDisplay(line) {
+    const text = line.dataset.originalText || line.textContent;
+    const existingLineNum = line.querySelector('.line-number');
+    const dot = line.querySelector('.highlight-dot');
+    line.innerHTML = '';
+    if (dot) line.appendChild(dot);
+    if (existingLineNum) {
+      line.appendChild(existingLineNum);
+    } else if (line.dataset.lineNumber) {
+      const lineNumSpan = document.createElement('span');
+      lineNumSpan.className = 'line-number';
+      lineNumSpan.textContent = line.dataset.lineNumber;
+      line.appendChild(lineNumSpan);
+    }
+    appendLogLineContent(line, text);
+  }
+
+  function getLogLineSelectedText(fallbackText) {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) {
+      const selected = sel.toString().trim();
+      if (selected) return selected;
+    }
+    return fallbackText;
+  }
+
+  function searchInLogFromText(query) {
+    if (!logQuickSearch || !query) return;
+    logQuickSearch.value = query;
+    updateLogQuickSearchClearBtn();
+    if (logSearchTimeout) clearTimeout(logSearchTimeout);
+    performLogQuickSearch();
+  }
+
+  function clearLogQuickSearch() {
+    if (!logQuickSearch) return;
+    logQuickSearch.value = '';
+    updateLogQuickSearchClearBtn();
+    if (logSearchTimeout) clearTimeout(logSearchTimeout);
+    performLogQuickSearch();
+    logQuickSearch.focus();
+  }
+
+  function updateLogQuickSearchClearBtn() {
+    const btn = document.getElementById('logQuickSearchClear');
+    if (!btn || !logQuickSearch) return;
+    btn.hidden = !logQuickSearch.value.trim();
+  }
+
+  function patternSearchFromText(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (!currentFileId) {
+      showToast('Load a log file first to run a pattern search.');
+      return;
+    }
+    const pattern = escapeRegex(trimmed);
+    if (searchInput) searchInput.value = pattern;
+    const label = trimmed.length > 48 ? `${trimmed.substring(0, 48)}…` : trimmed;
+    performSearch({ label });
+  }
+
   // Log Quick Search Functions
   function performLogQuickSearch() {
     const query = logQuickSearch.value.trim();
@@ -1680,13 +1767,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Clear previous highlights
     logLines.forEach(line => {
       line.classList.remove('log-search-match', 'log-search-current');
-      const text = line.dataset.originalText || line.textContent;
-      // Check if this is a line with line number
-      if (line.dataset.lineNumber) {
-        line.innerHTML = `<span class="line-number">${line.dataset.lineNumber}</span>${text}`;
-      } else {
-        line.textContent = text;
-      }
+      restoreLogLineDisplay(line);
     });
     
     logMatches = [];
@@ -1707,28 +1788,29 @@ document.addEventListener("DOMContentLoaded", () => {
         
         // Highlight the matching text
         const lineNumber = line.dataset.lineNumber;
+        const dot = line.querySelector('.highlight-dot');
         const parts = text.split(new RegExp(`(${escapeRegex(query)})`, 'gi'));
         line.innerHTML = '';
-        
-        // Add line number if it exists
+        if (dot) line.appendChild(dot);
         if (lineNumber) {
           const lineNumSpan = document.createElement('span');
           lineNumSpan.className = 'line-number';
           lineNumSpan.textContent = lineNumber;
           line.appendChild(lineNumSpan);
         }
-        
-        // Add highlighted text
+        const contentSpan = document.createElement('span');
+        contentSpan.className = 'log-line-content';
         parts.forEach(part => {
           if (part.toLowerCase() === query.toLowerCase()) {
             const span = document.createElement('span');
             span.className = 'log-search-highlight';
             span.textContent = part;
-            line.appendChild(span);
+            contentSpan.appendChild(span);
           } else {
-            line.appendChild(document.createTextNode(part));
+            contentSpan.appendChild(document.createTextNode(part));
           }
         });
+        line.appendChild(contentSpan);
       }
     });
     
@@ -2704,14 +2786,7 @@ document.addEventListener("DOMContentLoaded", () => {
         div.insertBefore(dot, lineNumSpan);
       }
       
-      // Apply syntax highlighting if available
-      if (window.LogColors && window.LogColors.isEnabled()) {
-        const contentSpan = document.createElement("span");
-        contentSpan.innerHTML = window.LogColors.highlightLine(line);
-        div.appendChild(contentSpan);
-      } else {
-        div.appendChild(document.createTextNode(line));
-      }
+      appendLogLineContent(div, line);
       
       // Add warning/error class for background highlighting
       if (line.includes(']W:')) {
@@ -3289,14 +3364,7 @@ document.addEventListener("DOMContentLoaded", () => {
         addHighlightDot(div, lineIndex, highlightedLines[lineIndex]);
       }
       
-      // Apply syntax highlighting if available
-      if (window.LogColors && window.LogColors.isEnabled()) {
-        const contentSpan = document.createElement("span");
-        contentSpan.innerHTML = window.LogColors.highlightLine(line);
-        div.appendChild(contentSpan);
-      } else {
-        div.appendChild(document.createTextNode(line));
-      }
+      appendLogLineContent(div, line);
       
       // Add warning/error class for background highlighting
       if (line.includes(']W:')) {
@@ -3345,13 +3413,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (lineNumSpan) {
           div.appendChild(lineNumSpan);
         }
-        if (window.LogColors && window.LogColors.isEnabled()) {
-          const contentSpan = document.createElement("span");
-          contentSpan.innerHTML = window.LogColors.highlightLine(originalText);
-          div.appendChild(contentSpan);
-        } else {
-          div.appendChild(document.createTextNode(originalText));
-        }
+        appendLogLineContent(div, originalText);
       }
     });
     
@@ -3361,14 +3423,10 @@ document.addEventListener("DOMContentLoaded", () => {
       activityLines.forEach(div => {
         const originalText = div.dataset.originalText;
         if (originalText) {
+          const lineNumSpan = div.querySelector('.line-number');
           div.innerHTML = '';
-          if (window.LogColors && window.LogColors.isEnabled()) {
-            const contentSpan = document.createElement("span");
-            contentSpan.innerHTML = window.LogColors.highlightLine(originalText);
-            div.appendChild(contentSpan);
-          } else {
-            div.textContent = originalText;
-          }
+          if (lineNumSpan) div.appendChild(lineNumSpan);
+          appendLogLineContent(div, originalText);
         }
       });
     }
@@ -3679,17 +3737,9 @@ document.addEventListener("DOMContentLoaded", () => {
                   const div = document.createElement("div");
                   div.className = "log-line";
                   div.dataset.idx = m.line;
-                  div.dataset.originalText = m.text; // Store for searching
-                  div.style.cursor = "pointer";
+                  div.dataset.originalText = m.text;
                   
-                  // Apply syntax highlighting if available
-                  if (window.LogColors && window.LogColors.isEnabled()) {
-                      const contentSpan = document.createElement("span");
-                      contentSpan.innerHTML = window.LogColors.highlightLine(m.text);
-                      div.appendChild(contentSpan);
-                  } else {
-                      div.textContent = m.text;
-                  }
+                  appendLogLineContent(div, m.text);
                   
                   // Calculate time gap from previous line
                   if (idx > 0 && linesWithTimestamps[idx].timestamp && linesWithTimestamps[idx-1].timestamp) {
@@ -3706,20 +3756,16 @@ document.addEventListener("DOMContentLoaded", () => {
                       }
                   }
                   
-                  // Add context menu
-                  div.addEventListener("contextmenu", (e) => showContextMenu(e, m.text));
-                  
-                  // Click to jump to line in main log
-                  div.onclick = () => {
-                      // Switch to Log View tab
+                  // Click to jump to line in main log (skip when user selected text)
+                  div.addEventListener('click', () => {
+                      const sel = window.getSelection();
+                      if (sel && sel.toString().trim()) return;
                       const logViewTab = document.querySelector('.tab-btn[data-tab="log-tab"]');
                       if (logViewTab) logViewTab.click();
-                      
-                      // Jump to the line
                       setTimeout(() => {
                           jumpToLineAndHighlight(m.line, m.text);
                       }, 100);
-                  };
+                  });
                   
                   threadLogView.appendChild(div);
               });
@@ -4045,6 +4091,18 @@ document.addEventListener("DOMContentLoaded", () => {
         </svg>
         Copy
       </div>
+      <div id="ctx-search-in-log" class="context-menu-item">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+        </svg>
+        Search in log
+      </div>
+      <div id="ctx-find-all" class="context-menu-item">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M0 2a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H2a2 2 0 01-2-2V2zm5.5 1.5v2a.5.5 0 00.5.5h2a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5h-2a.5.5 0 00-.5.5zm4 0v2a.5.5 0 00.5.5h2a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5h-2a.5.5 0 00-.5.5zm-4 4v2a.5.5 0 00.5.5h2a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5h-2a.5.5 0 00-.5.5zm4 0v2a.5.5 0 00.5.5h2a.5.5 0 00.5-.5v-2a.5.5 0 00-.5-.5h-2a.5.5 0 00-.5.5z"/>
+        </svg>
+        Find all occurrences
+      </div>
       <div id="ctx-google" class="context-menu-item">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
@@ -4072,15 +4130,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Time gap marking state
   let timeGapMarkedLine = null; // { element, timestamp, lineNumber, text }
+
+  function positionContextMenu(menu, clientX, clientY) {
+    menu.style.position = 'fixed';
+    const pad = 8;
+    const w = menu.offsetWidth;
+    const h = menu.offsetHeight;
+    const maxX = Math.max(pad, window.innerWidth - w - pad);
+    const maxY = Math.max(pad, window.innerHeight - h - pad);
+    const x = Math.min(Math.max(pad, clientX), maxX);
+    const y = Math.min(Math.max(pad, clientY), maxY);
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+  }
   
   function showContextMenu(e, text, targetElement = null) {
       e.preventDefault();
-      contextMenu.style.left = e.pageX + "px";
-      contextMenu.style.top = e.pageY + "px";
       contextMenu.style.display = "block";
       
       // Store the target element for line-specific operations
       contextMenuTargetElement = targetElement || e.target.closest('.log-line');
+
+      const lineText = text;
+      const actionText = getLogLineSelectedText(lineText);
       
       // Add to Findings (save via API)
       const addFindingBtn = document.getElementById("ctx-add-finding");
@@ -4154,21 +4226,35 @@ document.addEventListener("DOMContentLoaded", () => {
           contextMenu.style.display = "none";
       };
       
-      // Copy
+      // Copy (selection if any, otherwise full line)
       const copyBtn = document.getElementById("ctx-copy");
       copyBtn.onclick = () => {
-          navigator.clipboard.writeText(text).then(() => {
+          navigator.clipboard.writeText(actionText).then(() => {
               console.log('Text copied to clipboard');
           }).catch(err => {
               console.error('Failed to copy:', err);
           });
           contextMenu.style.display = "none";
       };
+
+      // Search in log (quick search box)
+      const searchInLogBtn = document.getElementById("ctx-search-in-log");
+      searchInLogBtn.onclick = () => {
+          searchInLogFromText(actionText);
+          contextMenu.style.display = "none";
+      };
+
+      // Find all occurrences (full-file regex pattern search)
+      const findAllBtn = document.getElementById("ctx-find-all");
+      findAllBtn.onclick = () => {
+          patternSearchFromText(actionText);
+          contextMenu.style.display = "none";
+      };
       
       // Google Search - strip log prefix (ID, timestamp, component) and trailing source file ref
       const googleBtn = document.getElementById("ctx-google");
       googleBtn.onclick = () => {
-          let searchText = text.trim();
+          let searchText = actionText.trim();
           // Strip prefix: "XXXXXXXX: YYYY-MM-DDTHH:MM:SS [COMPONENT]X: "
           searchText = searchText.replace(/^[0-9a-fA-F]+:\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\s+\[.*?\]\s*[A-Z]?:\s*/, '');
           // Strip trailing source file reference: " (filename.c:1234)"
@@ -4180,10 +4266,10 @@ document.addEventListener("DOMContentLoaded", () => {
           contextMenu.style.display = "none";
       };
 
-      // Time Gap marking
+      // Time Gap marking (always uses full line for timestamps)
       const timeGapBtn = document.getElementById("ctx-time-gap");
       const timeGapLabel = document.getElementById("ctx-time-gap-label");
-      const tsMatch = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+      const tsMatch = lineText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
 
       if (!tsMatch) {
           timeGapBtn.style.display = "none";
@@ -4207,7 +4293,7 @@ document.addEventListener("DOMContentLoaded", () => {
                       timestamp: currentTs,
                       tsString: tsMatch[1],
                       lineNumber: currentLineNum,
-                      text: text.trim()
+                      text: lineText.trim()
                   };
                   if (contextMenuTargetElement) {
                       contextMenuTargetElement.classList.add('time-gap-marked');
@@ -4221,8 +4307,8 @@ document.addEventListener("DOMContentLoaded", () => {
                   const gapStr = formatTimeDiff(diffMs);
 
                   // Determine which is earlier/later
-                  const earlier = mark1.timestamp <= mark2Ts ? mark1 : { timestamp: mark2Ts, tsString: tsMatch[1], lineNumber: currentLineNum, text: text.trim() };
-                  const later = mark1.timestamp <= mark2Ts ? { timestamp: mark2Ts, tsString: tsMatch[1], lineNumber: currentLineNum, text: text.trim() } : mark1;
+                  const earlier = mark1.timestamp <= mark2Ts ? mark1 : { timestamp: mark2Ts, tsString: tsMatch[1], lineNumber: currentLineNum, text: lineText.trim() };
+                  const later = mark1.timestamp <= mark2Ts ? { timestamp: mark2Ts, tsString: tsMatch[1], lineNumber: currentLineNum, text: lineText.trim() } : mark1;
 
                   // Clear the visual mark
                   if (mark1.element) mark1.element.classList.remove('time-gap-marked');
@@ -4234,6 +4320,8 @@ document.addEventListener("DOMContentLoaded", () => {
               }
           };
       }
+
+      positionContextMenu(contextMenu, e.clientX, e.clientY);
   }
 
   function formatTimeDiff(ms) {
@@ -9036,9 +9124,13 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   
-  // Connect AI config changes to AI assistant
+  // Connect AI config changes to AI assistant (preserve other onConfigSaved handlers)
   if (window.aiConfigModal && window.aiAssistant) {
+    const prevOnConfigSaved = window.aiConfigModal.onConfigSaved;
     window.aiConfigModal.onConfigSaved = (config) => {
+      if (typeof prevOnConfigSaved === 'function') {
+        prevOnConfigSaved(config);
+      }
       window.aiAssistant.onConfigChanged(config);
     };
   }
