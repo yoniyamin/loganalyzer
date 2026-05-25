@@ -399,19 +399,19 @@
     align-items: center;
     gap: 4px;
     padding: 6px 10px;
-    background: #1f2937;
-    border: 1px solid #374151;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
     border-radius: 6px;
-    color: #9ca3af;
+    color: var(--text-secondary);
     font-size: 0.75rem;
     cursor: pointer;
     transition: all 0.2s;
 }
 
 .color-schema-btn:hover {
-    background: #374151;
-    color: #e5e7eb;
-    border-color: #4b5563;
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-subtle);
 }
 
 .color-schema-btn svg {

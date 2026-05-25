@@ -327,6 +327,7 @@ SYSTEM_PROMPT_LOCAL = """You are an expert Qlik Replicate (Attunity Replicate) l
 - If structured performance telemetry is marked absent, keep Performance Analysis to one brief paragraph — do not invent bottleneck conclusions.
 - Do NOT fabricate URLs or hyperlinks. Only reference titles/IDs from the prompt.
 - Reference LINE numbers, metrics, and table names from the data provided.
+- Use **plain text** for numbers and units (e.g. `714.33s`, `195 spikes`, `0%`). Never use LaTeX, `$...$` delimiters, or `\\text{}` formatting.
 - If a **Tuning Reference** section is provided, use those specific parameter names and defaults in your recommendations instead of generic advice.
 
 ## Report Structure

@@ -6,45 +6,71 @@
   <title>Replicate Log Analyzer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <!-- Apply saved theme before first paint -->
+  <script>
+    (function () {
+      var theme = '__SERVER_UI_THEME__';
+      try {
+        var saved = localStorage.getItem('logAnalyzer_uiTheme');
+        if (saved === 'light' || saved === 'dark') theme = saved;
+      } catch (e) {}
+      var isLight = theme === 'light';
+      var root = document.documentElement;
+      if (isLight) root.setAttribute('data-theme', 'light');
+      root.style.setProperty('--splash-bg', isLight ? '#f8fafc' : '#0f172a');
+      root.style.setProperty('--splash-body-bg', isLight ? '#f8fafc' : '#0f172a');
+      root.style.setProperty('--splash-spinner-track', isLight ? '#e2e8f0' : '#1e293b');
+      root.style.setProperty('--splash-spinner-head', isLight ? '#059669' : '#22c55e');
+      root.style.setProperty('--splash-title-gradient', isLight
+        ? 'linear-gradient(105deg, #64748b 0%, #475569 35%, #059669 100%)'
+        : 'linear-gradient(105deg, #9ca3af 0%, #d1d5db 35%, #22c55e 100%)');
+    })();
+  </script>
   <!-- Inline splash styles render before any external resource -->
   <style>
-    body { margin: 0; background: #0f172a; }
+    body { margin: 0; background: var(--splash-body-bg, #0f172a); }
     #splash-screen {
       position: fixed; inset: 0; z-index: 99999;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background: #0f172a;
+      background: var(--splash-bg, #0f172a);
       transition: opacity 0.4s ease, visibility 0.4s ease;
     }
     #splash-screen.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
     #splash-screen img { width: 72px; height: 72px; margin-bottom: 18px; }
+    #splash-screen .splash-logo-light { display: none; }
+    html[data-theme="light"] #splash-screen .splash-logo-dark { display: none; }
+    html[data-theme="light"] #splash-screen .splash-logo-light { display: block; }
     #splash-screen h1 {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 1.6rem; font-weight: 700; margin: 0 0 24px;
-      background: linear-gradient(105deg, #9ca3af 0%, #d1d5db 35%, #22c55e 100%);
+      background: var(--splash-title-gradient, linear-gradient(105deg, #9ca3af 0%, #d1d5db 35%, #22c55e 100%));
       -webkit-background-clip: text; background-clip: text;
       color: transparent; -webkit-text-fill-color: transparent;
     }
     .splash-spinner {
       width: 28px; height: 28px;
-      border: 3px solid #1e293b; border-top-color: #22c55e;
+      border: 3px solid var(--splash-spinner-track, #1e293b);
+      border-top-color: var(--splash-spinner-head, #22c55e);
       border-radius: 50%;
       animation: splash-spin .7s linear infinite;
     }
     @keyframes splash-spin { to { transform: rotate(360deg); } }
   </style>
+  <link rel="stylesheet" href="/static/theme.css?v=20260525g">
   <!-- Plotly deferred so it doesn't block first paint -->
   <script defer src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260520c">
+  <link rel="stylesheet" href="/static/styles.css?v=20260525h">
   <link rel="stylesheet" href="/static/log-colors.css?v=20251212">
   <link rel="stylesheet" href="/static/ai-config-modal.css?v=20260519">
-  <link rel="stylesheet" href="/static/ai-report.css?v=20251212">
-  <link rel="stylesheet" href="/static/ai-assistant.css?v=20251212">
+  <link rel="stylesheet" href="/static/ai-report.css?v=20260525g">
+  <link rel="stylesheet" href="/static/ai-assistant.css?v=20260525g">
 </head>
 
 <body>
   <!-- Splash screen: visible instantly, hidden when the app is ready -->
   <div id="splash-screen">
-    <img src="/static/logo_transparent.png" alt="">
+    <img class="splash-logo-dark" src="/static/logo_transparent.png" alt="">
+    <img class="splash-logo-light" src="/static/logo_clean.jpg" alt="">
     <h1>Replicate Log Analyzer</h1>
     <div class="splash-spinner"></div>
   </div>
@@ -81,6 +107,16 @@
           </form>
         </div>
         
+        <!-- Theme Toggle -->
+        <button id="themeToggleBtn" class="theme-toggle-btn" title="Toggle light/dark mode" aria-label="Toggle light/dark mode">
+          <svg class="theme-icon-light" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg class="theme-icon-dark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+
         <!-- AI Settings Button -->
         <button id="aiSettingsBtn" class="ai-settings-btn" title="AI Settings">
           <svg width="18" height="18" viewBox="0 0 512 512" fill="currentColor">
@@ -305,12 +341,12 @@
                   <span id="logSearchCount" class="search-count"></span>
                 </div>
                 <label
-                  style="display: flex; align-items: center; gap: 4px; font-size: 0.75rem; color: #9ca3af; cursor: pointer;">
+                  style="display: flex; align-items: center; gap: 4px; font-size: 0.75rem; cursor: pointer;">
                   <input type="checkbox" id="showTimeGaps" style="cursor: pointer;">
                   <span>Show Time Gaps</span>
                 </label>
                 <label id="hideNoiseLabel"
-                  style="display: flex; align-items: center; gap: 4px; font-size: 0.75rem; color: #9ca3af; cursor: pointer;"
+                  style="display: flex; align-items: center; gap: 4px; font-size: 0.75rem; cursor: pointer;"
                   title="Hide consecutive lines with identical messages (ignoring timestamps and thread IDs) to reduce noise from repeating log entries like heartbeats or status polls">
                   <input type="checkbox" id="hideNoise" style="cursor: pointer;">
                   <span>Hide Noise</span>
@@ -352,7 +388,7 @@
                           style="background: #f97316"></span> Orange</label>
                       <button class="clear-color-btn" data-color="orange" title="Clear all orange highlights">×</button>
                     </div>
-                    <hr style="margin: 6px 0; border: none; border-top: 1px solid #374151;">
+                    <hr class="filter-divider">
                     <div class="filter-color-row">
                       <label><input type="checkbox" value="search" checked> <span class="filter-color-indicator"
                           style="background: #065f46"></span> Search Results</label>
@@ -555,7 +591,7 @@ Content for section 2..." class="form-textarea"></textarea>
       <div id="analysis-tab" class="tab-content">
         <aside class="left-panel analysis-sidebar">
           <div id="taskPropertiesPanel" class="task-properties-panel task-properties-expanded">
-            <h3 style="margin: 0 0 10px 0; font-size: 0.9rem; color: #3b82f6;">Task Properties</h3>
+            <h3 class="task-properties-title">Task Properties</h3>
             <div id="taskPropertiesContent" class="task-properties-content">
               <p class="placeholder-text-small">Loading...</p>
             </div>
@@ -701,12 +737,12 @@ Content for section 2..." class="form-textarea"></textarea>
 
           </div>
 
-          <div id="unavailableReportsSection" style="display:none;border-top:1px solid #1f2937;margin-top:8px;padding-top:4px">
-            <div id="unavailableReportsToggle" style="display:flex;align-items:center;gap:4px;padding:6px 8px;cursor:pointer;user-select:none">
-              <svg id="unavailableReportsArrow" width="10" height="10" viewBox="0 0 16 16" fill="#6b7280" style="transition:transform .2s;transform:rotate(0deg)">
+          <div id="unavailableReportsSection" class="unavailable-reports-section" style="display:none">
+            <div id="unavailableReportsToggle" class="unavailable-reports-toggle">
+              <svg id="unavailableReportsArrow" width="10" height="10" viewBox="0 0 16 16" style="transition:transform .2s;transform:rotate(0deg)">
                 <path d="M6 12l4-4-4-4"/>
               </svg>
-              <span style="font-size:0.7rem;color:#6b7280;font-weight:600;text-transform:uppercase">Unavailable Reports</span>
+              <span>Unavailable Reports</span>
             </div>
             <div id="unavailableReportsList" style="display:none"></div>
           </div>
@@ -716,14 +752,15 @@ Content for section 2..." class="form-textarea"></textarea>
     </div>
   </div>
 
+  <script src="/static/theme.js?v=20260525g"></script>
   <script src="/static/log-colors.js"></script>
   <script src="/static/preset-patterns-modal.js"></script>
   <script src="/static/ai-config-modal.js"></script>
-  <script src="/static/ai-report.js?v=20260518a"></script>
+  <script src="/static/ai-report.js?v=20260525i"></script>
   <script src="/static/ai-assistant.js"></script>
-  <script src="/static/kb-sources.js?v=20251212"></script>
+  <script src="/static/kb-sources.js?v=20260525e"></script>
   <script src="/static/saved-findings.js?v=20260322a"></script>
-  <script src="/static/app.js?v=20260519"></script>
+  <script src="/static/app.js?v=20260525h"></script>
   <!-- Quick Patterns Modal -->
   <div id="presetPatternsModal" class="modal" style="display: none;">
     <div class="modal-content preset-modal-content">

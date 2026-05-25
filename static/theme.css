@@ -1,0 +1,306 @@
+/* UI theme tokens — dark is default; light via html[data-theme="light"] */
+
+:root {
+    /* Backgrounds */
+    --bg-primary: #101317;
+    --bg-secondary: #111827;
+    --bg-tertiary: #1f2937;
+    --bg-elevated: #374151;
+    --bg-log: #020617;
+    --bg-input: #020617;
+    --bg-hover: #1f2937;
+    --bg-active: #1e293b;
+
+    /* Text */
+    --text-primary: #e5e7eb;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+    --text-emphasis: #ffffff;
+    --text-inverse: #111827;
+    --text-on-accent: #ffffff;
+
+    /* Borders */
+    --border-color: #1f2937;
+    --border-subtle: #374151;
+
+    /* Accents */
+    --accent-color: #10b981;
+    --accent-blue: #3b82f6;
+    --accent-danger: #ef4444;
+
+    /* Overlays & shadows */
+    --overlay-bg: rgba(0, 0, 0, 0.75);
+    --shadow-color: rgba(0, 0, 0, 0.5);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+
+    /* Splash */
+    --splash-bg: #0f172a;
+    --splash-spinner-track: #1e293b;
+    --splash-spinner-head: #22c55e;
+
+    /* Gradients */
+    --file-info-gradient-start: #0f172a;
+    --file-info-gradient-end: #1e293b;
+    --title-gradient: linear-gradient(105deg, #9ca3af 0%, #d1d5db 35%, #22c55e 100%);
+
+    /* Log view */
+    --log-line-hover-accent: #374151;
+    --log-line-hover-number: #d1d5db;
+    --welcome-image-bg: #0f172a;
+    --welcome-image-shadow: rgba(15, 23, 42, 0.8);
+
+    /* Scrollbars & timeline */
+    --scrollbar-track: #1f2937;
+    --scrollbar-thumb: #4b5563;
+    --timeline-bar-bg: #0d1117;
+}
+
+[data-theme="light"] {
+    --bg-primary: #f8fafc;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #f1f5f9;
+    --bg-elevated: #e2e8f0;
+    --bg-log: #ffffff;
+    --bg-input: #ffffff;
+    --bg-hover: #f1f5f9;
+    --bg-active: #e2e8f0;
+
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+    --text-emphasis: #0f172a;
+    --text-inverse: #ffffff;
+    --text-on-accent: #ffffff;
+
+    --border-color: #e2e8f0;
+    --border-subtle: #cbd5e1;
+
+    --accent-color: #059669;
+    --accent-blue: #2563eb;
+    --accent-danger: #dc2626;
+
+    --overlay-bg: rgba(15, 23, 42, 0.45);
+    --shadow-color: rgba(15, 23, 42, 0.12);
+    --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.08);
+
+    --splash-bg: #f8fafc;
+    --splash-spinner-track: #e2e8f0;
+    --splash-spinner-head: #059669;
+
+    --file-info-gradient-start: #f8fafc;
+    --file-info-gradient-end: #f1f5f9;
+    --title-gradient: linear-gradient(105deg, #64748b 0%, #475569 35%, #059669 100%);
+
+    --log-line-hover-accent: #cbd5e1;
+    --log-line-hover-number: #475569;
+    --welcome-image-bg: #f1f5f9;
+    --welcome-image-shadow: rgba(15, 23, 42, 0.08);
+
+    --scrollbar-track: #f1f5f9;
+    --scrollbar-thumb: #cbd5e1;
+    --timeline-bar-bg: #e2e8f0;
+}
+
+/* Splash screen theme support */
+#splash-screen {
+    background: var(--splash-bg);
+}
+
+.splash-spinner {
+    border-color: var(--splash-spinner-track);
+    border-top-color: var(--splash-spinner-head);
+}
+
+#splash-screen .splash-logo-light {
+    display: none;
+}
+
+[data-theme="light"] #splash-screen .splash-logo-dark {
+    display: none;
+}
+
+[data-theme="light"] #splash-screen .splash-logo-light {
+    display: block;
+}
+
+/* Theme toggle button */
+.theme-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    margin-left: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.theme-toggle-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-subtle);
+}
+
+.theme-toggle-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+.theme-toggle-btn .theme-icon-light,
+.theme-toggle-btn .theme-icon-dark {
+    display: none;
+}
+
+:root:not([data-theme="light"]) .theme-toggle-btn .theme-icon-light,
+[data-theme="light"] .theme-toggle-btn .theme-icon-dark {
+    display: block;
+}
+
+/* Light-mode welcome screen adjustments */
+[data-theme="light"] .log-welcome-kicker {
+    color: var(--text-secondary);
+}
+
+[data-theme="light"] .log-welcome-getting-started {
+    color: var(--text-primary);
+}
+
+[data-theme="light"] .log-welcome-hint {
+    color: var(--text-secondary);
+}
+
+[data-theme="light"] .log-welcome .log-welcome-open-btn {
+    color: #fff;
+    background: linear-gradient(105deg, #64748b 0%, #334155 38%, #059669 100%);
+    border-color: rgba(5, 150, 105, 0.45);
+    box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .log-welcome .log-welcome-open-btn:hover {
+    background: linear-gradient(105deg, #475569 0%, #334155 35%, #047857 100%);
+    border-color: rgba(5, 150, 105, 0.65);
+}
+
+[data-theme="light"] .log-welcome-image-wrap {
+    border-color: rgba(5, 150, 105, 0.35);
+    box-shadow: 0 0 0 1px var(--welcome-image-shadow);
+    background: var(--welcome-image-bg);
+}
+
+[data-theme="light"] .log-view-tab[data-view="all"]:hover,
+[data-theme="light"] .log-view-tab.log-view-tab-all:hover {
+    color: #047857;
+}
+
+[data-theme="light"] .log-view-tab[data-view="all"].active,
+[data-theme="light"] .log-view-tab.log-view-tab-all.active {
+    color: #059669;
+}
+
+[data-theme="light"] .log-view-tab[data-view="search"].active {
+    background: var(--bg-active);
+    color: var(--text-primary);
+}
+
+[data-theme="light"] .tab-btn:hover,
+[data-theme="light"] .tab-btn.active {
+    color: var(--text-emphasis);
+}
+
+[data-theme="light"] .log-view-tab:hover,
+[data-theme="light"] .log-view-tab.active {
+    color: var(--text-emphasis);
+}
+
+[data-theme="light"] .ai-settings-indicator {
+    border-color: var(--bg-secondary);
+}
+
+[data-theme="light"] .report-link.active {
+    background: rgba(37, 99, 235, 0.1);
+}
+
+/* Log toolbar labels (replaces inline dark colors in index.html) */
+.log-controls label,
+.log-controls-actions label {
+    color: var(--text-secondary);
+}
+
+.log-controls .log-font-indicator {
+    color: var(--text-secondary);
+}
+
+.highlight-filter-dropdown label {
+    color: var(--text-primary);
+}
+
+.highlight-filter-dropdown label:hover {
+    background: var(--bg-hover);
+}
+
+.highlight-filter-dropdown hr,
+.filter-divider {
+    margin: 6px 0;
+    border: none;
+    border-top: 1px solid var(--border-color);
+}
+
+.clear-color-btn {
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+}
+
+[data-theme="light"] .ai-insight-section.highlight-section .ai-insight-section-header h3 {
+    color: #6d28d9;
+}
+
+[data-theme="light"] .ai-insight-section.highlight-findings .ai-insight-section-header h3 {
+    color: #b45309;
+}
+
+[data-theme="light"] .ai-insight-section.highlight-health .ai-insight-section-header h3 {
+    color: #047857;
+}
+
+[data-theme="light"] .task-props-status-badge.success {
+    background: rgba(16, 185, 129, 0.12);
+}
+
+.unavailable-reports-section {
+    border-top: 1px solid var(--border-color);
+    margin-top: 8px;
+    padding-top: 4px;
+}
+
+.unavailable-reports-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.unavailable-reports-toggle svg {
+    fill: var(--text-muted);
+    transition: transform 0.2s;
+}
+
+.task-properties-title {
+    margin: 0 0 10px 0;
+    font-size: 0.9rem;
+    color: var(--accent-blue);
+}
+
+.analysis-sidebar .task-properties-panel h3,
+.analysis-sidebar .task-properties-title {
+    color: var(--accent-blue);
+}

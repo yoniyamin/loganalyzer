@@ -283,7 +283,7 @@
 .ai-report-content h4 {
     font-size: 0.9rem;
     margin: 10px 0 4px 0;
-    color: var(--text-secondary, #a6adc8);
+    color: var(--text-primary);
     font-weight: 600;
 }
 
@@ -364,7 +364,11 @@
 }
 
 .ai-report-content em {
-    color: var(--text-secondary, #a6adc8);
+    color: var(--text-secondary);
+}
+
+[data-theme="light"] .ai-report-content blockquote {
+    background: rgba(37, 99, 235, 0.06);
 }
 
 .ai-report-content hr {
@@ -628,6 +632,134 @@
     to {
         transform: rotate(360deg);
     }
+}
+
+/* Appendix sections (log summary, references, chart) */
+.ai-report-appendix {
+    margin-top: 24px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 16px;
+}
+
+.ai-report-appendix.compact {
+    margin-top: 16px;
+}
+
+.ai-report-appendix details {
+    cursor: pointer;
+}
+
+.ai-report-appendix summary,
+.ai-report-appendix-title {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+    margin: 0 0 10px;
+}
+
+.ai-report-appendix-chevron {
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.ai-report-appendix details[open] .ai-report-appendix-chevron {
+    transform: rotate(90deg);
+}
+
+.ai-report-appendix-chevron path {
+    fill: var(--text-secondary);
+}
+
+.ai-report-appendix-chart {
+    width: 100%;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+}
+
+.ai-report-summary-table {
+    border-collapse: collapse;
+}
+
+.ai-report-summary-table td {
+    padding: 3px 12px 3px 0;
+    font-size: 0.75rem;
+}
+
+.ai-report-summary-table td:first-child {
+    color: var(--text-secondary);
+}
+
+.ai-report-summary-table td:last-child {
+    color: var(--text-primary);
+}
+
+.ai-report-summary-table .value-success {
+    color: var(--accent-color);
+}
+
+.ai-report-summary-table .value-warning {
+    color: #f59e0b;
+}
+
+.ai-report-summary-table .value-error {
+    color: #f38ba8;
+}
+
+.ai-report-ref-group {
+    margin-bottom: 12px;
+}
+
+.ai-report-ref-group:last-child {
+    margin-bottom: 0;
+}
+
+.ai-report-ref-heading {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+
+.ai-report-ref-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 4px 0;
+}
+
+.ai-report-ref-link {
+    color: var(--accent-blue);
+    text-decoration: none;
+    font-size: 0.8rem;
+}
+
+.ai-report-ref-link:hover {
+    text-decoration: underline;
+}
+
+.ai-report-ref-title {
+    color: var(--text-primary);
+    font-size: 0.8rem;
+}
+
+.ai-report-ref-version {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+
+.ai-report-ref-fix {
+    padding: 1px 4px;
+    background: #06b6d4;
+    color: #111827;
+    border-radius: 2px;
+    font-size: 0.6rem;
+    font-weight: bold;
 }
 
 /* Report type badge (shown next to "Insights Report" title) */

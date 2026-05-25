@@ -1102,15 +1102,15 @@ class AIReportManager {
         // Latency chart image (collapsed)
         if (report.chart_image_base64) {
             extraSections += `
-                <div class="ai-report-appendix" style="margin-top:24px;border-top:1px solid #374151;padding-top:16px">
+                <div class="ai-report-appendix">
                     <details>
-                        <summary style="font-size:0.9rem;color:#e5e7eb;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;list-style:none;margin-bottom:10px">
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="#9ca3af" style="transition:transform .2s"><path d="M6 12l4-4-4-4"/></svg>
+                        <summary>
+                            <svg class="ai-report-appendix-chevron" width="14" height="14" viewBox="0 0 16 16"><path d="M6 12l4-4-4-4"/></svg>
                             <svg width="16" height="16" viewBox="0 0 16 16" fill="#3b82f6"><path d="M1 11a1 1 0 011-1h2a1 1 0 011 1v3a1 1 0 01-1 1H2a1 1 0 01-1-1v-3zM6 7a1 1 0 011-1h2a1 1 0 011 1v7a1 1 0 01-1 1H7a1 1 0 01-1-1V7zM11 3a1 1 0 011-1h2a1 1 0 011 1v11a1 1 0 01-1 1h-2a1 1 0 01-1-1V3z"/></svg>
                             Latency Chart (sent to model)
                         </summary>
-                        <img src="data:image/png;base64,${report.chart_image_base64}"
-                             alt="Latency Over Time" style="width:100%;border-radius:6px;border:1px solid #374151" />
+                        <img class="ai-report-appendix-chart" src="data:image/png;base64,${report.chart_image_base64}"
+                             alt="Latency Over Time" />
                     </details>
                 </div>`;
         }
@@ -1125,20 +1125,20 @@ class AIReportManager {
             const errs = summary.error_count != null ? summary.error_count : (summary.errors_total != null ? summary.errors_total : '');
             const taskName = summary.task_name || '';
             let sumRows = '';
-            if (taskName) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Task</td><td style="font-size:0.75rem;color:#e5e7eb">${taskName}</td></tr>`;
-            if (ver) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Version</td><td style="font-size:0.75rem;color:#e5e7eb">${ver}</td></tr>`;
-            if (src) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Source</td><td style="font-size:0.75rem;color:#10b981">${src}</td></tr>`;
-            if (tgt) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Target</td><td style="font-size:0.75rem;color:#f59e0b">${tgt}</td></tr>`;
-            if (dur) sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Duration</td><td style="font-size:0.75rem;color:#e5e7eb">${dur}</td></tr>`;
-            if (errs !== '') sumRows += `<tr><td style="color:#9ca3af;padding:3px 12px 3px 0;font-size:0.75rem">Errors</td><td style="font-size:0.75rem;color:${errs > 0 ? '#f38ba8' : '#10b981'}">${errs}</td></tr>`;
+            if (taskName) sumRows += `<tr><td>Task</td><td>${taskName}</td></tr>`;
+            if (ver) sumRows += `<tr><td>Version</td><td>${ver}</td></tr>`;
+            if (src) sumRows += `<tr><td>Source</td><td class="value-success">${src}</td></tr>`;
+            if (tgt) sumRows += `<tr><td>Target</td><td class="value-warning">${tgt}</td></tr>`;
+            if (dur) sumRows += `<tr><td>Duration</td><td>${dur}</td></tr>`;
+            if (errs !== '') sumRows += `<tr><td>Errors</td><td class="${errs > 0 ? 'value-error' : 'value-success'}">${errs}</td></tr>`;
             if (sumRows) {
                 extraSections += `
-                    <div class="ai-report-appendix" style="margin-top:16px;border-top:1px solid #374151;padding-top:16px">
-                        <h3 style="font-size:0.9rem;color:#e5e7eb;margin:0 0 10px;display:flex;align-items:center;gap:6px">
+                    <div class="ai-report-appendix compact">
+                        <h3 class="ai-report-appendix-title">
                             <svg width="16" height="16" viewBox="0 0 512 512" fill="#8b5cf6"><path d="M327.5 85.2c-4.5 1.7-7.5 6-7.5 10.8s3 9.1 7.5 10.8L384 128l21.2 56.5c1.7 4.5 6 7.5 10.8 7.5s9.1-3 10.8-7.5L448 128l56.5-21.2c4.5-1.7 7.5-6 7.5-10.8s-3-9.1-7.5-10.8L448 64 426.8 7.5C425.1 3 420.8 0 416 0s-9.1 3-10.8 7.5L384 64 327.5 85.2z"/></svg>
                             Log Summary
                         </h3>
-                        <table style="border-collapse:collapse">${sumRows}</table>
+                        <table class="ai-report-summary-table">${sumRows}</table>
                     </div>`;
             }
         }
@@ -1161,33 +1161,33 @@ class AIReportManager {
         const dbIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#10b981" stroke-width="1.3" title="Indexed (ChromaDB)"><ellipse cx="8" cy="3" rx="6" ry="2.5"/><path d="M2 3v10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V3"/><path d="M2 8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/></svg>';
         const webIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#60a5fa" stroke-width="1.3" title="Web search"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2.2 3 4.8 3 6.5s-1 4.3-3 6.5c-2-2.2-3-4.8-3-6.5s1-4.3 3-6.5"/></svg>';
 
-        let html = '<div class="ai-report-appendix" style="margin-top:24px;border-top:1px solid #374151;padding-top:16px">';
-        html += '<details style="cursor:pointer"><summary style="font-size:0.9rem;color:#e5e7eb;font-weight:600;margin-bottom:10px;list-style:none;display:flex;align-items:center;gap:6px">';
-        html += '<svg width="14" height="14" viewBox="0 0 16 16" fill="#9ca3af" style="transition:transform .2s"><path d="M6 12l4-4-4-4"/></svg>';
+        let html = '<div class="ai-report-appendix">';
+        html += '<details><summary>';
+        html += '<svg class="ai-report-appendix-chevron" width="14" height="14" viewBox="0 0 16 16"><path d="M6 12l4-4-4-4"/></svg>';
         html += 'References</summary>';
 
         if (hasKb) {
-            html += '<div style="margin-bottom:12px"><div style="font-size:0.75rem;color:#9ca3af;text-transform:uppercase;margin-bottom:6px;font-weight:600">Knowledge Base Articles</div>';
+            html += '<div class="ai-report-ref-group"><div class="ai-report-ref-heading">Knowledge Base Articles</div>';
             for (const kb of report.kb_references) {
                 const icon = kb.source === 'web' ? webIcon : dbIcon;
                 const link = kb.url
-                    ? `<a href="${kb.url}" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:0.8rem">${kb.title}</a>`
-                    : `<span style="color:#e5e7eb;font-size:0.8rem">${kb.title}</span>`;
-                html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:4px 0">${icon} ${link}</div>`;
+                    ? `<a href="${kb.url}" target="_blank" class="ai-report-ref-link">${kb.title}</a>`
+                    : `<span class="ai-report-ref-title">${kb.title}</span>`;
+                html += `<div class="ai-report-ref-item">${icon} ${link}</div>`;
             }
             html += '</div>';
         }
 
         if (hasRn) {
-            html += '<div><div style="font-size:0.75rem;color:#9ca3af;text-transform:uppercase;margin-bottom:6px;font-weight:600">Release Notes</div>';
+            html += '<div class="ai-report-ref-group"><div class="ai-report-ref-heading">Release Notes</div>';
             for (const rn of report.release_notes_references) {
                 const icon = rn.source === 'web' ? webIcon : dbIcon;
-                const fixTag = rn.fix_id ? ` <span style="padding:1px 4px;background:#06b6d4;color:#111827;border-radius:2px;font-size:0.6rem;font-weight:bold">${rn.fix_id}</span>` : '';
-                const verTag = rn.version ? ` <span style="color:#6b7280;font-size:0.7rem">(${rn.version})</span>` : '';
+                const fixTag = rn.fix_id ? ` <span class="ai-report-ref-fix">${rn.fix_id}</span>` : '';
+                const verTag = rn.version ? ` <span class="ai-report-ref-version">(${rn.version})</span>` : '';
                 const link = rn.url
-                    ? `<a href="${rn.url}" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:0.8rem">${rn.title}</a>`
-                    : `<span style="color:#e5e7eb;font-size:0.8rem">${rn.title}</span>`;
-                html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:4px 0">${icon} ${link}${fixTag}${verTag}</div>`;
+                    ? `<a href="${rn.url}" target="_blank" class="ai-report-ref-link">${rn.title}</a>`
+                    : `<span class="ai-report-ref-title">${rn.title}</span>`;
+                html += `<div class="ai-report-ref-item">${icon} ${link}${fixTag}${verTag}</div>`;
             }
             html += '</div>';
         }
@@ -1220,12 +1220,33 @@ class AIReportManager {
     }
     
     /**
+     * Strip Gemma-style inline LaTeX ($...$, \\text{}) so numbers render as plain text.
+     */
+    _normalizeLatexMath(text) {
+        if (!text || (!text.includes('$') && !text.includes('\\text{'))) {
+            return text;
+        }
+        const convertFragment = (inner) => {
+            let s = inner.replace(/\\text\{([^}]*)\}/g, '$1');
+            s = s.replace(/\\%/g, '%').replace(/\\times/g, '×').replace(/\\cdot/g, '·');
+            s = s.replace(/\\[,;]/g, ' ');
+            s = s.replace(/\\[a-zA-Z]+\s*/g, '');
+            return s.replace(/\s+/g, ' ').trim();
+        };
+        text = text.replace(/\$([^$\n]+?)\$/g, (match, inner) => {
+            const converted = convertFragment(inner);
+            return converted || match;
+        });
+        return text.replace(/\\text\{([^}]*)\}/g, '$1');
+    }
+
+    /**
      * Enhanced markdown to HTML converter with better formatting
      */
     markdownToHtml(markdown) {
         if (!markdown) return '';
         
-        let html = markdown;
+        let html = this._normalizeLatexMath(markdown);
         
         // Normalize line endings
         html = html.replace(/\r\n/g, '\n');

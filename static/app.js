@@ -70,7 +70,8 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="log-welcome">
           <p class="log-welcome-kicker">Welcome to</p>
           <div class="log-welcome-image-wrap">
-            <img src="/static/new_welcome_screen.png" alt="">
+            <img class="welcome-image welcome-image-dark" src="/static/new_welcome_screen.png" alt="Qlik Replicate Log Analytics">
+            <img class="welcome-image welcome-image-light" src="/static/logo_clean.jpg" alt="Qlik Replicate Log Analytics">
           </div>
           <div class="log-welcome-section">
             <h2 class="log-welcome-heading">Getting Started</h2>
@@ -1433,7 +1434,7 @@ document.addEventListener("DOMContentLoaded", () => {
         headerStats += ` + ${totalPooled} pooled`;
       }
       const shortDesc = getComponentShort(comp.name);
-      headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color:#9ca3af;">(${headerStats})</span>`
+      headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span class="group-header-stats">(${headerStats})</span>`
         + (shortDesc ? `<span class="component-short-desc">${shortDesc}</span>` : '');
       headerDiv.onclick = () => {
         const threadList = groupDiv.querySelector('.thread-list-inner');
@@ -1570,15 +1571,15 @@ document.addEventListener("DOMContentLoaded", () => {
     let aboutBody = `<p>${description}</p>`;
     if (lookFor) {
       aboutBody += `
-        <div style="margin-top:8px;padding:6px 8px;background:rgba(59,130,246,0.08);border-left:2px solid #3b82f6;border-radius:0 4px 4px 0;">
-          <strong style="font-size:0.7rem;color:#93c5fd;">What to look for</strong>
-          <p style="margin:2px 0 0;font-size:0.72rem;color:#d1d5db;line-height:1.4;">${lookFor}</p>
+        <div class="component-info-tip">
+          <strong>What to look for</strong>
+          <p>${lookFor}</p>
         </div>`;
     }
     aboutBody += `
-        <p style="margin-top: 8px; font-size: 0.7rem;">
+        <p class="component-info-doc-link">
           <a href="https://help.qlik.com/en-US/replicate/November2025/Content/Replicate/Main/Replicate%20Loggers/Loggers.htm" 
-             target="_blank" style="color: #60a5fa; text-decoration: none;">
+             target="_blank">
              Qlik Documentation ↗
           </a>
         </p>`;
@@ -3727,7 +3728,7 @@ document.addEventListener("DOMContentLoaded", () => {
             headerStats2 += ` + ${totalPooled2} pooled`;
           }
           const shortDesc = getComponentShort(comp.name);
-          headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span style="color:#9ca3af;">(${headerStats2})</span>`
+          headerDiv.innerHTML = `<span class="expand-icon">▶</span> <strong>${comp.name}</strong> <span class="group-header-stats">(${headerStats2})</span>`
             + (shortDesc ? `<span class="component-short-desc">${shortDesc}</span>` : '');
           headerDiv.onclick = () => {
               const threadList = groupDiv.querySelector('.thread-list-inner');
@@ -3945,11 +3946,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       let html = `
-          <div style="padding: 10px; background: #1f2937; border-radius: 6px; margin-bottom: 10px;">
-              <h4 style="margin: 0 0 4px 0; color: #3b82f6;">${component}</h4>
-              ${shortDesc ? `<p style="margin:0 0 8px;font-size:0.72rem;color:#9ca3af;">${shortDesc}</p>` : ''}
+          <div class="component-detail-card">
+              <h5>${component}</h5>
+              ${shortDesc ? `<p class="component-short-desc">${shortDesc}</p>` : ''}
               ${threadHtml}
-              <p style="margin: 5px 0; font-size: 0.85rem;"><strong>Messages:</strong> ${messageCount}</p>
+              <p><strong>Messages:</strong> ${messageCount}</p>
           </div>`;
 
       if (asm) {
@@ -3959,18 +3960,18 @@ document.addEventListener("DOMContentLoaded", () => {
         html += buildCollapsibleSection('ASM Parallel Reader Pool', asmBody, { color: '#a78bfa', icon: '⛁', cls: 'asm-info-note' });
       }
 
-      let aboutBody = `<p style="margin: 0; font-size: 0.8rem; color: #d1d5db; line-height: 1.5;">${description}</p>`;
+      let aboutBody = `<p>${description}</p>`;
       if (lookFor) {
           aboutBody += `
-              <div style="margin-top:10px;padding:8px 10px;background:rgba(59,130,246,0.08);border-left:2px solid #3b82f6;border-radius:0 4px 4px 0;">
-                  <strong style="font-size:0.75rem;color:#93c5fd;">What to look for</strong>
-                  <p style="margin:3px 0 0;font-size:0.78rem;color:#d1d5db;line-height:1.45;">${lookFor}</p>
+              <div class="component-info-tip">
+                  <strong>What to look for</strong>
+                  <p>${lookFor}</p>
               </div>`;
       }
       aboutBody += `
-              <p style="margin: 10px 0 0 0; font-size: 0.7rem; color: #9ca3af;">
+              <p class="component-info-doc-link">
                   <a href="https://help.qlik.com/en-US/replicate/November2025/Content/Replicate/Main/Replicate%20Loggers/Loggers.htm" 
-                     target="_blank" style="color: #60a5fa; text-decoration: none;">
+                     target="_blank">
                      Qlik Documentation ↗
                   </a>
               </p>`;
@@ -5339,11 +5340,7 @@ document.addEventListener("DOMContentLoaded", () => {
       insights.forEach(insight => {
         const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
         const color = colors[insight.severity] || colors.info;
-        insightsHtml += `<div style="margin-bottom: 6px; padding: 6px 10px; background: #1f2937; border-left: 3px solid ${color}; border-radius: 3px; font-size: 0.7rem; display: flex; align-items: center; gap: 8px;">
-          <span style="color: ${color}; font-weight: 600; white-space: nowrap;">${insight.title}:</span>
-          <span style="color: #d1d5db; flex: 1;">${insight.message}</span>
-          <span style="color: #10b981; cursor: help;" title="${insight.recommendation}">💡</span>
-        </div>`;
+        insightsHtml += `<div class="report-insight-row" style="border-left-color:${color}"><span style="color:${color};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
       });
       
       insightsDiv.innerHTML = insightsHtml;
@@ -5354,13 +5351,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (stats && stats.total_operations > 0) {
       const statsDiv = document.createElement('div');
       const singlePctColor = stats.single_record_percent > 40 ? '#ef4444' : stats.single_record_percent > 20 ? '#f59e0b' : '#10b981';
-      statsDiv.style.cssText = 'margin-bottom: 8px; padding: 6px 10px; background: #111827; border-radius: 4px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.65rem;';
+      statsDiv.className = 'report-stats-bar';
       statsDiv.innerHTML = `
-        <span><span style="color: #6b7280;">Ops:</span> <span style="color: #e5e7eb; font-weight: bold;">${stats.total_operations}</span></span>
-        <span><span style="color: #6b7280;">Single (1:1):</span> <span style="color: ${singlePctColor}; font-weight: bold;">${stats.single_record_operations} (${stats.single_record_percent}%)</span></span>
-        <span><span style="color: #6b7280;">Avg Batch:</span> <span style="color: #3b82f6; font-weight: bold;">${stats.avg_batch_size} rec</span></span>
-        <span><span style="color: #6b7280;">Max:</span> <span style="color: #10b981; font-weight: bold;">${stats.max_batch_size.toLocaleString()} rec</span></span>
-        <span><span style="color: #6b7280;">Avg Apply:</span> <span style="color: #9ca3af;">${stats.avg_gap_seconds}s</span></span>`;
+        <span>Ops: <span class="stat-val">${stats.total_operations}</span></span>
+        <span>Single (1:1): <span style="color:${singlePctColor};font-weight:bold;">${stats.single_record_operations} (${stats.single_record_percent}%)</span></span>
+        <span>Avg Batch: <span style="color:#3b82f6;font-weight:bold;">${stats.avg_batch_size} rec</span></span>
+        <span>Max: <span style="color:#10b981;font-weight:bold;">${stats.max_batch_size.toLocaleString()} rec</span></span>
+        <span>Avg Apply: <span class="stat-val">${stats.avg_gap_seconds}s</span></span>`;
       bulkMapContent.appendChild(statsDiv);
     }
     
@@ -5417,27 +5414,27 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="table-summary-grid" style="grid-template-columns: repeat(${hasMerge ? 6 : 5}, 1fr);">
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">INSERT</div>
-              <div class="table-summary-stat-value" style="color: #10b981;">${operationCounts.INSERT || 0}</div>
+              <div class="table-summary-stat-value stat-insert">${operationCounts.INSERT || 0}</div>
             </div>
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">UPDATE</div>
-              <div class="table-summary-stat-value" style="color: #3b82f6;">${operationCounts.UPDATE || 0}</div>
+              <div class="table-summary-stat-value stat-update">${operationCounts.UPDATE || 0}</div>
             </div>
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">DELETE</div>
-              <div class="table-summary-stat-value" style="color: #ef4444;">${operationCounts.DELETE || 0}</div>
+              <div class="table-summary-stat-value stat-delete">${operationCounts.DELETE || 0}</div>
             </div>
             ${hasMerge ? `<div class="table-summary-stat">
               <div class="table-summary-stat-label">MERGE</div>
-              <div class="table-summary-stat-value" style="color: #a855f7; font-weight: bold;">${operationCounts.MERGE}</div>
+              <div class="table-summary-stat-value stat-merge">${operationCounts.MERGE}</div>
             </div>` : ''}
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">SINGLE (1:1)</div>
-              <div class="table-summary-stat-value" style="color: #fbbf24; font-weight: bold;">${singleRecordCount}</div>
+              <div class="table-summary-stat-value stat-single">${singleRecordCount}</div>
             </div>
             <div class="table-summary-stat">
               <div class="table-summary-stat-label">TOTAL</div>
-              <div class="table-summary-stat-value" style="color: #e5e7eb; font-weight: bold;">${operations.length}</div>
+              <div class="table-summary-stat-value">${operations.length}</div>
             </div>
           </div>
         </div>
@@ -5494,15 +5491,17 @@ document.addEventListener("DOMContentLoaded", () => {
         const isSingleRecord = op.rowCount === 1;
         const rowClass = isSingleRecord ? 'single-record-row' : '';
         
+        const gapCellClass = gapClass === 'gap-large' ? 'report-td-gap-bad' : gapClass === 'gap-medium' ? 'report-td-gap-warn' : 'report-td-gap-good';
+        
         panelHTML += `
           <tr class="${gapClass} ${rowClass}" data-line="${op.line}" title="Click to jump to log line ${op.line}">
-            <td style="font-family: monospace;">${op.seq}</td>
-            <td style="font-family: monospace;">${Math.round(op.rowCount).toLocaleString()}</td>
+            <td class="report-td-mono">${op.seq}</td>
+            <td class="report-td-mono">${Math.round(op.rowCount).toLocaleString()}</td>
             <td><span class="operation-badge operation-${opClass}">${op.operation}</span></td>
-            <td style="color: #9ca3af; font-family: monospace; font-size: 0.65rem;">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td>
-            <td style="font-family: monospace; font-size: 0.65rem; ${gapClass === 'gap-large' ? 'color: #ef4444; font-weight: bold;' : gapClass === 'gap-medium' ? 'color: #f59e0b;' : 'color: #10b981;'}">${timeGap ? '+' + timeGap.toFixed(2) + 's' : '-'}</td>
-            <td style="font-family: monospace; font-size: 0.65rem; color: #3b82f6;">${rps ? rps : '-'}</td>
-            <td style="color: #6b7280; font-size: 0.65rem;">${op.line}</td>
+            <td class="report-td-muted-mono">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td>
+            <td class="${gapCellClass}">${timeGap ? '+' + timeGap.toFixed(2) + 's' : '-'}</td>
+            <td class="report-td-rps">${rps ? rps : '-'}</td>
+            <td class="report-td-line">${op.line}</td>
           </tr>
         `;
       });
@@ -5776,7 +5775,7 @@ document.addEventListener("DOMContentLoaded", () => {
       bulkActivityInsights.forEach(insight => {
         const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
         const c = colors[insight.severity] || colors.info;
-        html += `<div style="margin-bottom:4px;padding:4px 8px;background:#1f2937;border-left:3px solid ${c};border-radius:2px;font-size:0.65rem;display:flex;align-items:center;gap:6px;"><span style="color:${c};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="color:#d1d5db;flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
+        html += `<div class="report-insight-row" style="border-left-color:${c}"><span style="color:${c};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
       });
     }
     
@@ -5814,10 +5813,10 @@ document.addEventListener("DOMContentLoaded", () => {
         'PKd': { label: 'PK-del', color: '#8b5cf6' },
         'Normal': { label: 'Normal', color: '#10b981' }
       };
-      let reasonsHtml = '<div style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;"><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:4px;">Close Reasons:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
+      let reasonsHtml = '<div class="report-detail-box"><div style="margin-bottom:4px;">Close Reasons:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
       for (const [reason, count] of Object.entries(analysis.bulk_finish_reasons)) {
-        const info = reasonLabels[reason] || { label: reason, color: '#9ca3af' };
-        reasonsHtml += `<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;background:#111827;border-radius:2px;font-size:0.6rem;"><span style="color:${info.color};font-weight:bold;">${reason}</span><span style="color:#9ca3af;">${info.label}:</span><span style="color:#e5e7eb;font-weight:bold;">${count}</span></span>`;
+        const info = reasonLabels[reason] || { label: reason, color: 'var(--text-secondary)' };
+        reasonsHtml += `<span class="report-reason-chip"><span style="color:${info.color};font-weight:bold;">${reason}</span><span>${info.label}:</span><span class="chip-count">${count}</span></span>`;
       }
       reasonsHtml += '</div></div>';
       html += reasonsHtml;
@@ -5828,7 +5827,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const avgC = (summary.file_compress_time_total / summary.file_operations_count).toFixed(2);
       const avgU = (summary.file_upload_time_total / summary.file_operations_count).toFixed(2);
       const tot = (summary.file_compress_time_total + summary.file_upload_time_total).toFixed(2);
-      html += `<div style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;"><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:4px;">File Ops (${summary.file_operations_count}):</div><div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.6rem;"><span><span style="color:#9ca3af;">Compress:</span><span style="color:#3b82f6;font-weight:bold;margin-left:3px;">${avgC}s</span></span><span><span style="color:#9ca3af;">Upload:</span><span style="color:#10b981;font-weight:bold;margin-left:3px;">${avgU}s</span></span><span><span style="color:#9ca3af;">Total:</span><span style="color:#e5e7eb;font-weight:bold;margin-left:3px;">${tot}s</span></span></div></div>`;
+      html += `<div class="report-detail-box"><div style="margin-bottom:4px;">File Ops (${summary.file_operations_count}):</div><div style="display:flex;gap:12px;flex-wrap:wrap;"><span>Compress: <span style="color:#3b82f6;font-weight:bold;">${avgC}s</span></span><span>Upload: <span style="color:#10b981;font-weight:bold;">${avgU}s</span></span><span>Total: <span class="chip-count">${tot}s</span></span></div></div>`;
     }
     
     html += '</div>';
@@ -5840,12 +5839,12 @@ document.addEventListener("DOMContentLoaded", () => {
       analysis.batches.slice(0, 50).forEach((batch, idx) => {
         const rc = batch.finish_reason === 'Normal' ? 'normal' : batch.finish_reason.includes('timeout') ? 'timeout' : 'memory';
         const tbls = batch.tables.length > 0 ? batch.tables.slice(0, 2).join(', ') + (batch.tables.length > 2 ? ` +${batch.tables.length - 2}` : '') : 'N/A';
-        html += `<tr><td style="color:#9ca3af;">${idx + 1}</td><td style="font-family:monospace;color:#9ca3af;">${batch.start_time || 'N/A'}</td><td>${batch.changes.toLocaleString()}</td><td>${batch.applies}</td><td><span class="batch-reason-badge batch-reason-${rc}">${batch.finish_reason}</span></td><td style="font-size:0.6rem;color:#9ca3af;">${tbls}</td></tr>`;
+        html += `<tr><td class="report-td-index">${idx + 1}</td><td class="report-td-muted-mono">${batch.start_time || 'N/A'}</td><td>${batch.changes.toLocaleString()}</td><td>${batch.applies}</td><td><span class="batch-reason-badge batch-reason-${rc}">${batch.finish_reason}</span></td><td class="report-td-tables-col">${tbls}</td></tr>`;
       });
       
       html += '</tbody></table>';
       if (analysis.batches.length > 50) {
-        html += `<p style="text-align:center;color:#9ca3af;font-size:0.6rem;margin:4px 0;">Showing 50 of ${analysis.batches.length}</p>`;
+        html += `<p class="report-footnote">Showing 50 of ${analysis.batches.length}</p>`;
       }
       html += '</div>';
     }
@@ -5856,7 +5855,7 @@ document.addEventListener("DOMContentLoaded", () => {
       
       analysis.one_by_one.forEach(obo => {
         const fc = obo.failed_executions > 0 ? '#ef4444' : '#10b981';
-        html += `<tr><td style="font-family:monospace;color:#fbbf24;">${obo.table}</td><td style="color:#9ca3af;font-family:monospace;">${obo.start_time||'N/A'}</td><td style="color:#9ca3af;font-family:monospace;">${obo.end_time||'N/A'}</td><td style="color:${fc};">${obo.failed_executions}</td></tr>`;
+        html += `<tr><td class="report-td-obo-table">${obo.table}</td><td class="report-td-muted-mono">${obo.start_time||'N/A'}</td><td class="report-td-muted-mono">${obo.end_time||'N/A'}</td><td style="color:${fc};">${obo.failed_executions}</td></tr>`;
       });
       
       html += '</tbody></table></div>';
@@ -5960,7 +5959,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Build panel content - include MERGE if present
         const hasMerge = operationCounts.MERGE > 0;
         const totOps = (operationCounts.INSERT + operationCounts.UPDATE + operationCounts.DELETE + operationCounts.MERGE).toLocaleString();
-        let panelHTML = `<div class="table-summary"><div class="table-summary-grid" style="grid-template-columns:repeat(${hasMerge ? 6 : 5},1fr);"><div class="table-summary-stat"><div class="table-summary-stat-label">INSERT</div><div class="table-summary-stat-value" style="color:#10b981;">${operationCounts.INSERT.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">UPDATE</div><div class="table-summary-stat-value" style="color:#3b82f6;">${operationCounts.UPDATE.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">DELETE</div><div class="table-summary-stat-value" style="color:#ef4444;">${operationCounts.DELETE.toLocaleString()}</div></div>${hasMerge ? `<div class="table-summary-stat"><div class="table-summary-stat-label">MERGE</div><div class="table-summary-stat-value" style="color:#a855f7;font-weight:bold;">${operationCounts.MERGE.toLocaleString()}</div></div>` : ''}<div class="table-summary-stat"><div class="table-summary-stat-label">SINGLE</div><div class="table-summary-stat-value" style="color:#fbbf24;font-weight:bold;">${singleRecordCount.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">TOTAL</div><div class="table-summary-stat-value" style="color:#e5e7eb;font-weight:bold;">${totOps}</div></div></div></div>`;
+        let panelHTML = `<div class="table-summary"><div class="table-summary-grid" style="grid-template-columns:repeat(${hasMerge ? 6 : 5},1fr);"><div class="table-summary-stat"><div class="table-summary-stat-label">INSERT</div><div class="table-summary-stat-value stat-insert">${operationCounts.INSERT.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">UPDATE</div><div class="table-summary-stat-value stat-update">${operationCounts.UPDATE.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">DELETE</div><div class="table-summary-stat-value stat-delete">${operationCounts.DELETE.toLocaleString()}</div></div>${hasMerge ? `<div class="table-summary-stat"><div class="table-summary-stat-label">MERGE</div><div class="table-summary-stat-value stat-merge">${operationCounts.MERGE.toLocaleString()}</div></div>` : ''}<div class="table-summary-stat"><div class="table-summary-stat-label">SINGLE</div><div class="table-summary-stat-value stat-single">${singleRecordCount.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">TOTAL</div><div class="table-summary-stat-value">${totOps}</div></div></div></div>`;
         
         if (bulkMapForTable.length > 0) {
           panelHTML += `<div style="margin:6px 0 4px 0;font-size:0.65rem;color:#10b981;display:flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm2 1v2h2V4H4zm3 0v2h2V4H7zm3 0v2h2V4h-2zM4 7v2h2V7H4zm3 0v2h2V7H7zm3 0v2h2V7h-2zM4 10v2h2v-2H4zm3 0v2h2v-2H7zm3 0v2h2v-2h-2z"/></svg><span>Bulk Map (${bulkMapForTable.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:20%;">Seq</th><th style="width:10%;">Recs</th><th style="width:13%;">Op</th><th style="width:16%;">Time</th><th style="width:10%;">Gap</th><th style="width:10%;">RPS</th><th style="width:21%;">Line</th></tr></thead><tbody>`;
@@ -5998,22 +5997,24 @@ document.addEventListener("DOMContentLoaded", () => {
             const isSingleRecord = op.rowCount === 1;
             const rowClass = isSingleRecord ? 'single-record-row' : '';
             
+            const gapCellClass = gapClass === 'gap-large' ? 'report-td-gap-bad' : gapClass === 'gap-medium' ? 'report-td-gap-warn' : 'report-td-gap-good';
+            
             panelHTML += `
               <tr class="${gapClass} ${rowClass}" data-line="${op.line}" style="cursor: pointer;" title="Click to jump to log line ${op.line}">
-                <td style="font-family: monospace;">${op.seq}</td>
-                <td style="font-family: monospace;">${Math.round(op.rowCount).toLocaleString()}</td>
+                <td class="report-td-mono">${op.seq}</td>
+                <td class="report-td-mono">${Math.round(op.rowCount).toLocaleString()}</td>
                 <td><span class="operation-badge operation-${opClass}">${op.operation}</span></td>
-                <td style="color: #9ca3af; font-family: monospace; font-size: 0.65rem;">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td>
-                <td style="font-family: monospace; font-size: 0.65rem; ${gapClass === 'gap-large' ? 'color: #ef4444; font-weight: bold;' : gapClass === 'gap-medium' ? 'color: #f59e0b;' : 'color: #10b981;'}">${timeGap ? '+' + timeGap.toFixed(2) + 's' : '-'}</td>
-                <td style="font-family: monospace; font-size: 0.65rem; color: #3b82f6;">${rps ? rps : '-'}</td>
-                <td style="color: #6b7280; font-size: 0.65rem;">${op.line}</td>
+                <td class="report-td-muted-mono">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td>
+                <td class="${gapCellClass}">${timeGap ? '+' + timeGap.toFixed(2) + 's' : '-'}</td>
+                <td class="report-td-rps">${rps ? rps : '-'}</td>
+                <td class="report-td-line">${op.line}</td>
               </tr>
             `;
           });
           
           panelHTML += `</tbody></table>`;
         } else {
-          panelHTML += `<p style="color: #6b7280; font-size: 0.7rem; margin: 12px 0;">No bulk map data available for this table.</p>`;
+          panelHTML += `<p class="report-empty-note">No bulk map data available for this table.</p>`;
         }
         
         panel.innerHTML = panelHTML;
@@ -6170,11 +6171,7 @@ document.addEventListener("DOMContentLoaded", () => {
       insights.forEach(insight => {
         const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
         const color = colors[insight.severity] || colors.info;
-        html += `<div style="margin-bottom: 6px; padding: 6px 10px; background: #1f2937; border-left: 3px solid ${color}; border-radius: 3px; font-size: 0.7rem; display: flex; align-items: center; gap: 8px;">
-          <span style="color: ${color}; font-weight: 600; white-space: nowrap;">${insight.title}:</span>
-          <span style="color: #d1d5db; flex: 1;">${insight.message}</span>
-          <span style="color: #10b981; cursor: help;" title="${insight.recommendation}">💡</span>
-        </div>`;
+        html += `<div class="report-insight-row" style="border-left-color:${color}"><span style="color:${color};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
       });
     }
     
@@ -6187,12 +6184,12 @@ document.addEventListener("DOMContentLoaded", () => {
       };
       
       html += `
-        <div style="margin-bottom: 8px; padding: 6px 10px; background: #111827; border-radius: 4px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.65rem;">
-          <span><span style="color: #6b7280;">Data:</span> <span style="color: #e5e7eb; font-weight: bold;">${formatBytes(stats.total_data_bytes)}</span></span>
-          <span><span style="color: #6b7280;">Time:</span> <span style="color: #e5e7eb; font-weight: bold;">${stats.total_upload_time}s</span></span>
-          <span><span style="color: #6b7280;">Throughput:</span> <span style="color: #3b82f6; font-weight: bold;">${stats.avg_throughput_kbps} KB/s</span></span>
-          <span><span style="color: #6b7280;">Size:</span> <span style="color: #9ca3af;">${formatBytes(stats.min_size)} - ${formatBytes(stats.max_size)}</span></span>
-          <span><span style="color: #6b7280;">Time:</span> <span style="color: #9ca3af;">${stats.min_time}s - ${stats.max_time}s</span></span>
+        <div class="report-stats-bar">
+          <span>Data: <span class="stat-val">${formatBytes(stats.total_data_bytes)}</span></span>
+          <span>Time: <span class="stat-val">${stats.total_upload_time}s</span></span>
+          <span>Throughput: <span style="color:#3b82f6;font-weight:bold;">${stats.avg_throughput_kbps} KB/s</span></span>
+          <span>Size: <span class="stat-val">${formatBytes(stats.min_size)} - ${formatBytes(stats.max_size)}</span></span>
+          <span>Time range: <span class="stat-val">${stats.min_time}s - ${stats.max_time}s</span></span>
         </div>`;
     }
     
@@ -6240,14 +6237,14 @@ document.addEventListener("DOMContentLoaded", () => {
       
       html += `
         <tr class="${rowClass}">
-          <td style="font-family: monospace; color: #10b981; font-weight: 500;">${fileOp.file_name}</td>
-          <td style="font-family: monospace; color: #3b82f6; font-size: 0.7rem;" title="${tablesDisplay}">${tablesDisplay}</td>
-          <td style="color: #e5e7eb; font-weight: bold;">${fileOp.file_size_str}</td>
-          <td style="color: #9ca3af;">${fileOp.compress_time}s</td>
-          <td style="color: #10b981;">${fileOp.upload_time}s</td>
-          <td style="color: #e5e7eb; font-weight: bold;">${fileOp.total_time}s</td>
+          <td class="report-td-file-name">${fileOp.file_name}</td>
+          <td class="report-td-tables" title="${tablesDisplay}">${tablesDisplay}</td>
+          <td class="report-td-emphasis">${fileOp.file_size_str}</td>
+          <td class="report-td-muted">${fileOp.compress_time}s</td>
+          <td class="report-td-upload">${fileOp.upload_time}s</td>
+          <td class="report-td-emphasis">${fileOp.total_time}s</td>
           <td style="color: ${throughputColor}; ${throughputStyle} font-family: monospace; font-size: 0.7rem;">${throughputDisplay}</td>
-          <td style="font-family: monospace; color: #9ca3af; font-size: 0.65rem;">${endTime}</td>
+          <td class="report-td-muted-mono">${endTime}</td>
         </tr>
       `;
     });
@@ -6566,13 +6563,13 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       
       if (issue.occurrences.length > 5) {
-        listHtml += `<p style="text-align: center; color: #6b7280; font-size: 0.7rem; margin: 8px 0;">... and ${issue.occurrences.length - 5} more occurrences</p>`;
+        listHtml += `<p class="issue-more-occurrences">... and ${issue.occurrences.length - 5} more occurrences</p>`;
       }
       
       // Add Google search button for error codes (in actions row if needed)
       if (issue.error_code) {
         listHtml += `
-          <div class="issue-actions-row" style="display: flex; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #1f2937;">
+          <div class="issue-actions-row">
             <button class="issue-google-btn" onclick="event.stopPropagation(); window.open('https://www.google.com/search?q=' + encodeURIComponent('Qlik Replicate ${issue.error_code}'), '_blank')">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
@@ -7970,10 +7967,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const data = summaryData || window.logSummaryData || {};
     const errCls = data.error_count > 0 ? ' error' : ' success';
     const warnCls = data.warning_count > 0 ? ' warning' : ' success';
-    const flBg = data.full_load_completed ? '#064e3b' : '#1f2937';
-    const flC = data.full_load_completed ? '#10b981' : '#6b7280';
-    const cdcBg = data.cdc_started ? '#064e3b' : '#1f2937';
-    const cdcC = data.cdc_started ? '#10b981' : '#6b7280';
+    const flCls = data.full_load_completed ? 'status-pill success' : 'status-pill';
+    const cdcCls = data.cdc_started ? 'status-pill success' : 'status-pill';
     const checkSvg = '<path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-3.97-3.03a.75.75 0 00-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 00-1.06 1.06L6.97 11.03a.75.75 0 001.079-.02l3.992-4.99a.75.75 0 00-.01-1.05z"/>';
     const circleSvg = '<path d="M8 15A7 7 0 118 1a7 7 0 010 14zm0 1A8 8 0 108 0a8 8 0 000 16z"/>';
     
@@ -8002,7 +7997,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
         
         <div style="margin-top: 16px;">
-          <h4 style="margin: 0 0 12px 0; font-size: 0.85rem; color: #9ca3af;">Task Overview</h4>
+          <h4 class="summary-section-title">Task Overview</h4>
           
           <div class="summary-grid">
             <div class="summary-card">
@@ -8043,13 +8038,13 @@ document.addEventListener("DOMContentLoaded", () => {
           </div>
           
           <div style="margin:12px 0;display:flex;gap:6px;flex-wrap:wrap;">
-            <div style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:${flBg};border-radius:4px;">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="${flC}">${data.full_load_completed ? checkSvg : circleSvg}</svg>
-              <span style="font-size:0.7rem;color:${flC};">Full Load ${data.full_load_completed ? 'Completed' : 'Not Completed'}</span>
+            <div class="${flCls}">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="${data.full_load_completed ? '#10b981' : 'currentColor'}">${data.full_load_completed ? checkSvg : circleSvg}</svg>
+              <span>Full Load ${data.full_load_completed ? 'Completed' : 'Not Completed'}</span>
             </div>
-            <div style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:${cdcBg};border-radius:4px;">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="${cdcC}">${data.cdc_started ? checkSvg : circleSvg}</svg>
-              <span style="font-size:0.7rem;color:${cdcC};">CDC ${data.cdc_started ? 'Started' : 'Not Started'}</span>
+            <div class="${cdcCls}">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="${data.cdc_started ? '#10b981' : 'currentColor'}">${data.cdc_started ? checkSvg : circleSvg}</svg>
+              <span>CDC ${data.cdc_started ? 'Started' : 'Not Started'}</span>
             </div>
           </div>
           ${renderOracleLogSummaryInsightOnly(data)}
@@ -8057,7 +8052,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Key Events
     if (data.key_events && data.key_events.length > 0) {
-      html += '<div style="margin-top: 12px;"><h4 style="margin: 0 0 8px 0; font-size: 0.8rem; color: #9ca3af;">Key Events</h4>';
+      html += '<div style="margin-top:12px;"><h4 class="summary-section-title" style="font-size:0.8rem;margin-bottom:8px;">Key Events</h4>';
       data.key_events.forEach(e => {
         html += `<div class="key-event"><span class="key-event-line">L${e.line + 1}</span><span class="key-event-name">${e.event}</span></div>`;
       });
@@ -8266,7 +8261,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const parts = [];
     
     // Header
-    parts.push(`<div class="cockpit-container"><div class="cockpit-header"><h2 style="margin:0;display:flex;align-items:center;gap:6px;"><svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>Performance Cockpit</h2><span style="color:#9ca3af;font-size:0.7rem;">${data.latency_profile?.data_points || 0} data points</span></div>`);
+    parts.push(`<div class="cockpit-container"><div class="cockpit-header"><h2 style="margin:0;display:flex;align-items:center;gap:6px;"><svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>Performance Cockpit</h2><span class="data-points">${data.latency_profile?.data_points || 0} data points</span></div>`);
     
     // Task Configuration (moved to top)
     if (data.config && Object.keys(data.config).length > 0) {
@@ -8330,7 +8325,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   
   function renderBottleneckIndicator(bottleneck, latencyProfile) {
-    if (!latencyProfile) return '<p style="color:#9ca3af;font-size:0.7rem;">No bottleneck data</p>';
+    if (!latencyProfile) return '<p class="cockpit-empty-msg">No bottleneck data</p>';
     
     // Latency breakdown:
     // - Source Latency = time to capture data from source database
@@ -8359,17 +8354,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     
     // Build info text
-    let infoHtml = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;text-align:center;font-size:0.65rem;color:#9ca3af">';
+    let infoHtml = '<div class="cockpit-info-grid">';
     infoHtml += `<div><div style="color:#f59e0b;font-weight:600">${sourceAvg.toFixed(2)}s</div><div>Source Capture</div></div>`;
     infoHtml += `<div><div style="color:#10b981;font-weight:600">${handlingAvg.toFixed(2)}s</div><div>Target Apply</div></div>`;
     infoHtml += `<div><div style="color:#3b82f6;font-weight:600">${targetAvg.toFixed(2)}s</div><div>Total (Target)</div></div>`;
     infoHtml += '</div>';
     
-    return `<div class="bottleneck-gauge"><div class="bottleneck-label" style="color:${labelColor};font-weight:600">${label}</div><div class="bottleneck-bar"><div style="width:${srcPct.toFixed(1)}%;background:#f59e0b;padding:4px 0;text-align:center;font-size:0.65rem;color:#111"><span>Source ${srcPct.toFixed(0)}%</span></div><div style="width:${tgtProcessingPct.toFixed(1)}%;background:#10b981;padding:4px 0;text-align:center;font-size:0.65rem;color:#111"><span>Target ${tgtProcessingPct.toFixed(0)}%</span></div></div>${infoHtml}<p style="color:#6b7280;font-size:0.6rem;margin:8px 0 0;text-align:center;font-style:italic">Target Latency = Source Capture + Target Apply (Handling)</p></div>`;
+    return `<div class="bottleneck-gauge"><div class="bottleneck-label" style="color:${labelColor};font-weight:600">${label}</div><div class="bottleneck-bar"><div style="width:${srcPct.toFixed(1)}%;background:#f59e0b;padding:4px 0;text-align:center;font-size:0.65rem;color:#111"><span>Source ${srcPct.toFixed(0)}%</span></div><div style="width:${tgtProcessingPct.toFixed(1)}%;background:#10b981;padding:4px 0;text-align:center;font-size:0.65rem;color:#111"><span>Target ${tgtProcessingPct.toFixed(0)}%</span></div></div>${infoHtml}<p class="cockpit-muted">Target Latency = Source Capture + Target Apply (Handling)</p></div>`;
   }
   
   function renderLatencyProfile(profile) {
-    if (!profile) return '<p style="color:#9ca3af;font-size:0.7rem;">No latency data</p>';
+    if (!profile) return '<p class="cockpit-empty-msg">No latency data</p>';
     
     const f = (val) => val?.toFixed(2) || '0.00';
     
@@ -8412,7 +8407,7 @@ document.addEventListener("DOMContentLoaded", () => {
   
   function renderBatchAnalysis(batchProfile) {
     if (!batchProfile || batchProfile.total_batches === 0) {
-      return '<p style="color:#9ca3af;font-size:0.7rem;">No batch data</p>';
+      return '<p class="cockpit-empty-msg">No batch data</p>';
     }
     
     const sz = batchProfile.size_stats || {};
@@ -8545,7 +8540,7 @@ document.addEventListener("DOMContentLoaded", () => {
       html += `<div class="config-merge-banner" style="margin-bottom:12px;padding:8px 12px;background:linear-gradient(135deg,rgba(168,85,247,0.2),rgba(168,85,247,0.1));border:1px solid #a855f7;border-radius:6px;display:flex;align-items:center;gap:8px;">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="#a855f7"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 7.5a.5.5 0 010 1H5.707l2.147 2.146a.5.5 0 01-.708.708l-3-3a.5.5 0 010-.708l3-3a.5.5 0 11.708.708L5.707 7.5H11.5z"/></svg>
         <span style="color:#a855f7;font-weight:600;font-size:0.8rem;">MERGE Mode Active</span>
-        <span style="color:#9ca3af;font-size:0.7rem;">Using MERGE statements for CDC apply</span>
+        <span style="color:var(--text-secondary);font-size:0.7rem;">Using MERGE statements for CDC apply</span>
       </div>`;
     }
     
@@ -8713,7 +8708,7 @@ document.addEventListener("DOMContentLoaded", () => {
     html += '</div>';
     
     if (pipeline.health_status !== 'healthy') {
-      html += '<div class="pipeline-hint" style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;font-size:0.65rem;color:#9ca3af;">';
+      html += '<div class="cockpit-hint-box pipeline-hint">';
       if (pipeline.memory_warnings > 0) {
         html += '<p style="margin:0 0 4px;"><span style="color:#f59e0b;">●</span> Memory warnings indicate sorter buffer pressure. Consider increasing stream_buffer_size.</p>';
       }
@@ -8745,8 +8740,8 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Investigation hints
     if (source.investigation_hints && source.investigation_hints.length > 0) {
-      html += '<div class="source-hints" style="margin-top:8px;padding:6px;background:#1f2937;border-radius:3px;">';
-      html += '<h4 style="margin:0 0 4px;font-size:0.7rem;color:#9ca3af;">Investigation Hints</h4>';
+      html += '<div class="cockpit-hint-box source-hints">';
+      html += '<h4>Investigation Hints</h4>';
       html += '<ul style="margin:0;padding-left:16px;font-size:0.65rem;color:#d1d5db;">';
       source.investigation_hints.forEach(hint => {
         html += `<li style="margin:2px 0;">${hint}</li>`;
@@ -8816,42 +8811,39 @@ document.addEventListener("DOMContentLoaded", () => {
     const releaseLabel = versionInfo.releaseDate ? 
       '<span style="color:#10b981;font-size:0.7rem;margin-left:8px;">(' + versionInfo.releaseDate + ' Release)</span>' : '';
     
-    let h = '<div style="max-width:900px;margin:0 auto;padding:16px">';
-    h += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">';
+    let h = '<div class="rn-page">';
+    h += '<div class="rn-header">';
     h += '<svg width="28" height="28" viewBox="0 0 16 16" fill="#06b6d4"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>';
-    h += '<div><h2 style="margin:0;font-size:1.1rem">Qlik Replicate Release Notes</h2>';
-    h += '<p style="margin:2px 0 0;font-size:0.75rem;color:#9ca3af">Find relevant fixes and enhancements for your configuration</p></div></div>';
+    h += '<div class="rn-header-text"><h2>Qlik Replicate Release Notes</h2>';
+    h += '<p>Find relevant fixes and enhancements for your configuration</p></div></div>';
 
-    // Configuration card
-    h += '<div style="background:#1f2937;border-radius:8px;padding:16px;margin-bottom:20px">';
-    h += '<h3 style="margin:0 0 12px;font-size:0.85rem;color:#e5e7eb">Your Configuration</h3>';
-    h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
-    h += '<div style="background:#111827;padding:10px;border-radius:6px">';
-    h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Replicate Version</div>';
-    h += '<div style="font-size:0.9rem;color:#3b82f6;font-weight:bold">' + version + releaseLabel + '</div></div>';
-    h += '<div style="background:#111827;padding:10px;border-radius:6px">';
-    h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Source Endpoint</div>';
-    h += '<div style="font-size:0.85rem;color:#10b981">' + sourceEndpoint + '</div></div>';
-    h += '<div style="background:#111827;padding:10px;border-radius:6px">';
-    h += '<div style="font-size:0.65rem;color:#9ca3af;text-transform:uppercase;margin-bottom:4px">Target Endpoint</div>';
-    h += '<div style="font-size:0.85rem;color:#f59e0b">' + targetEndpoint + '</div></div></div></div>';
+    h += '<div class="rn-config-card">';
+    h += '<h3>Your Configuration</h3>';
+    h += '<div class="rn-config-grid">';
+    h += '<div class="rn-tile">';
+    h += '<div class="rn-tile-label">Replicate Version</div>';
+    h += '<div class="rn-tile-value" style="color:#3b82f6;font-weight:bold;font-size:0.9rem">' + version + releaseLabel + '</div></div>';
+    h += '<div class="rn-tile">';
+    h += '<div class="rn-tile-label">Source Endpoint</div>';
+    h += '<div class="rn-tile-value" style="color:#10b981">' + sourceEndpoint + '</div></div>';
+    h += '<div class="rn-tile">';
+    h += '<div class="rn-tile-label">Target Endpoint</div>';
+    h += '<div class="rn-tile-value" style="color:#f59e0b">' + targetEndpoint + '</div></div></div></div>';
 
-    // Indexed release notes (banner + in-page search + list)
     h += '<div id="rnReleaseNotesPanel" style="margin-bottom:20px">';
     h += '<div id="rnProductSupportBanner" style="display:none;margin-bottom:14px"></div>';
     h += '<div style="margin-bottom:12px">';
-    h += '<label for="rnInPageSearch" style="display:block;font-size:0.65rem;color:#9ca3af;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.04em">Search in displayed notes</label>';
-    h += '<input type="search" id="rnInPageSearch" autocomplete="off" placeholder="Filter by keyword in fixes or warnings…" style="width:100%;max-width:420px;background:#111827;border:1px solid #374151;border-radius:6px;padding:8px 10px;color:#e5e7eb;font-size:0.85rem" /></div>';
+    h += '<label for="rnInPageSearch" class="rn-search-label">Search in displayed notes</label>';
+    h += '<input type="search" id="rnInPageSearch" autocomplete="off" placeholder="Filter by keyword in fixes or warnings…" class="rn-search-input" /></div>';
     h += '<div id="releaseNotesResults" style="margin-bottom:4px">';
-    h += '<div style="text-align:center;padding:24px;color:#9ca3af;font-size:0.8rem">';
-    h += '<div class="loading-spinner" style="margin:0 auto 8px;width:24px;height:24px;border:2px solid #374151;border-top-color:#06b6d4;border-radius:50%;animation:spin 1s linear infinite"></div>';
+    h += '<div class="rn-panel-card" style="padding:24px;color:var(--text-secondary);font-size:0.8rem">';
+    h += '<div class="loading-spinner" style="margin:0 auto 8px;width:24px;height:24px;border:2px solid var(--border-subtle);border-top-color:#06b6d4;border-radius:50%;animation:spin 1s linear infinite"></div>';
     h += 'Searching indexed release notes...</div></div></div>';
 
-    // Search on community fallback
-    h += '<div style="background:linear-gradient(135deg,#1e3a5f,#1e1b4b);border:1px solid #3b82f6;border-radius:8px;padding:16px">';
+    h += '<div class="rn-community-card">';
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">';
-    h += '<div><h3 style="margin:0 0 6px;font-size:0.9rem;color:#e5e7eb">Search on Qlik Community</h3>';
-    h += '<p style="margin:0;font-size:0.75rem;color:#9ca3af">Browse the official release notes knowledge base</p></div>';
+    h += '<div><h3>Search on Qlik Community</h3>';
+    h += '<p>Browse the official release notes knowledge base</p></div>';
     h += '<a href="' + releaseNotesUrl + '" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;background:#3b82f6;color:white;text-decoration:none;border-radius:6px;font-size:0.85rem;font-weight:600">Open Release Notes <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path fill-rule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg></a></div></div>';
 
     h += '</div>';
@@ -8887,7 +8879,7 @@ document.addEventListener("DOMContentLoaded", () => {
           console.error('Failed to fetch release notes:', err);
           const container = document.getElementById('releaseNotesResults');
           if (container) {
-            container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
+            container.innerHTML = '<div class="rn-panel-card">'
               + '<p style="margin:0;font-size:0.8rem;color:#f38ba8">Failed to load release notes: ' + err.message + '</p></div>';
           }
         });
@@ -8909,17 +8901,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     el.style.display = 'block';
     const oos = s.is_out_of_support;
-    const border = oos ? '#b91c1c' : '#059669';
-    const titleColor = oos ? '#fecaca' : '#a7f3d0';
     const title = oos
       ? 'Out of vendor support — ended ' + escapeHtml(s.support_end_date)
       : 'In vendor product support through ' + escapeHtml(s.support_end_date);
-    const bgTint = oos ? 'rgba(127,29,29,0.18)' : 'rgba(6,78,59,0.22)';
     el.innerHTML =
-      '<div style="border:1px solid ' + border + ';border-radius:8px;padding:12px 14px;background:' + bgTint + '">'
-      + '<div style="font-size:0.72rem;color:#cbd5e1;margin-bottom:6px;font-weight:600">' + escapeHtml(s.version_label) + '</div>'
-      + '<p style="margin:0 0 6px;font-size:0.85rem;color:' + titleColor + ';font-weight:600;line-height:1.35">' + title + '</p>'
-      + '<p style="margin:0;font-size:0.7rem;color:#9ca3af;line-height:1.35">Release milestone '
+      '<div class="rn-support-banner ' + (oos ? 'out-of-support' : 'in-support') + '">'
+      + '<div class="rn-support-version">' + escapeHtml(s.version_label) + '</div>'
+      + '<p class="rn-support-title">' + title + '</p>'
+      + '<p class="rn-support-meta">Release milestone '
       + escapeHtml(s.release_date) + '. Compared as-of ' + escapeHtml(s.reference_date_iso) + '.</p>'
       + '</div>';
   }
@@ -8990,10 +8979,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const kw = (typeof window._rnTextFilter === 'string' ? window._rnTextFilter : '').trim();
 
     if (data.indexed_count === 0) {
-      container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:20px;text-align:center">'
-        + '<svg width="32" height="32" viewBox="0 0 16 16" fill="#6b7280" style="margin-bottom:8px"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>'
-        + '<p style="margin:0 0 4px;font-size:0.85rem;color:#e5e7eb">No release notes indexed</p>'
-        + '<p style="margin:0;font-size:0.75rem;color:#9ca3af">Run the release notes loader (<code style="background:#374151;padding:2px 4px;border-radius:3px;font-size:0.7rem">python kb-assistant/build_release_notes_cache.py</code>) to index Qlik Replicate release notes for correlation analysis.</p></div>';
+      container.innerHTML = '<div class="rn-panel-card" style="padding:20px">'
+        + '<svg width="32" height="32" viewBox="0 0 16 16" fill="var(--text-muted)" style="margin-bottom:8px"><path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0V3z"/></svg>'
+        + '<p style="margin:0 0 4px;font-size:0.85rem;color:var(--text-primary)">No release notes indexed</p>'
+        + '<p style="margin:0;font-size:0.75rem;color:var(--text-secondary)">Run the release notes loader (<code style="background:var(--bg-elevated);padding:2px 4px;border-radius:3px;font-size:0.7rem">python kb-assistant/build_release_notes_cache.py</code>) to index Qlik Replicate release notes for correlation analysis.</p></div>';
       return;
     }
 
@@ -9021,13 +9010,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (!filtered.length && !hasEol) {
       if (!kw) {
-        container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
-          + '<p style="margin:0;font-size:0.8rem;color:#9ca3af">No matching release notes found for this log file\'s configuration. '
+        container.innerHTML = '<div class="rn-panel-card rn-empty-state">'
+          + '<p style="margin:0">No matching release notes found for this log file\'s configuration. '
           + data.indexed_count + ' entries are indexed.</p></div>';
       } else {
-        container.innerHTML = '<div style="background:#1f2937;border-radius:8px;padding:16px;text-align:center">'
-          + '<p style="margin:0;font-size:0.8rem;color:#9ca3af">No indexed lines match your search.</p>'
-          + '<p style="margin:8px 0 0;font-size:0.72rem;color:#6b7280">Try another keyword or clear the search filter.</p></div>';
+        container.innerHTML = '<div class="rn-panel-card rn-empty-state">'
+          + '<p style="margin:0">No indexed lines match your search.</p>'
+          + '<p style="margin:8px 0 0;font-size:0.72rem;color:var(--text-muted)">Try another keyword or clear the search filter.</p></div>';
       }
       return;
     }
@@ -9038,47 +9027,37 @@ document.addEventListener("DOMContentLoaded", () => {
     const groupOrder = ['Endpoint-Specific', 'Server / Engine', 'Security', 'Sorter', 'Logging', 'Apply / Load', 'Metadata', 'Other'];
     const presentGroups = groupOrder.filter(g => groupCounts[g]);
     if (presentGroups.length > 1) {
-      rh += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">';
+      rh += '<div class="rn-filter-chips">';
       for (const g of presentGroups) {
         const isActive = activeFilters.has(g);
         const count = groupCounts[g] || 0;
-        const bgActive = g === 'Endpoint-Specific' ? '#78350f' : '#1e3a5f';
-        const bgInactive = '#1f2937';
-        const colorActive = g === 'Endpoint-Specific' ? '#fcd34d' : '#93c5fd';
-        const colorInactive = '#6b7280';
-        const border = isActive ? (g === 'Endpoint-Specific' ? '#f59e0b' : '#3b82f6') : '#374151';
-        rh += '<button class="rn-filter-chip" data-group="' + g + '" style="'
-            + 'background:' + (isActive ? bgActive : bgInactive) + ';'
-            + 'color:' + (isActive ? colorActive : colorInactive) + ';'
-            + 'border:1px solid ' + border + ';'
-            + 'border-radius:12px;padding:2px 10px;font-size:0.65rem;cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all 0.15s">'
+        const endpointClass = g === 'Endpoint-Specific' ? ' endpoint' : '';
+        rh += '<button class="rn-filter-chip' + (isActive ? ' active' : '') + endpointClass + '" data-group="' + g + '">'
             + g + ' <span style="opacity:0.7">(' + count + ')</span></button>';
       }
       if (!noFilter) {
-        rh += '<button class="rn-filter-chip" data-group="__clear__" style="'
-            + 'background:transparent;color:#9ca3af;border:1px solid #374151;'
-            + 'border-radius:12px;padding:2px 10px;font-size:0.65rem;cursor:pointer">Clear filters</button>';
+        rh += '<button class="rn-filter-chip clear" data-group="__clear__">Clear filters</button>';
       }
       rh += '</div>';
     }
 
     // EOL warnings
     if (hasEol) {
-      rh += '<div style="background:#451a03;border:1px solid #92400e;border-radius:8px;padding:14px;margin-bottom:14px">';
+      rh += '<div class="rn-eol-panel">';
       rh += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">';
       rh += '<svg width="16" height="16" viewBox="0 0 16 16" fill="#f59e0b"><path d="M8 1L1 14h14L8 1zm0 4v4m0 2v1"/></svg>';
-      rh += '<h3 style="margin:0;font-size:0.85rem;color:#fbbf24">End of Support Warnings</h3></div>';
+      rh += '<h3>End of Support Warnings</h3></div>';
       for (const eol of matchedEol) {
-        const vBadge = eol.version ? '<span style="padding:1px 5px;background:#78350f;color:#fcd34d;border-radius:3px;font-size:0.6rem">' + eol.version + '</span> ' : '';
+        const vBadge = eol.version ? '<span style="padding:1px 5px;background:rgba(245,158,11,0.2);color:#b45309;border-radius:3px;font-size:0.6rem">' + eol.version + '</span> ' : '';
         const eolLink = eol.url
-          ? '<a href="' + eol.url + '" target="_blank" title="View source release notes" style="color:#fbbf24;text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'
+          ? '<a href="' + eol.url + '" target="_blank" title="View source release notes" style="color:#d97706;text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'
             + '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>'
             + 'Source</a>'
           : '';
-        rh += '<div style="background:#78350f;border-radius:5px;padding:8px 10px;margin-bottom:5px;border-left:3px solid #f59e0b">';
+        rh += '<div class="rn-eol-item">';
         rh += '<div style="display:flex;align-items:center;gap:5px;margin-bottom:2px">';
         rh += '<span style="padding:1px 5px;background:#dc2626;color:#fff;border-radius:3px;font-size:0.6rem;font-weight:600">End of Support</span>' + vBadge + eolLink + '</div>';
-        rh += '<p style="margin:0;font-size:0.78rem;color:#fef3c7;line-height:1.4">' + eol.description + '</p>';
+        rh += '<p>' + eol.description + '</p>';
         rh += '</div>';
       }
       rh += '</div>';
@@ -9086,50 +9065,51 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // RECOB entries
     if (filtered.length > 0) {
-      rh += '<div style="background:#1f2937;border-radius:8px;padding:16px">';
-      rh += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">';
-      rh += '<h3 style="margin:0;font-size:0.85rem;color:#e5e7eb">Resolved Issues & Enhancements</h3>';
-      rh += '<span style="font-size:0.7rem;color:#6b7280">' + filtered.length + (noFilter ? '' : ' / ' + allResults.length) + ' entries</span></div>';
+      rh += '<div class="rn-results-panel">';
+      rh += '<div class="rn-results-header">';
+      rh += '<h3>Resolved Issues & Enhancements</h3>';
+      rh += '<span class="rn-results-count">' + filtered.length + (noFilter ? '' : ' / ' + allResults.length) + ' entries</span></div>';
 
       for (const rn of filtered) {
         const isRecob = rn.fix_id && rn.fix_id.startsWith('RECOB-');
         const isFuture = rn.future_release;
         const isEndpointSpecific = rn.endpoint_specific === true;
-        const borderColor = isFuture ? '#7c3aed' : isEndpointSpecific ? '#f59e0b' : (rn.entry_type === 'Enhancement' ? '#10b981' : '#374151');
         const typeBadgeBg = rn.entry_type === 'Enhancement' ? '#10b981' : (rn.entry_type === 'Issue' ? '#ef4444' : '#6b7280');
         const typeBadge = rn.entry_type ? '<span style="padding:1px 5px;background:' + typeBadgeBg + ';color:#fff;border-radius:3px;font-size:0.6rem;font-weight:600">' + rn.entry_type + '</span>' : '';
         const fixBadge = rn.fix_id ? '<span style="padding:1px 5px;background:#06b6d4;color:#111827;border-radius:3px;font-size:0.65rem;font-weight:bold;font-family:monospace">' + rn.fix_id + '</span>' : '';
         const futureBadge = isFuture ? '<span style="padding:1px 5px;background:#7c3aed;color:#e9d5ff;border-radius:3px;font-size:0.6rem;font-weight:600">Future Release</span>' : '';
-        const versionBadge = rn.version ? '<span style="padding:1px 5px;background:#374151;color:#9ca3af;border-radius:3px;font-size:0.6rem">' + rn.version + '</span>' : '';
-        const compBadge = rn.component ? '<span style="padding:1px 5px;background:' + (isEndpointSpecific ? '#78350f' : '#1e3a5f') + ';color:' + (isEndpointSpecific ? '#fcd34d' : '#93c5fd') + ';border-radius:3px;font-size:0.6rem">' + rn.component + '</span>' : '';
+        const versionBadge = rn.version ? '<span style="padding:1px 5px;background:var(--bg-elevated);color:var(--text-secondary);border-radius:3px;font-size:0.6rem">' + rn.version + '</span>' : '';
+        const compBadge = rn.component ? '<span style="padding:1px 5px;background:' + (isEndpointSpecific ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)') + ';color:' + (isEndpointSpecific ? '#b45309' : '#2563eb') + ';border-radius:3px;font-size:0.6rem">' + rn.component + '</span>' : '';
 
-        rh += '<div style="background:' + (isFuture ? '#1a1033' : '#111827') + ';border-radius:6px;padding:10px 12px;margin-bottom:6px;border-left:3px solid ' + borderColor + '">';
-        rh += '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:4px">' + fixBadge + typeBadge + compBadge + futureBadge + versionBadge + '</div>';
+        const entryClass = 'rn-entry' + (isFuture ? ' future' : '') + (isEndpointSpecific ? ' endpoint' : '') + (rn.entry_type === 'Enhancement' ? ' enhancement' : '');
+
+        rh += '<div class="' + entryClass + '">';
+        rh += '<div class="rn-entry-badges">' + fixBadge + typeBadge + compBadge + futureBadge + versionBadge + '</div>';
 
         const srcLink = rn.url
-          ? '<a href="' + rn.url + '" target="_blank" title="View source release notes" style="color:#60a5fa;text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'
+          ? '<a href="' + rn.url + '" target="_blank" title="View source release notes" style="color:var(--accent-blue);text-decoration:none;display:inline-flex;align-items:center;gap:3px;font-size:0.65rem;margin-left:auto;white-space:nowrap">'
             + '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>'
             + 'Source</a>'
           : '';
 
         if (isRecob && rn.description) {
-          rh += '<p style="margin:0;font-size:0.78rem;color:#d1d5db;line-height:1.45">' + rn.description + '</p>';
+          rh += '<p class="rn-entry-desc">' + rn.description + '</p>';
         } else if (rn.title) {
-          const titleLink = rn.url ? '<a href="' + rn.url + '" target="_blank" style="color:#e5e7eb;text-decoration:none;font-size:0.78rem;font-weight:500">' + rn.title + '</a>' : '<span style="color:#e5e7eb;font-size:0.78rem;font-weight:500">' + rn.title + '</span>';
+          const titleLink = rn.url ? '<a href="' + rn.url + '" target="_blank" class="rn-entry-title">' + rn.title + '</a>' : '<span class="rn-entry-title">' + rn.title + '</span>';
           rh += '<div>' + titleLink + '</div>';
           if (rn.description) {
-            rh += '<p style="margin:4px 0 0;font-size:0.72rem;color:#9ca3af;line-height:1.4">' + rn.description.substring(0, 200) + (rn.description.length > 200 ? '...' : '') + '</p>';
+            rh += '<p class="rn-entry-desc" style="margin-top:4px;font-size:0.72rem;color:var(--text-secondary)">' + rn.description.substring(0, 200) + (rn.description.length > 200 ? '...' : '') + '</p>';
           }
         }
 
         const rnTitle = (rn.fix_id || '') + ' ' + (rn.title || rn.description || '');
-        const rnSaveBtn = '<button class="rn-save-finding-btn" data-rn-title="' + escapeHtml(rnTitle.trim()).replace(/"/g, '&quot;') + '" data-rn-url="' + (rn.url || '') + '" data-rn-version="' + (rn.version || '') + '" title="Add to Findings" style="background:none;border:1px solid #374151;border-radius:3px;padding:2px 5px;cursor:pointer;color:#9ca3af;font-size:0.6rem;display:inline-flex;align-items:center;gap:3px;transition:all 0.15s">'
+        const rnSaveBtn = '<button class="rn-save-finding-btn" data-rn-title="' + escapeHtml(rnTitle.trim()).replace(/"/g, '&quot;') + '" data-rn-url="' + (rn.url || '') + '" data-rn-version="' + (rn.version || '') + '" title="Add to Findings">'
           + '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 012-2h8a2 2 0 012 2v13.5a.5.5 0 01-.777.416L8 13.101l-5.223 2.815A.5.5 0 012 15.5V2zm2-1a1 1 0 00-1 1v12.566l4.723-2.482a.5.5 0 01.554 0L13 14.566V2a1 1 0 00-1-1H4z"/></svg>'
           + 'Save</button>';
 
-        rh += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
+        rh += '<div class="rn-entry-meta">';
         if (rn.salesforce_case && rn.salesforce_case !== 'N/A') {
-          rh += '<span style="font-size:0.6rem;color:#6b7280">SF Case: ' + rn.salesforce_case + '</span>';
+          rh += '<span>SF Case: ' + rn.salesforce_case + '</span>';
         }
         rh += rnSaveBtn + srcLink + '</div>';
         rh += '</div>';

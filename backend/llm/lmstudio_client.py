@@ -22,6 +22,8 @@ from backend.llm.client import ModelInfo, CompletionResult
 logger = logging.getLogger(__name__)
 
 _MD_LINK_RE = re.compile(r'\[([^\]]+)\]\(https?://[^)]+\)')
+_LATEX_INLINE_RE = re.compile(r'\$([^$\n]+?)\$')
+_LATEX_TEXT_RE = re.compile(r'\\text\{([^}]*)\}')
 
 
 def _strip_markdown_links(text: str) -> str:
@@ -33,10 +35,40 @@ def _strip_markdown_links(text: str) -> str:
     return _MD_LINK_RE.sub(r'\1', text)
 
 
+def _convert_latex_fragment(inner: str) -> str:
+    """Turn a LaTeX math fragment into plain text (Gemma 4 often emits these)."""
+    s = _LATEX_TEXT_RE.sub(r'\1', inner)
+    s = s.replace(r'\%', '%')
+    s = s.replace(r'\times', '×')
+    s = s.replace(r'\cdot', '·')
+    s = s.replace(r'\,', ' ')
+    s = s.replace(r'\;', ' ')
+    s = re.sub(r'\\[a-zA-Z]+\s*', '', s)
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def _normalize_latex_math(text: str) -> str:
+    """Strip inline LaTeX ($...$) that local models emit instead of plain numbers."""
+    if not text or ('$' not in text and r'\text{' not in text):
+        return text
+
+    def _repl(match: re.Match) -> str:
+        converted = _convert_latex_fragment(match.group(1))
+        return converted if converted else match.group(0)
+
+    normalized = _LATEX_INLINE_RE.sub(_repl, text)
+    normalized = _LATEX_TEXT_RE.sub(r'\1', normalized)
+    return normalized
+
+
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234"
+# Local models need longer wall-clock time (large prompts + slow token generation).
+LMSTUDIO_DEFAULT_TIMEOUT_SECONDS = 600.0
 # Lower than cloud providers: local models run slower, and the Python pre-processing
 # already produces a highly-structured summary, so 1 500 tokens covers a full report.
 LMSTUDIO_DEFAULT_MAX_TOKENS = 1500
+# Local models drift into LaTeX / loose structure above ~0.35 on long reports.
+LMSTUDIO_REPORT_MAX_TEMPERATURE = 0.35
 
 
 class LMStudioClient:
@@ -200,6 +232,7 @@ class LMStudioClient:
         temperature: float = 0.3,
         cancel_file_id: Optional[int] = None,
         cancel_kind: str = "report",
+        timeout_seconds: Optional[float] = None,
         **kwargs,
     ) -> CompletionResult:
         """
@@ -220,9 +253,20 @@ class LMStudioClient:
             "input": input_text,
             "temperature": temperature,
             "context_length": ctx_len,
+            # Native /api/v1/chat has no output-cap field; max_tokens only sizes ctx_len above.
+            "reasoning": "off",
         }
         if model:
             payload["model"] = model
+
+        request_timeout = timeout_seconds if timeout_seconds is not None else LMSTUDIO_DEFAULT_TIMEOUT_SECONDS
+        logger.info(
+            "LM Studio request: ~%d chars input, context_length=%d, max_tokens=%d, timeout=%.0fs",
+            len(input_text),
+            ctx_len,
+            max_tokens,
+            request_timeout,
+        )
 
         from backend.llm.generation_cancel import (
             check_cancelled,
@@ -231,7 +275,7 @@ class LMStudioClient:
             unregister_client,
         )
 
-        client = httpx.Client(timeout=180.0)
+        client = httpx.Client(timeout=request_timeout)
         if cancel_file_id is not None:
             register_client(cancel_file_id, client, kind=cancel_kind)
         response = None
@@ -248,7 +292,10 @@ class LMStudioClient:
         except httpx.TimeoutException as e:
             maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
             raise ValueError(
-                "LM Studio request timed out. The model may still be loading or processing."
+                f"LM Studio request timed out after {int(request_timeout)}s. "
+                "Large prompts and reasoning models (e.g. Gemma 4) can be slow locally. "
+                "Try disabling Reasoning in LM Studio model settings, using a faster model, "
+                "or lowering Max tokens in AI config."
             ) from e
         except Exception as e:
             maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
@@ -292,6 +339,15 @@ class LMStudioClient:
                     len(_MD_LINK_RE.findall(content)),
                 )
             content = stripped
+
+        normalized = _normalize_latex_math(content)
+        if normalized != content:
+            logger.info(
+                "Normalized LaTeX math formatting in LM Studio response (%d -> %d chars).",
+                len(content),
+                len(normalized),
+            )
+            content = normalized
 
         stats = data.get("stats", {})
         prompt_tokens = int(stats.get("input_tokens", 0))

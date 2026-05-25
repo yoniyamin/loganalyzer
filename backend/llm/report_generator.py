@@ -23,7 +23,7 @@ from backend.core.analysis import PerformanceCockpit
 from backend.llm.vectorstore import get_vector_store, LogVectorStore
 from backend.llm.client import get_llm_client, OpenRouterClient, DEFAULT_MODEL, openrouter_model_supports_vision
 from backend.llm.gemini_client import get_gemini_client, GeminiClient, DEFAULT_GEMINI_MODEL, gemini_model_supports_vision
-from backend.llm.lmstudio_client import get_lmstudio_client, LMStudioClient, DEFAULT_LMSTUDIO_BASE_URL, LMSTUDIO_DEFAULT_MAX_TOKENS
+from backend.llm.lmstudio_client import get_lmstudio_client, LMStudioClient, DEFAULT_LMSTUDIO_BASE_URL, LMSTUDIO_DEFAULT_MAX_TOKENS, LMSTUDIO_REPORT_MAX_TEMPERATURE
 from backend.llm.prompts import (
     get_messages_for_analysis,
     count_prompt_tokens,
@@ -1064,6 +1064,13 @@ class ReportGenerator:
                 default_max = LMSTUDIO_DEFAULT_MAX_TOKENS if not quick else 350
                 max_output = self.lmstudio_max_tokens if self.lmstudio_max_tokens is not None else default_max
                 lmstudio_temp = self.lmstudio_temperature if self.lmstudio_temperature is not None else 0.3
+                if lmstudio_temp > LMSTUDIO_REPORT_MAX_TEMPERATURE:
+                    logger.info(
+                        "Clamping LM Studio report temperature %.2f → %.2f",
+                        lmstudio_temp,
+                        LMSTUDIO_REPORT_MAX_TEMPERATURE,
+                    )
+                    lmstudio_temp = LMSTUDIO_REPORT_MAX_TEMPERATURE
             else:
                 max_output = 8192 if not quick else 800
                 lmstudio_temp = 0.3  # unused for non-lmstudio paths

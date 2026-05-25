@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from backend.api.endpoints import router as api_router
 from backend.llm.endpoints import router as llm_router
-from backend.database import init_db
+from backend.database import init_db, SessionLocal, UserSettings
 from backend.paths import static_dir
+import json
 import os
 import logging
 
@@ -32,10 +33,30 @@ if not os.path.exists(STATIC_DIR):
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+def _get_ui_theme_from_db() -> str:
+    db = SessionLocal()
+    try:
+        setting = db.query(UserSettings).filter(UserSettings.key == "ui_theme").first()
+        if setting and setting.value:
+            data = json.loads(setting.value)
+            theme = data.get("theme") if isinstance(data, dict) else None
+            if theme in ("light", "dark"):
+                return theme
+    except Exception:
+        pass
+    finally:
+        db.close()
+    return "dark"
+
 @app.get("/")
 async def read_index():
     logger.info("Serving index.html")
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    html_path = os.path.join(STATIC_DIR, "index.html")
+    with open(html_path, encoding="utf-8") as f:
+        html = f.read()
+    theme = _get_ui_theme_from_db()
+    html = html.replace("__SERVER_UI_THEME__", theme)
+    return HTMLResponse(html)
 
 if __name__ == "__main__":
     import uvicorn

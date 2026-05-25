@@ -298,7 +298,7 @@ class KBSourcesManager {
                     <span class="stat-label">Release Notes</span>
                 </div>
             </div>
-            <div id="releaseNotesIndex" style="margin-top:10px"></div>
+            <div id="releaseNotesIndex" class="release-notes-index-wrap"></div>
         `;
         
         this.loadReleaseNotesIndex();
@@ -318,33 +318,31 @@ class KBSourcesManager {
                 return;
             }
             
-            let html = '<details style="background:#1f2937;border-radius:6px;padding:8px 12px;margin-top:4px">';
-            html += '<summary style="cursor:pointer;font-size:0.8rem;color:#e5e7eb;font-weight:600;user-select:none">'
-                  + '<span style="color:#06b6d4">📋</span> Release Notes Index '
-                  + '<span style="color:#6b7280;font-weight:normal">(' + data.total_entries + ' fixes, ' + data.total_eol + ' EOL across ' + data.versions.length + ' versions)</span>'
+            let html = '<details class="rn-index-details">';
+            html += '<summary class="rn-index-summary">'
+                  + '<span class="rn-index-icon">📋</span> Release Notes Index '
+                  + '<span class="rn-index-count">(' + data.total_entries + ' fixes, ' + data.total_eol + ' EOL across ' + data.versions.length + ' versions)</span>'
                   + '</summary>';
-            html += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">';
+            html += '<div class="rn-index-body">';
             
-            // Add URL row
-            html += '<div style="display:flex;gap:6px;margin-bottom:6px">'
-                  + '<input type="text" id="rnUrlInput" placeholder="Paste a community.qlik.com release notes URL..." '
-                  + 'style="flex:1;background:#111827;border:1px solid #374151;border-radius:4px;padding:5px 8px;color:#e5e7eb;font-size:0.75rem">'
-                  + '<button id="rnUrlAddBtn" style="background:#06b6d4;color:#111827;border:none;border-radius:4px;padding:5px 12px;font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap">+ Add URL</button>'
+            html += '<div class="rn-index-url-row">'
+                  + '<input type="text" id="rnUrlInput" placeholder="Paste a community.qlik.com release notes URL..." class="rn-index-input">'
+                  + '<button id="rnUrlAddBtn" class="rn-index-add-btn">+ Add URL</button>'
                   + '</div>';
             
             for (const v of data.versions) {
                 const compList = v.components.length > 5
                     ? v.components.slice(0, 5).join(', ') + ' +' + (v.components.length - 5) + ' more'
                     : v.components.join(', ');
-                html += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #111827">';
-                html += '<span style="min-width:110px;font-size:0.75rem;color:#3b82f6;font-weight:600">' + this.escapeHtml(v.version) + '</span>';
-                html += '<span style="font-size:0.7rem;color:#9ca3af;min-width:55px">' + v.entry_count + ' fixes</span>';
+                html += '<div class="rn-index-row">';
+                html += '<span class="rn-index-version">' + this.escapeHtml(v.version) + '</span>';
+                html += '<span class="rn-index-fixes">' + v.entry_count + ' fixes</span>';
                 if (v.url) {
-                    html += '<a href="' + v.url + '" target="_blank" style="color:#60a5fa;font-size:0.65rem;text-decoration:none;display:flex;align-items:center;gap:2px">'
+                    html += '<a href="' + v.url + '" target="_blank" class="rn-index-link">'
                           + '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>'
                           + 'Open</a>';
                 }
-                html += '<span style="font-size:0.6rem;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + this.escapeHtml(compList) + '</span>';
+                html += '<span class="rn-index-components">' + this.escapeHtml(compList) + '</span>';
                 html += '</div>';
             }
             
