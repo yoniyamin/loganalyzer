@@ -1,68 +1,126 @@
 # LLM prompt pipeline (reports & context)
 
-This summarizes how **Insights** report prompts are assembled and what gets sent to the model after recent changes.
+This document describes the **Prompt Quality Pipeline** architecture: a deterministic evidence compiler followed by an LLM interpretation layer.
+
+## Architectural principle
+
+| Layer | Responsibility |
+|-------|----------------|
+| **Python** | Extraction, aggregation, calculation, ranking, budgeting, validation |
+| **LLM** | Interpretation, explanation, prioritization only |
+
+The model must **never** compute counts, percentages, deltas, or rankings. Numeric facts are pre-computed in Python and marked authoritative in the user payload.
 
 ## Where it runs
 
-- **Orchestration:** `backend/llm/report_generator.py` (`ReportGenerator.generate_report`)
-- **Prompt text & message list:** `backend/llm/prompts.py` (`get_messages_for_analysis`, `build_analysis_prompt`, `build_quick_summary_prompt`)
-- **Structured log summary:** `PerformanceCockpit` output from SQLite (performance, batches, errors merged with RAG excerpts, Oracle redo metrics, etc.)
+- **Orchestration:** `backend/llm/report_generator.py` (`ReportGenerator.generate_report`, `build_report_messages`)
+- **Prompt contract:** `backend/llm/prompts.py` — unified 6-section output schema in the system prompt; user message is evidence only (no "Analysis Request" section)
+- **Evidence compiler:** `backend/llm/evidence_compiler.py` — aggregates, authoritative facts, focus plans, hard budgets
+- **Payload formats:** `backend/llm/payload_formats.py` — `markdown`, `json_markdown`, `xml` (Prompt Lab A/B/C)
+- **Graph enrichment (gated):** `backend/llm/graph_enrichment.py` — SQLite adjacency graph via structural facts; opt-in via `include_graph`
+- **Embedding fallback (gated):** `backend/llm/evidence_insufficiency.py` — log Chroma only when deterministic evidence is insufficient
+- **Post-LLM:** `backend/llm/report_validator.py` (section/param checks + optional correction retry), `backend/llm/report_formatter.py` (markdown normalization)
+
+## Pipeline flow
+
+```
+SQLite + parsers
+  → evidence_compiler (facts, budgets, focus plan)
+  → optional graph_enrichment (include_graph=true)
+  → optional embedding fallback (insufficiency only)
+  → payload_formats → build_report_messages
+  → LLM
+  → report_validator → report_formatter → save / display
+```
 
 ## Provider behavior
 
-| Aspect | Gemini / OpenRouter (cloud) | LM Studio (local) |
-|--------|-----------------------------|-------------------|
-| System prompt | Full `SYSTEM_PROMPT` (component reference table, verbose guidelines) or `SYSTEM_PROMPT_WITH_WEB_SEARCH` | **`SYSTEM_PROMPT_LOCAL`** — condensed (~40% of cloud size); component reference is omitted from the system message and instead injected inline when relevant components appear in error excerpts |
-| Prompt mode | `compact=False` — up to 22 error excerpts (2 600 chars each), 4 anomalies, 5 KB, 6 release notes | **`compact=True`** — up to 14 error excerpts (2 200 chars), 3 anomalies, 4 KB, 5 release notes |
-| Context inventory | Included at the top of the user message | Same — model sees an explicit "Data Available" summary before any sections |
-| Log payload PII redaction | On by default; optional **"Sanitize log data before sending to cloud models"** in AI Configuration | **Always off** for the report prompt (full log-derived text in the user message) |
-| Web search in app | Optional via **Enable Web Search** (separate system prompt branch) | Handled inside LM Studio/MCP if configured; the app does not inject Tavily into that path |
-| Embeddings / Chroma | Chunks are still sanitized at embed time (`vectorstore`) for stored indices | Same (unchanged) |
+| Aspect | Gemini / OpenRouter (cloud) | LM Studio / openai_api (local FLM) |
+|--------|-----------------------------|-------------------------------------|
+| System prompt | `AUDIT_REPORT_STRUCTURE` + evidence preamble; optional web-search variant | Same contract; `compact=True` tightens excerpt/KB caps |
+| User message | Evidence package only — inventory, authoritative facts, excerpts, KB/RN when fetched | Same shape, smaller caps |
+| Embeddings | **Not** run by default; only when `assess_evidence_insufficiency()` triggers fallback | Same |
+| KB Chroma / Tavily | Retrieved when `fetch_external=true` (default on generate; off on prompt-preview) | Same |
+| Graph | Injected only when `include_graph=true` and confidence match | Same |
+| FLM reliability | N/A | `openai_api_client.py`: session warmup, 3 retries on empty choices; metrics in `flm_metrics.py` |
 
 ## Report message shape
 
-1. **System message**  
-   - Cloud: `SYSTEM_PROMPT` (or `SYSTEM_PROMPT_WITH_WEB_SEARCH` when web search is on).
-   - Local (LM Studio): `SYSTEM_PROMPT_LOCAL` — shorter, focused on rules that matter for smaller models.
+1. **System message** — output contract (six `##` sections), focus addenda, rules (cite LINE refs, no invented numerics).
 
-2. **User message** (`build_analysis_prompt`) — built from these sections, in order:
+2. **User message** — built by `build_analysis_prompt` / evidence compiler, in order:
+   - **Data Available** inventory
+   - **Authoritative facts** (pre-computed counts, deltas, health signals)
+   - **Performance & diagnostics** (when telemetry exists)
+   - **Errors & warnings** (SQLite excerpts within merge cap; warnings from `severity=W` lines)
+   - **Anomalies**, **release notes**, **KB** (when retrieved)
+   - Optional **graph context** block when gated enrichment fires
 
-   - **Data Available inventory** (`_build_context_inventory`) — a short bullet list telling the model exactly which data sections are populated vs absent (performance telemetry, error excerpts, CDC health, Oracle redo, anomalies, KB articles, release notes). This prevents the model from hallucinating data it doesn't have.
-   - **Critical issues** — high error counts, critical CDC health, high pain tables, Oracle redo variance flags when present.
-   - **Log overview** — filename (basename), size, line count.
-   - **Performance & diagnostics** — if structured telemetry exists: latency profile, bottleneck call-out, spikes/plateaus, Oracle archived-redo and redo-session narratives, batch/pain-table hints; if not, an explicit "telemetry not captured" section so the model avoids over-calling performance RCA.
-   - **Errors & warnings** — merged SQLite errors plus RAG/error contexts, with line-aware excerpts. In compact mode, relevant component annotations are added inline (e.g. "TARGET_APPLY — CDC apply to target") since the full reference table is omitted from the system prompt.
-   - **Anomalies** — retrieved anomaly passages.
-   - **Release notes correlation** (when retrieved) — EOS/support context and fix IDs when available.
-   - **KB context** (when retrieved) — titles/snippets; **KB text is not run through the log sanitizer**.
-   - **Analysis request** — checklist of what to cover; focus line adapts to whether performance telemetry is present.
+There is **no** trailing "Analysis request" checklist — the system prompt defines the task.
 
-   All section caps (excerpt count, character limits, KB/release-note count) are controlled by the `compact` flag so local models stay within effective attention range.
+Quick mode uses `build_quick_summary_prompt` (metrics JSON) instead of the full evidence package.
 
-Quick mode uses a short metrics JSON user prompt (`build_quick_summary_prompt`) instead of the full outline.
+## Evidence insufficiency (Phase 7)
 
-## Vision / chart add-on
+Embedding / log Chroma runs only when:
 
-For models that support vision (Gemini / selected OpenRouter routes), a latency chart image may be prepended to the user message when Plotly/Kaleido are available. LM Studio skips this path today (per-model vision not detected).
+- Not quick mode, and
+- Indexed error count exceeds deterministic excerpt budget, or
+- Errors focus on a sparse log (zero indexed errors), etc.
 
-## Diagnostic logging
+`context_stats` exposes `embedding_fallback` and `insufficiency_reasons`. KB Chroma remains independent of this gate.
 
-`ReportGenerator.generate_report` now logs a structured summary after building the prompt:
+## Validation & formatting
+
+- **`validate_and_correct()`** — checks required sections, banned claims, numeric consistency; optional single LLM correction pass
+- **`normalize_report_markdown()`** — promotes numbered section lists to `##` headers, strips `///` truncation artifacts
+- Applied on generate/compare; **`display_report_content()`** also normalizes cached reports on GET
+
+## Evaluation (Phase 0)
+
+- **`report_grader.py`** — deterministic checks (`markdown_h2_sections`, section presence, etc.)
+- **`tests/fixtures/prompt_regression/corpus.json`** — golden cases (some still `pending` for Lab/large-log fixtures)
+- Prompt Lab compare runs `_grade_compare_result()` and can export samples with grades
+- **`GET /api/llm/prompt-lab/status`** — returns `flm_metrics` (`flm_empty_response_rate`, etc.)
+
+## Unified prompt builder
 
 ```
-Prompt composition: provider=lmstudio compact=True | errors=5 anomalies=2 kb=3 release_notes=4 | est_prompt_tokens=3200
+ReportGenerator.build_report_messages(
+    file_id, *, quick=False, web_search, focus_mode, model,
+    include_chart, fetch_external, include_graph,
+    payload_format="markdown", cancel_check=True
+) -> ReportPromptBundle
 ```
 
-This makes it easy to verify that log context is actually reaching the model and to spot empty-context situations.
+`ReportPromptBundle`: `messages`, `est_tokens`, `context_stats`, `prompt_text`, provider flags, optional chart image, KB/RN context.
 
-## Sanitization controls (API / DB)
+Used by: `generate_report`, `estimate_cost`, `prompt-preview`, `compare`.
 
-- **`sanitize_log_for_cloud_llm`** on `llm_config`: persisted preference for cloud providers; **ignored** when the active provider is LM Studio (local prompts are never redacted by this flag).
-- **`/api/llm/prompt-preview`** mirrors the same rule: for LM Studio, `sanitized_prompt` matches the raw prompt and Presidio preview is marked skipped.
+## Execution timing
+
+| Field | Scope |
+|-------|-------|
+| `llm_duration_seconds` | `_call_llm()` only |
+| `generation_duration_seconds` | Full pipeline including context, optional embed/graph, prompt, LLM, validator, formatter |
+
+Both stored on `LLMReport` and returned in API responses.
+
+## Prompt Lab endpoints
+
+- **`POST /report/{file_id}/prompt-preview`** — full prompt + token estimate + `context_stats`; defaults: `quick=false`, `include_chart=false`, `fetch_external=false`
+- **`POST /report/{file_id}/compare`** — gated by `LOG_ANALYZER_PROMPT_LAB=1`; baseline + variants; toggles for chart, external fetch, graph; optional `save_sample`
+- **`GET /prompt-lab/status`** — `compare_enabled`, `flm_metrics`
+
+## Deferred: Phase 8 streaming
+
+Full-stack streaming (LLM → client → ReportGenerator → SSE → UI) is **UX-only** and intentionally deferred until quality phases 0–7 are validated in production. Current API returns complete reports.
 
 ## Related files
 
-- `backend/llm/sanitizer.py` — Presidio-backed redaction helpers
-- `backend/llm/endpoints.py` — `/config`, `/report/{id}`, `/prompt-preview`
-- `static/ai-report.js` — provider-aware "generating" toast (syncs provider from `/api/llm/config` before showing)
-- `static/ai-config-modal.js` — cloud-only web search / Tavily / sanitize checkbox; hidden on LM Studio tab
+- `backend/llm/endpoints.py` — `/config`, `/report/{id}`, prompt-preview, compare, prompt-lab status
+- `backend/llm/openai_api_client.py` — FLM session + retries
+- `backend/llm/flm_metrics.py` — in-process empty-response rate
+- `backend/llm/sanitizer.py` — Presidio-backed redaction for cloud
+- `backend/database.py` — `LLMReport` model
+- `static/ai-report.js`, `static/prompt-lab-modal.js` — UI

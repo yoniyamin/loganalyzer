@@ -29,6 +29,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const PINNED_FILES_KEY = 'logAnalyzer_pinnedFiles';
   const PINNED_FILES_SETTING_KEY = 'pinned_files';
   const RECENT_FILES_SETTING_KEY = 'recent_files';
+  const LAST_OPENED_FILE_KEY = 'logAnalyzer_lastOpenedFile';
   const MAX_RECENT_FILES = 20;
   let pinnedFilesCache = null;
   let recentFilesCache = null;
@@ -2236,6 +2237,27 @@ document.addEventListener("DOMContentLoaded", () => {
     saveFileListSetting(RECENT_FILES_SETTING_KEY, recentFilesCache);
   }
 
+  function rememberOpenedFile(fileId) {
+    fileId = normalizeFileId(fileId);
+    if (fileId == null) return;
+    try {
+      localStorage.setItem(LAST_OPENED_FILE_KEY, String(fileId));
+    } catch (e) {
+      console.error('Failed to save last opened file:', e);
+    }
+    addToRecentFiles(fileId);
+  }
+
+  function mergeFileIdLists(...lists) {
+    const merged = [];
+    lists.forEach(list => {
+      normalizeFileIdList(list || []).forEach(id => {
+        if (!merged.includes(id)) merged.push(id);
+      });
+    });
+    return merged.slice(0, MAX_RECENT_FILES);
+  }
+
   function loadFileListsFromServer() {
     const loadSetting = (key) =>
       fetch(`/api/settings/${key}`)
@@ -2247,19 +2269,21 @@ document.addEventListener("DOMContentLoaded", () => {
       loadSetting(PINNED_FILES_SETTING_KEY),
       loadSetting(RECENT_FILES_SETTING_KEY)
     ]).then(([pinnedData, recentData]) => {
-      if (pinnedData && Array.isArray(pinnedData.ids)) {
-        pinnedFilesCache = normalizeFileIdList(pinnedData.ids);
-      } else {
-        pinnedFilesCache = readPinnedFilesFromLocalStorage();
-        if (pinnedFilesCache.length) persistPinnedFiles(pinnedFilesCache);
+      const serverPinned = (pinnedData && Array.isArray(pinnedData.ids)) ? pinnedData.ids : [];
+      const serverRecent = (recentData && Array.isArray(recentData.ids)) ? recentData.ids : [];
+      const localPinned = readPinnedFilesFromLocalStorage();
+      const localRecent = readRecentFilesFromLocalStorage();
+
+      pinnedFilesCache = mergeFileIdLists(serverPinned, localPinned);
+      recentFilesCache = mergeFileIdLists(serverRecent, localRecent);
+
+      const lastOpened = normalizeFileId(localStorage.getItem(LAST_OPENED_FILE_KEY));
+      if (lastOpened != null && !recentFilesCache.includes(lastOpened)) {
+        recentFilesCache = mergeFileIdLists([lastOpened], recentFilesCache);
       }
 
-      if (recentData && Array.isArray(recentData.ids)) {
-        recentFilesCache = normalizeFileIdList(recentData.ids);
-      } else {
-        recentFilesCache = readRecentFilesFromLocalStorage();
-        if (recentFilesCache.length) persistRecentFiles(recentFilesCache);
-      }
+      if (pinnedFilesCache.length) persistPinnedFiles(pinnedFilesCache);
+      if (recentFilesCache.length) persistRecentFiles(recentFilesCache);
     });
   }
 
@@ -2445,6 +2469,7 @@ document.addEventListener("DOMContentLoaded", () => {
           return res.json();
       })
       .then(data => {
+          rememberOpenedFile(data.id);
           fetchFileList();
           pollStatus(data.id);
       })
@@ -2467,6 +2492,7 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .then(res => res.json())
     .then(data => {
+      rememberOpenedFile(data.id);
       fetchFileList();
       pollStatus(data.id);
     })
@@ -2478,6 +2504,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function pollStatus(id) {
     currentFileId = id;
+    rememberOpenedFile(id);
     fileStatusDiv.textContent = "Indexing...";
     
     // Clear interval if exists
@@ -2552,8 +2579,8 @@ document.addEventListener("DOMContentLoaded", () => {
       window.savedFindingsManager.loadFindings();
     }
     
-    // Add to recent files
-    addToRecentFiles(id);
+    // Remember opened file immediately (before indexing completes)
+    rememberOpenedFile(id);
     
     // Update file list to show active state
     fetchFileList();
@@ -2698,6 +2725,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const content = document.getElementById('bulkActivityMainContent');
       if (content) content.innerHTML = '<p class="placeholder-text-small">Loading bulk activity...</p>';
     }
+
+    // Clear full load activity view
+    const fullLoadActivityMainView = document.getElementById('fullLoadActivityMainView');
+    if (fullLoadActivityMainView) {
+      fullLoadActivityMainView.style.display = 'none';
+      const content = document.getElementById('fullLoadActivityMainContent');
+      if (content) content.innerHTML = '<p class="placeholder-text-small">Loading full load activity...</p>';
+    }
     
     // Clear file operations view
     const fileOperationsMainView = document.getElementById('fileOperationsMainView');
@@ -2726,13 +2761,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     
     // Reset available reports
-    const bulkMapLink = document.getElementById('bulkMapLink');
     const bulkActivityLink = document.getElementById('bulkActivityLink');
+    const fullLoadActivityLink = document.getElementById('fullLoadActivityLink');
     const fileOperationsLink = document.getElementById('fileOperationsLink');
     const issuesLink = document.getElementById('issuesLink');
     const logSummaryLink = document.getElementById('logSummaryLink');
-    if (bulkMapLink) bulkMapLink.style.display = 'none';
     if (bulkActivityLink) bulkActivityLink.style.display = 'none';
+    if (fullLoadActivityLink) fullLoadActivityLink.style.display = 'none';
     if (fileOperationsLink) fileOperationsLink.style.display = 'none';
     if (issuesLink) issuesLink.style.display = 'none';
     if (logSummaryLink) logSummaryLink.style.display = 'none';
@@ -2744,6 +2779,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Reset performance cockpit data
     window.performanceCockpitData = null;
     window.issuesData = null;
+    window.fullLoadActivityData = null;
     updateLogIssuesTimeline(null);
     
     // Clear issues view
@@ -3628,6 +3664,9 @@ document.addEventListener("DOMContentLoaded", () => {
       
       // Fetch and display bulk activity analysis
       fetchBulkActivity();
+
+      // Fetch and display full load activity
+      fetchFullLoadActivity();
       
       // Fetch and display issues
       fetchIssues();
@@ -5207,414 +5246,797 @@ document.addEventListener("DOMContentLoaded", () => {
     taskPropertiesContent.innerHTML = html;
   }
   
-  function fetchBulkMap() {
-    if (!currentFileId) return;
-    
-    const bulkMapLink = document.getElementById('bulkMapLink');
-    const bulkMapCount = document.getElementById('bulkMapCount');
-    
-    if (!bulkMapLink) return;
-    
-    // Show loading state
-    bulkMapLink.style.display = 'flex';
-    bulkMapCount.textContent = '(loading...)';
-    bulkMapCount.style.opacity = '0.6';
-    
-    fetch(`/api/files/${currentFileId}/bulk-map?limit=500`)
-      .then(res => res.json())
-      .then(response => {
-        bulkMapCount.style.opacity = '1';
-        // Handle new response format with messages, stats, insights
-        const messages = response.messages || response;  // Backward compatible
-        const stats = response.stats || null;
-        const insights = response.insights || [];
-        
-        if (!messages || messages.length === 0) {
-          // Hide the link if no bulk map messages
-          bulkMapLink.style.display = 'none';
-          return;
-        }
-        
-        // Show the link
-        bulkMapLink.style.display = 'flex';
-        bulkMapCount.textContent = `(${messages.length})`;
-        
-        // Store messages and insights for later rendering
-        window.bulkMapData = messages;
-        window.bulkMapStats = stats;
-        window.bulkMapInsights = insights;
-      })
-      .catch(err => {
-        console.error('Failed to load bulk map:', err);
-        bulkMapLink.style.display = 'none';
-      });
+  // ============================================================
+  // BULK APPLY REPORT (consolidated Bulk Activity + Bulk Map)
+  // ============================================================
+
+  const BULK_APPLY_BATCH_PAGE_SIZE = 10;
+
+  const BULK_CLOSURE_REASON_META = {
+    TIM: {
+      label: 'Stream Timeout',
+      color: '#f59e0b',
+      chipLabel: 'Stream TMO',
+      log: 'Finish bulk because stream timeout',
+      desc: 'Bulk apply received a change and waits briefly to see if more changes can join the same bulk before sending to the target.',
+      tuning: '"Longer than (seconds)" — default 1 (Change Processing Tuning → Batch tuning)',
+      note: 'Low values improve near-realtime behavior; higher values allow larger bulks with less target overhead.'
+    },
+    TMO: {
+      label: 'Bulk Timeout',
+      color: '#06b6d4',
+      chipLabel: 'Bulk TMO',
+      log: 'Finish Bulk because Bulk timeout',
+      desc: 'The sorter is still feeding changes, but the bulk is released on schedule because the maximum wait time was reached.',
+      tuning: '"But less than (seconds)" — default 30 (Change Processing Tuning → Batch tuning)',
+      note: 'Low values improve near-realtime behavior; higher values allow larger bulks. Very high values may fill memory.'
+    },
+    MEM: {
+      label: 'Memory Limit',
+      color: '#ef4444',
+      chipLabel: 'Memory',
+      log: 'Bulk finished because memory usage has exceeded the limit',
+      desc: 'The in-memory bulk exceeded the configured threshold and was sent to the target immediately.',
+      tuning: 'Force apply a batch when processing memory exceeds (MB)',
+      note: 'Frequent memory closes force smaller bulks and more file uploads.'
+    },
+    PKi: {
+      label: 'PK Insert Conflict',
+      color: '#8b5cf6',
+      chipLabel: 'PK-ins',
+      log: 'INSERT conflict on same PK in same bulk',
+      desc: 'Two INSERT operations on the same primary key in the same batch.',
+      tuning: null,
+      note: null
+    },
+    PKu: {
+      label: 'PK Update Conflict',
+      color: '#8b5cf6',
+      chipLabel: 'PK-upd',
+      log: 'UPDATE changes PK already modified in bulk',
+      desc: 'An UPDATE changes a PK that was already modified in this batch.',
+      tuning: null,
+      note: null
+    },
+    PKd: {
+      label: 'PK Delete Conflict',
+      color: '#8b5cf6',
+      chipLabel: 'PK-del',
+      log: 'DELETE on PK modified in bulk',
+      desc: 'A DELETE on a PK that was modified in this batch.',
+      tuning: null,
+      note: null
+    },
+    SNG: {
+      label: 'Single Table',
+      color: '#10b981',
+      chipLabel: 'Single',
+      log: 'Finished applying bulk changes for tables with PK',
+      desc: 'Batch finished for tables with primary keys.',
+      tuning: null,
+      note: null
+    },
+    RES: {
+      label: 'Resume',
+      color: '#3b82f6',
+      chipLabel: 'Resume',
+      log: 'Resume at the same position',
+      desc: 'Batch closed for a resume operation.',
+      tuning: null,
+      note: null
+    },
+    Normal: {
+      label: 'Normal',
+      color: '#10b981',
+      chipLabel: 'Normal',
+      log: 'Bulk finished.',
+      desc: 'Batch completed without a special close trigger.',
+      tuning: null,
+      note: null
+    }
+  };
+
+  const REASON_FILTER_ORDER = ['TIM', 'TMO', 'MEM', 'PK', 'SNG', 'RES', 'Normal'];
+
+  window._bulkApplyActiveTab = 'overview';
+  window._bulkApplyBatchPage = 1;
+  window._bulkApplyBatchFilters = null;
+
+  function getBatchReasonCode(finishReason) {
+    if (!finishReason || finishReason === 'Normal') return 'Normal';
+    return finishReason.split(' - ')[0].trim();
   }
-  
-  function renderBulkMap(messages, targetElement, stats, insights) {
-    const bulkMapContent = targetElement || document.getElementById('bulkMapMainContent');
-    if (!bulkMapContent) return;
-    
-    // Clear existing content completely
-    bulkMapContent.innerHTML = '';
-    
-    // Get stats and insights from global if not passed
-    stats = stats || window.bulkMapStats;
-    insights = insights || window.bulkMapInsights || [];
-    
-    // Group by table
-    const tableMap = {};
-    messages.forEach(msg => {
-      // Extract table name from message: bulk_map: seq 140324:140360 INSERT 'FICCOR'.'CTRPEDTI' (id=1)
-      const tableMatch = msg.text.match(/(?:INSERT|UPDATE|DELETE|MERGE)\s+'([^']+)'\.+'([^']+)'/);
-      const seqMatch = msg.text.match(/seq\s+([\d:]+)/);
-      const operationMatch = msg.text.match(/\]\w:\s+bulk_map:\s+seq\s+[\d:]+\s+(\w+)/);
-      const idMatch = msg.text.match(/\(id=(\d+)\)/);
-      const timestampMatch = msg.text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-      
-      if (tableMatch) {
-        const schema = tableMatch[1];
-        const table = tableMatch[2];
-        const fullTableName = `${schema}.${table}`;
-        const seq = seqMatch ? seqMatch[1] : 'N/A';
-        const seqParts = seq.split(':');
-        const seqStart = seqParts[0];
-        const seqEnd = seqParts[1] || seqParts[0];
-        const rowCount = seqParts.length === 2 ? parseInt(seqEnd) - parseInt(seqStart) + 1 : 1;
-        
-        let operation = operationMatch ? operationMatch[1] : 'MERGE';
-        
-        // Unknown operation means MERGE
-        if (operation === 'UNKNOWN') {
-          operation = 'MERGE';
-        }
-        
-        if (!tableMap[fullTableName]) {
-          tableMap[fullTableName] = [];
-        }
-        
-        tableMap[fullTableName].push({
-          seq: seq,
-          seqStart: seqStart,
-          seqEnd: seqEnd,
-          rowCount: rowCount,
-          operation: operation,
-          tableId: idMatch ? idMatch[1] : null,
-          timestamp: timestampMatch ? timestampMatch[1] : null,
-          line: msg.line,
-          text: msg.text,
-          gap_to_finish: msg.gap_to_finish  // Gap from backend
-        });
-      }
-    });
-    
-    // Create tabs for each table
-    const sortedTables = Object.keys(tableMap).sort();
-    
-    if (sortedTables.length === 0) {
-      bulkMapContent.innerHTML = '<p class="placeholder-text-small">No bulk map messages found</p>';
+
+  function batchMatchesReasonFilter(batch, filters) {
+    if (!filters || filters.size === 0) return true;
+    const code = getBatchReasonCode(batch.finish_reason);
+    if (filters.has('PK') && (code === 'PKi' || code === 'PKu' || code === 'PKd')) return true;
+    return filters.has(code);
+  }
+
+  function refreshBulkApplyReportLink() {
+    const link = document.getElementById('bulkActivityLink');
+    const badge = document.getElementById('bulkActivityBadge');
+    if (!link) return;
+
+    const analysis = window.bulkActivityData;
+    const mapCount = (window.bulkMapData || []).length;
+    const batches = analysis?.summary?.total_batches || 0;
+    const obo = analysis?.one_by_one?.length || 0;
+    const hasData = batches > 0 || obo > 0 || mapCount > 0;
+
+    if (!hasData) {
+      link.style.display = 'none';
       return;
     }
-    
-    // Create header
-    const header = document.createElement('div');
-    header.style.margin = '0 0 8px 0';
-    header.style.fontSize = '0.75rem';
-    header.style.color = '#10b981';
-    header.style.display = 'flex';
-    header.style.alignItems = 'center';
-    header.style.gap = '4px';
-    header.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm2 1v2h2V4H4zm3 0v2h2V4H7zm3 0v2h2V4h-2zM4 7v2h2V7H4zm3 0v2h2V7H7zm3 0v2h2V7h-2zM4 10v2h2v-2H4zm3 0v2h2v-2H7zm3 0v2h2v-2h-2z"/>
-      </svg>
-      <span>Bulk Map Operations</span>
-    `;
-    bulkMapContent.appendChild(header);
-    
-    // Render Performance Insights - compact notices
-    if (insights && insights.length > 0) {
-      const insightsDiv = document.createElement('div');
-      insightsDiv.style.cssText = 'margin-bottom: 8px;';
-      
-      let insightsHtml = '';
-      insights.forEach(insight => {
-        const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
-        const color = colors[insight.severity] || colors.info;
-        insightsHtml += `<div class="report-insight-row" style="border-left-color:${color}"><span style="color:${color};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
+
+    link.style.display = 'flex';
+    const parts = [];
+    if (batches > 0) parts.push(`${batches} batches`);
+    if (mapCount > 0) parts.push(`${mapCount} ops`);
+    badge.textContent = `(${parts.join(' · ')})`;
+  }
+
+  function buildBulkMapByTable(messages) {
+    const bulkMapByTable = {};
+    (messages || []).forEach(msg => {
+      const tableMatch = msg.text.match(/(?:INSERT|UPDATE|DELETE|MERGE)\s+'([^']+)'\.+'([^']+)'/);
+      if (!tableMatch) return;
+
+      const tableName = `${tableMatch[1]}.${tableMatch[2]}`;
+      if (!bulkMapByTable[tableName]) bulkMapByTable[tableName] = [];
+
+      const seqMatch = msg.text.match(/seq\s+([\d:]+)/);
+      const operationMatch = msg.text.match(/\]\w:\s+bulk_map:\s+seq\s+[\d:]+\s+(\w+)/);
+      const timestampMatch = msg.text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+
+      const seqParts = seqMatch ? seqMatch[1].split(':') : ['0'];
+      const seqStart = parseInt(seqParts[0], 10);
+      const seqEnd = seqParts[1] ? parseInt(seqParts[1], 10) : seqStart;
+      const rowCount = seqParts.length === 2 ? seqEnd - seqStart + 1 : 1;
+      let operation = operationMatch ? operationMatch[1] : 'MERGE';
+      if (operation === 'UNKNOWN') operation = 'MERGE';
+
+      bulkMapByTable[tableName].push({
+        seq: seqMatch ? seqMatch[1] : 'N/A',
+        operation,
+        timestamp: timestampMatch ? timestampMatch[1] : null,
+        line: msg.line,
+        text: msg.text,
+        gap_to_finish: msg.gap_to_finish,
+        rowCount
       });
-      
-      insightsDiv.innerHTML = insightsHtml;
-      bulkMapContent.appendChild(insightsDiv);
-    }
-    
-    // Render Statistics summary
-    if (stats && stats.total_operations > 0) {
-      const statsDiv = document.createElement('div');
-      const singlePctColor = stats.single_record_percent > 40 ? '#ef4444' : stats.single_record_percent > 20 ? '#f59e0b' : '#10b981';
-      statsDiv.className = 'report-stats-bar';
-      statsDiv.innerHTML = `
-        <span>Ops: <span class="stat-val">${stats.total_operations}</span></span>
-        <span>Single (1:1): <span style="color:${singlePctColor};font-weight:bold;">${stats.single_record_operations} (${stats.single_record_percent}%)</span></span>
-        <span>Avg Batch: <span style="color:#3b82f6;font-weight:bold;">${stats.avg_batch_size} rec</span></span>
-        <span>Max: <span style="color:#10b981;font-weight:bold;">${stats.max_batch_size.toLocaleString()} rec</span></span>
-        <span>Avg Apply: <span class="stat-val">${stats.avg_gap_seconds}s</span></span>`;
-      bulkMapContent.appendChild(statsDiv);
-    }
-    
-    // Create tabs wrapper
-    const tabsWrapper = document.createElement('div');
-    tabsWrapper.className = 'bm-tabs-wrapper';
-    
-    // Create tabs header
-    const tabsHeader = document.createElement('div');
-    tabsHeader.className = 'bm-tabs-header';
-    tabsHeader.id = 'bmTabsHeader';
-    
-    // Create panels container
-    const panelsContainer = document.createElement('div');
-    panelsContainer.className = 'bm-panels-container';
-    panelsContainer.id = 'bmPanelsContainer';
-    
-    // Create tab buttons and panels
-    sortedTables.forEach((tableName, idx) => {
-      const operations = tableMap[tableName];
-      
-      // Create tab button
-      const tabButton = document.createElement('button');
-      tabButton.className = `bm-tab-button ${idx === 0 ? 'bm-active' : ''}`;
-      tabButton.setAttribute('data-table', tableName);
-      tabButton.innerHTML = `
-        ${tableName.split('.')[1] || tableName}
-        <span class="bm-tab-count">${operations.length}</span>
-      `;
-      tabButton.addEventListener('click', () => switchBulkMapTab(tableName));
-      tabsHeader.appendChild(tabButton);
-      
-      // Create tab panel
-      const panel = document.createElement('div');
-      panel.className = `bm-tab-panel ${idx === 0 ? 'bm-active' : ''}`;
-      panel.setAttribute('data-table', tableName);
-      
-      // Calculate operation counts
-      const operationCounts = { INSERT: 0, UPDATE: 0, DELETE: 0, MERGE: 0 };
-      let singleRecordCount = 0;
-      operations.forEach(op => {
-        operationCounts[op.operation] = (operationCounts[op.operation] || 0) + 1;
-        if (op.rowCount === 1) {
-          singleRecordCount++;
-        }
-      });
-      
-      // Check if MERGE is being used (important for target like Databricks)
-      const hasMerge = operationCounts.MERGE > 0;
-      
-      // Build panel content
-      let panelHTML = `
-        <div class="table-summary">
-          <div class="table-summary-grid" style="grid-template-columns: repeat(${hasMerge ? 6 : 5}, 1fr);">
-            <div class="table-summary-stat">
-              <div class="table-summary-stat-label">INSERT</div>
-              <div class="table-summary-stat-value stat-insert">${operationCounts.INSERT || 0}</div>
-            </div>
-            <div class="table-summary-stat">
-              <div class="table-summary-stat-label">UPDATE</div>
-              <div class="table-summary-stat-value stat-update">${operationCounts.UPDATE || 0}</div>
-            </div>
-            <div class="table-summary-stat">
-              <div class="table-summary-stat-label">DELETE</div>
-              <div class="table-summary-stat-value stat-delete">${operationCounts.DELETE || 0}</div>
-            </div>
-            ${hasMerge ? `<div class="table-summary-stat">
-              <div class="table-summary-stat-label">MERGE</div>
-              <div class="table-summary-stat-value stat-merge">${operationCounts.MERGE}</div>
-            </div>` : ''}
-            <div class="table-summary-stat">
-              <div class="table-summary-stat-label">SINGLE (1:1)</div>
-              <div class="table-summary-stat-value stat-single">${singleRecordCount}</div>
-            </div>
-            <div class="table-summary-stat">
-              <div class="table-summary-stat-label">TOTAL</div>
-              <div class="table-summary-stat-value">${operations.length}</div>
-            </div>
-          </div>
-        </div>
-        <table class="bulk-map-table">
-          <thead>
-            <tr>
-              <th style="width: 18%;">Sequence</th>
-              <th style="width: 10%;">Records</th>
-              <th style="width: 13%;">Operation</th>
-              <th style="width: 16%;">Time</th>
-              <th style="width: 10%;">Gap</th>
-              <th style="width: 10%;">RPS</th>
-              <th style="width: 23%;">Line</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-      
-      // First pass: collect all gaps to calculate average
-      const timeGaps = [];
-      operations.forEach((op) => {
-        if (op.gap_to_finish !== null && op.gap_to_finish !== undefined) {
-          timeGaps.push(op.gap_to_finish);
-        }
-      });
-      
-      // Calculate average gap
-      const avgGap = timeGaps.length > 0 ? timeGaps.reduce((a, b) => a + b, 0) / timeGaps.length : 0;
-      
-      // Second pass: render rows
-      operations.forEach((op) => {
-        const opClass = op.operation.toLowerCase();
-        let timeGap = op.gap_to_finish;
-        let gapClass = '';
-        let rps = null;
-        
-        if (timeGap !== null && timeGap !== undefined) {
-          // Calculate RPS (records per second)
-          if (timeGap > 0) {
-            rps = (op.rowCount / timeGap).toFixed(2);
-          }
-          
-          // Only mark as red (large) if above average
-          if (timeGap > avgGap && avgGap > 0) {
-            gapClass = 'gap-large';
-          } else if (timeGap < 0.5) {
-            gapClass = 'gap-small';
-          } else if (timeGap < 2) {
-            gapClass = 'gap-medium';
-          }
-        }
-        
-        // Check if this is a single record operation (1:1)
-        const isSingleRecord = op.rowCount === 1;
-        const rowClass = isSingleRecord ? 'single-record-row' : '';
-        
-        const gapCellClass = gapClass === 'gap-large' ? 'report-td-gap-bad' : gapClass === 'gap-medium' ? 'report-td-gap-warn' : 'report-td-gap-good';
-        
-        panelHTML += `
-          <tr class="${gapClass} ${rowClass}" data-line="${op.line}" title="Click to jump to log line ${op.line}">
-            <td class="report-td-mono">${op.seq}</td>
-            <td class="report-td-mono">${Math.round(op.rowCount).toLocaleString()}</td>
-            <td><span class="operation-badge operation-${opClass}">${op.operation}</span></td>
-            <td class="report-td-muted-mono">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td>
-            <td class="${gapCellClass}">${timeGap ? '+' + timeGap.toFixed(2) + 's' : '-'}</td>
-            <td class="report-td-rps">${rps ? rps : '-'}</td>
-            <td class="report-td-line">${op.line}</td>
-          </tr>
-        `;
-      });
-      
-      panelHTML += `
-          </tbody>
-        </table>
-      `;
-      
-      panel.innerHTML = panelHTML;
-      panelsContainer.appendChild(panel);
     });
-    
-    // Append everything
-    tabsWrapper.appendChild(tabsHeader);
-    tabsWrapper.appendChild(panelsContainer);
-    bulkMapContent.appendChild(tabsWrapper);
-    
-    // Add click handlers to jump to log line
-    panelsContainer.querySelectorAll('tbody tr[data-line]').forEach(row => {
+    return bulkMapByTable;
+  }
+
+  function buildBulkApplyInsights(analysis) {
+    const insights = [];
+    const summary = analysis.summary;
+
+    if (analysis.file_operations && analysis.file_operations.length > 1) {
+      const fileOps = analysis.file_operations;
+      const sizes = fileOps.map(op => op.file_size);
+      const times = fileOps.map(op => op.upload_time);
+      const minSize = Math.min(...sizes);
+      const maxSize = Math.max(...sizes);
+      const sizeRatio = maxSize / minSize;
+      const avgTime = times.reduce((a, b) => a + b, 0) / times.length;
+
+      if (sizeRatio > 10) {
+        const smallest = fileOps.find(op => op.file_size === minSize);
+        const largest = fileOps.find(op => op.file_size === maxSize);
+        if (smallest && largest) {
+          const timeRatio = largest.upload_time / smallest.upload_time;
+          if (timeRatio < 2) {
+            insights.push({
+              type: 'file_upload_latency',
+              severity: 'warning',
+              title: 'Network Latency Dominates Upload Time',
+              message: `File sizes vary ${sizeRatio.toFixed(0)}x (${smallest.file_size_str} to ${largest.file_size_str}), but upload times are similar (~${avgTime.toFixed(1)}s). Fixed network overhead is likely the bottleneck.`,
+              recommendation: 'Batch more changes together to reduce file uploads and connection overhead.'
+            });
+          }
+        }
+      }
+
+      const smallBatches = analysis.batches ? analysis.batches.filter(b => b.changes < 100) : [];
+      if (smallBatches.length > (analysis.batches?.length || 0) * 0.5 && analysis.batches?.length > 0) {
+        insights.push({
+          type: 'many_small_batches',
+          severity: 'info',
+          title: 'Many Small Batches',
+          message: `${smallBatches.length} of ${analysis.batches.length} batches (${Math.round(smallBatches.length * 100 / analysis.batches.length)}%) contain fewer than 100 changes.`,
+          recommendation: 'Review batch settings or transaction patterns causing frequent small commits.'
+        });
+      }
+    }
+
+    if (analysis.bulk_finish_reasons) {
+      const memoryFinishes = analysis.bulk_finish_reasons.MEM || 0;
+      const timeoutFinishes = (analysis.bulk_finish_reasons.TIM || 0) + (analysis.bulk_finish_reasons.TMO || 0);
+      const pkConflicts = (analysis.bulk_finish_reasons.PKi || 0) +
+        (analysis.bulk_finish_reasons.PKu || 0) +
+        (analysis.bulk_finish_reasons.PKd || 0);
+
+      if (summary.total_batches > 0 && memoryFinishes > summary.total_batches * 0.1) {
+        insights.push({
+          type: 'memory_pressure',
+          severity: 'warning',
+          title: 'Memory Pressure Detected',
+          message: `${memoryFinishes} batches (${Math.round(memoryFinishes * 100 / summary.total_batches)}%) closed due to memory limits.`,
+          recommendation: 'Consider increasing apply memory settings or reducing tables in the task.'
+        });
+      }
+
+      if (summary.total_batches > 0 && timeoutFinishes > summary.total_batches * 0.2) {
+        insights.push({
+          type: 'timeout_batches',
+          severity: 'info',
+          title: 'Timeout-Triggered Batches',
+          message: `${timeoutFinishes} batches (${Math.round(timeoutFinishes * 100 / summary.total_batches)}%) closed due to stream or bulk timeout.`,
+          recommendation: 'Review Change Processing Tuning batch timeout settings if this is unexpected during high activity.'
+        });
+      }
+
+      if (pkConflicts > 0) {
+        insights.push({
+          type: 'pk_conflicts',
+          severity: 'warning',
+          title: 'Primary Key Conflicts',
+          message: `${pkConflicts} batches encountered PK conflicts requiring batch separation.`,
+          recommendation: 'Review source transaction patterns or enable change data coalescing.'
+        });
+      }
+    }
+
+    if (summary.one_by_one_switches > 0) {
+      insights.push({
+        type: 'one_by_one',
+        severity: 'error',
+        title: 'One-by-One Processing Detected',
+        message: `${summary.one_by_one_switches} tables switched to one-by-one mode.`,
+        recommendation: 'Check for constraint violations, data type mismatches, or target table issues.'
+      });
+    }
+
+    return insights;
+  }
+
+  function renderInsightsHtml(insights) {
+    if (!insights || insights.length === 0) return '';
+    const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
+    return insights.map(insight => {
+      const c = colors[insight.severity] || colors.info;
+      return `<div class="report-insight-row" style="border-left-color:${c}"><span style="color:${c};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
+    }).join('');
+  }
+
+  function renderClosureReasonLegendHtml(compact, activeReasons) {
+    const allKeys = ['TIM', 'TMO', 'MEM', 'PKi', 'PKu', 'PKd', 'SNG', 'RES', 'Normal'];
+    const keys = (activeReasons && activeReasons.length > 0)
+      ? allKeys.filter(k => activeReasons.includes(k))
+      : allKeys;
+    if (keys.length === 0) return '';
+
+    const items = keys.map(key => {
+      const meta = BULK_CLOSURE_REASON_META[key];
+      if (!meta) return '';
+      const tuning = meta.tuning ? `<div class="bulk-legend-tuning">${meta.tuning}</div>` : '';
+      const note = meta.note ? `<div class="bulk-legend-note">${meta.note}</div>` : '';
+      return `<div class="bulk-legend-item"><div class="bulk-legend-head"><span class="bulk-legend-code" style="color:${meta.color}">${key}</span><span class="bulk-legend-label">${meta.label}</span></div><div class="bulk-legend-desc">${meta.desc}</div>${tuning}${note}</div>`;
+    }).join('');
+
+    const refLink = 'https://community.qlik.com/t5/Qlik-Replicate/TARGET-APPLY-Finish-bulk-because-stream-timeout/td-p/2020398';
+    const header = compact
+      ? '<summary class="bulk-legend-summary">What do these close reasons mean?</summary>'
+      : '<div class="bulk-legend-title">Close Reasons in This Log</div>';
+
+    return `<details class="bulk-closure-legend${compact ? ' bulk-closure-legend-compact' : ''}">${header}<div class="bulk-legend-grid">${items}</div><p class="bulk-legend-ref"><a href="${refLink}" target="_blank" rel="noopener">Qlik Community — stream vs bulk timeout</a></p></details>`;
+  }
+
+  function renderClosureReasonBreakdown(closureReasons, options) {
+    if (!closureReasons || Object.keys(closureReasons).length === 0) return '';
+
+    const opts = options || {};
+    const title = opts.title || 'Close Reasons';
+    const total = Object.values(closureReasons).reduce((a, b) => a + b, 0);
+    const entries = Object.entries(closureReasons).sort((a, b) => b[1] - a[1]);
+
+    const barsHtml = entries.map(([code, count]) => {
+      const m = BULK_CLOSURE_REASON_META[code] || { label: code, color: '#6b7280' };
+      const pct = total > 0 ? (count / total) * 100 : 0;
+      const tip = [m.desc, m.tuning].filter(Boolean).join(' — ');
+      return `<div class="closure-bar-row" title="${tip.replace(/"/g, '&quot;')}"><div class="closure-bar-meta"><span class="closure-bar-code" style="color:${m.color}">${code}</span><span class="closure-bar-label">${m.label}</span></div><div class="closure-bar-track"><div class="closure-bar-fill" style="width:${Math.max(pct, count > 0 ? 2 : 0)}%;background:${m.color}"></div></div><div class="closure-bar-stats"><span class="closure-bar-count">${count}</span><span class="closure-bar-pct">${pct.toFixed(1)}%</span></div></div>`;
+    }).join('');
+
+    const hintsHtml = renderRelevantClosureHints(closureReasons);
+
+    return `<div class="closure-breakdown"><div class="closure-breakdown-title">${title}</div><div class="closure-bar-list">${barsHtml}</div>${hintsHtml}</div>`;
+  }
+
+  function renderRelevantClosureHints(closureReasons) {
+    const explainable = ['TIM', 'TMO', 'MEM', 'PKi', 'PKu', 'PKd'];
+    const present = explainable.filter(k => closureReasons[k] > 0);
+    if (present.length === 0) return '';
+
+    const items = present.map(key => {
+      const m = BULK_CLOSURE_REASON_META[key];
+      const tuning = m.tuning ? `<div class="closure-hint-tuning">${m.tuning}</div>` : '';
+      return `<div class="closure-hint-row"><div class="closure-hint-header"><span class="closure-bar-code" style="color:${m.color}">${key}</span><span class="closure-hint-label">${m.label}</span></div><p class="closure-hint-text">${m.desc}</p>${tuning}</div>`;
+    }).join('');
+
+    const summary = present.length === 1
+      ? `About ${BULK_CLOSURE_REASON_META[present[0]].label}`
+      : 'About these close reasons';
+
+    return `<details class="closure-hints-details"><summary>${summary}</summary><div class="closure-hints-list">${items}</div></details>`;
+  }
+
+  function renderBatchRpsDistribution(rpsDist) {
+    if (!rpsDist || !rpsDist.buckets || rpsDist.buckets.length === 0) return '';
+
+    const totalMeasured = rpsDist.measured_batches || rpsDist.buckets.reduce((s, b) => s + b.batch_count, 0);
+    let rows = rpsDist.buckets.map(b => {
+      const pct = totalMeasured > 0 ? (b.batch_count / totalMeasured) * 100 : 0;
+      const isLow = b.key === 'stalled' || b.key === 'low';
+      const rowClass = isLow && b.batch_count > 0 ? ' rps-row-warn' : '';
+      return `<tr class="rps-dist-row${rowClass}"><td><span class="rps-dist-label">${b.label}</span><span class="rps-dist-range">${b.range}</span></td><td class="rps-dist-count">${b.batch_count}</td><td class="rps-dist-changes">${b.total_changes.toLocaleString()}</td><td class="rps-dist-avg">${b.avg_batch_size > 0 ? b.avg_batch_size.toLocaleString() : '—'}</td><td class="rps-dist-pct">${pct.toFixed(1)}%</td></tr>`;
+    }).join('');
+
+    if (rpsDist.unknown_duration && rpsDist.unknown_duration.batch_count > 0) {
+      const u = rpsDist.unknown_duration;
+      rows += `<tr class="rps-dist-row rps-row-muted"><td><span class="rps-dist-label">No duration</span><span class="rps-dist-range">cannot compute RPS</span></td><td class="rps-dist-count">${u.batch_count}</td><td class="rps-dist-changes">${u.total_changes.toLocaleString()}</td><td class="rps-dist-avg">—</td><td class="rps-dist-pct">—</td></tr>`;
+    }
+
+    const median = rpsDist.median_rps > 0 ? `${rpsDist.median_rps.toLocaleString()}/s` : '—';
+    return `<div class="batch-rps-panel"><div class="closure-breakdown-title">Apply Throughput (RPS) <span class="batch-rps-sub">median ${median} · ${totalMeasured} batches measured</span></div><table class="rps-dist-table"><thead><tr><th>Range</th><th>Batches</th><th>Total Changes</th><th>Avg Batch Size</th><th>Share</th></tr></thead><tbody>${rows}</tbody></table><p class="batch-rps-footnote">Low RPS with small avg batch size often indicates timeout-driven micro-batches; low RPS with large batches suggests target apply slowness.</p></div>`;
+  }
+
+  function renderBatchBehaviorSection(batchProfile) {
+    if (!batchProfile || batchProfile.total_batches === 0) {
+      return '<p class="cockpit-empty-msg">No batch data</p>';
+    }
+
+    const sz = batchProfile.size_stats || {};
+    const dur = batchProfile.duration_stats || {};
+    const warn = sz.single_record_pct > 20 ? ' warning' : '';
+    const closureHtml = batchProfile.closure_reasons
+      ? renderClosureReasonBreakdown(batchProfile.closure_reasons)
+      : '';
+    const rpsHtml = renderBatchRpsDistribution(batchProfile.rps_distribution);
+
+    return `<div class="batch-behavior-layout"><div class="batch-stats-row"><div class="batch-stat-card"><div class="batch-stat-value">${batchProfile.total_batches}</div><div class="batch-stat-label">Total Batches</div></div><div class="batch-stat-card"><div class="batch-stat-value">${sz.avg?.toFixed(1) || 0}</div><div class="batch-stat-label">Avg Size</div></div><div class="batch-stat-card"><div class="batch-stat-value">${dur.avg?.toFixed(1) || 0}s</div><div class="batch-stat-label">Avg Duration</div></div><div class="batch-stat-card${warn}"><div class="batch-stat-value">${sz.single_record_pct?.toFixed(1) || 0}%</div><div class="batch-stat-label">Single-Record</div></div></div>${closureHtml}${rpsHtml}</div>`;
+  }
+
+  function reasonBadgeClass(code) {
+    if (code === 'Normal') return 'normal';
+    if (code === 'TIM' || code === 'TMO') return 'timeout';
+    if (code === 'MEM') return 'memory';
+    return 'other';
+  }
+
+  function renderBulkTableOperationsHtml(bulkMapForTable) {
+    if (!bulkMapForTable || bulkMapForTable.length === 0) {
+      return '<p class="report-empty-note">No bulk map operations for this table.</p>';
+    }
+
+    const operationCounts = { INSERT: 0, UPDATE: 0, DELETE: 0, MERGE: 0 };
+    let singleRecordCount = 0;
+    bulkMapForTable.forEach(op => {
+      operationCounts[op.operation] = (operationCounts[op.operation] || 0) + 1;
+      if (op.rowCount === 1) singleRecordCount++;
+    });
+
+    const hasMerge = operationCounts.MERGE > 0;
+    const totOps = (operationCounts.INSERT + operationCounts.UPDATE + operationCounts.DELETE + operationCounts.MERGE).toLocaleString();
+    let html = `<div class="table-summary"><div class="table-summary-grid" style="grid-template-columns:repeat(${hasMerge ? 6 : 5},1fr);"><div class="table-summary-stat"><div class="table-summary-stat-label">INSERT</div><div class="table-summary-stat-value stat-insert">${operationCounts.INSERT.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">UPDATE</div><div class="table-summary-stat-value stat-update">${operationCounts.UPDATE.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">DELETE</div><div class="table-summary-stat-value stat-delete">${operationCounts.DELETE.toLocaleString()}</div></div>${hasMerge ? `<div class="table-summary-stat"><div class="table-summary-stat-label">MERGE</div><div class="table-summary-stat-value stat-merge">${operationCounts.MERGE.toLocaleString()}</div></div>` : ''}<div class="table-summary-stat"><div class="table-summary-stat-label">SINGLE</div><div class="table-summary-stat-value stat-single">${singleRecordCount.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">TOTAL</div><div class="table-summary-stat-value">${totOps}</div></div></div></div>`;
+
+    html += `<table class="bulk-activity-table bulk-map-table"><thead><tr><th style="width:20%;">Seq</th><th style="width:10%;">Recs</th><th style="width:13%;">Op</th><th style="width:16%;">Time</th><th style="width:10%;">Gap</th><th style="width:10%;">RPS</th><th style="width:21%;">Line</th></tr></thead><tbody>`;
+
+    const timeGaps = bulkMapForTable.filter(op => op.gap_to_finish != null).map(op => op.gap_to_finish);
+    const avgGap = timeGaps.length > 0 ? timeGaps.reduce((a, b) => a + b, 0) / timeGaps.length : 0;
+
+    bulkMapForTable.forEach(op => {
+      const opClass = op.operation.toLowerCase();
+      let timeGap = op.gap_to_finish;
+      let gapClass = '';
+      let rps = null;
+
+      if (timeGap != null) {
+        if (timeGap > 0) rps = (op.rowCount / timeGap).toFixed(2);
+        if (timeGap > avgGap && avgGap > 0) gapClass = 'gap-large';
+        else if (timeGap < 0.5) gapClass = 'gap-small';
+        else if (timeGap < 2) gapClass = 'gap-medium';
+      }
+
+      const gapCellClass = gapClass === 'gap-large' ? 'report-td-gap-bad' : gapClass === 'gap-medium' ? 'report-td-gap-warn' : 'report-td-gap-good';
+      html += `<tr class="${gapClass} ${op.rowCount === 1 ? 'single-record-row' : ''}" data-line="${op.line}" style="cursor:pointer;" title="Click to jump to log line ${op.line}"><td class="report-td-mono">${op.seq}</td><td class="report-td-mono">${Math.round(op.rowCount).toLocaleString()}</td><td><span class="operation-badge operation-${opClass}">${op.operation}</span></td><td class="report-td-muted-mono">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td><td class="${gapCellClass}">${timeGap != null ? '+' + timeGap.toFixed(2) + 's' : '-'}</td><td class="report-td-rps">${rps || '-'}</td><td class="report-td-line">${op.line}</td></tr>`;
+    });
+
+    html += '</tbody></table>';
+    return html;
+  }
+
+  function attachBulkMapRowClickHandlers(container) {
+    container.querySelectorAll('tbody tr[data-line]').forEach(row => {
       row.addEventListener('click', () => {
-        const lineNum = parseInt(row.dataset.line);
-        
-        // Switch to Log View tab
+        const lineNum = parseInt(row.dataset.line, 10);
         const logViewTab = document.querySelector('.tab-btn[data-tab="log-tab"]');
         if (logViewTab) logViewTab.click();
-        
         showBulkMapNotification();
-
-        // Jump to the line
         setTimeout(() => {
           jumpToLineAndHighlight(lineNum, '');
         }, 100);
       });
     });
   }
-  
-  // Helper to set active report link
-  function setActiveReportLink(activeId) {
-    const reportLinks = ['logSummaryLink', 'bulkMapLink', 'bulkActivityLink', 'fileOperationsLink', 'issuesLink', 'performanceCockpitLink', 'releaseNotesLink'];
-    reportLinks.forEach(id => {
-      const link = document.getElementById(id);
-      if (link) {
-        if (id === activeId) {
-          link.classList.add('active');
-        } else {
-          link.classList.remove('active');
+
+  function getFilteredBatches(analysis) {
+    const all = analysis.batches || [];
+    const filters = window._bulkApplyBatchFilters;
+    if (!filters || filters.size === 0) return all;
+    return all.filter(b => batchMatchesReasonFilter(b, filters));
+  }
+
+  function renderBatchesTableBody(tbody, analysis) {
+    const batches = getFilteredBatches(analysis);
+    const total = batches.length;
+    const pageSize = BULK_APPLY_BATCH_PAGE_SIZE;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    let page = window._bulkApplyBatchPage || 1;
+    if (page > totalPages) {
+      page = totalPages;
+      window._bulkApplyBatchPage = page;
+    }
+    if (page < 1) {
+      page = 1;
+      window._bulkApplyBatchPage = page;
+    }
+
+    const start = (page - 1) * pageSize;
+    const pageBatches = batches.slice(start, start + pageSize);
+
+    if (pageBatches.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="report-empty-note">No batches match the selected filters.</td></tr>';
+      return { total, page, totalPages, start };
+    }
+
+    tbody.innerHTML = pageBatches.map((batch, idx) => {
+      const globalIdx = start + idx + 1;
+      const code = getBatchReasonCode(batch.finish_reason);
+      const rc = reasonBadgeClass(code);
+      const meta = BULK_CLOSURE_REASON_META[code];
+      const label = meta ? `${code} — ${meta.label}` : batch.finish_reason;
+      const tbls = batch.tables.length > 0
+        ? batch.tables.slice(0, 2).join(', ') + (batch.tables.length > 2 ? ` +${batch.tables.length - 2}` : '')
+        : 'N/A';
+      return `<tr><td class="report-td-index">${globalIdx}</td><td class="report-td-muted-mono">${batch.start_time || 'N/A'}</td><td>${batch.changes.toLocaleString()}</td><td>${batch.applies}</td><td><span class="batch-reason-badge batch-reason-${rc}" title="${label}">${batch.finish_reason}</span></td><td class="report-td-tables-col">${tbls}</td></tr>`;
+    }).join('');
+
+    return { total, page, totalPages, start };
+  }
+
+  function renderBatchesPagination(paginationEl, meta, analysis) {
+    const allCount = (analysis.batches || []).length;
+    const { total, page, totalPages } = meta;
+    const filters = window._bulkApplyBatchFilters;
+    const filterNote = filters && filters.size > 0
+      ? ` · filtered from ${allCount}`
+      : '';
+
+    paginationEl.innerHTML = `
+      <div class="pagination-controls bulk-apply-pagination">
+        <div class="pagination-center">
+          <button type="button" class="pagination-btn bulk-apply-page-btn" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Prev</button>
+          <span class="pagination-info">Page ${page} of ${totalPages} (${total} batch${total === 1 ? '' : 'es'}${filterNote})</span>
+          <button type="button" class="pagination-btn bulk-apply-page-btn" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button>
+        </div>
+      </div>`;
+
+    paginationEl.querySelectorAll('.bulk-apply-page-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nextPage = parseInt(btn.dataset.page, 10);
+        if (Number.isNaN(nextPage) || btn.disabled) return;
+        window._bulkApplyBatchPage = nextPage;
+        const tbody = document.getElementById('bulkApplyBatchesTbody');
+        const pag = document.getElementById('bulkApplyBatchesPagination');
+        if (tbody && pag) {
+          const newMeta = renderBatchesTableBody(tbody, analysis);
+          renderBatchesPagination(pag, newMeta, analysis);
         }
-      }
+      });
     });
   }
-  
-  // Switch to bulk map view in main area
-  window.showBulkMapInMain = function() {
-    // Hide all analysis views
-    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
-    document.getElementById('threadActivityControls').style.display = 'none';
-    
-    // Show bulk map view
-    const bulkMapView = document.getElementById('bulkMapMainView');
-    bulkMapView.style.display = 'block';
-    
-    // Set active report link
-    setActiveReportLink('bulkMapLink');
-    
-    // Render bulk map if data is available
-    if (window.bulkMapData) {
-      renderBulkMap(window.bulkMapData, null, window.bulkMapStats, window.bulkMapInsights);
-    }
-  };
-  
-  function fetchBulkActivity() {
-    if (!currentFileId) {
-      console.log('No file ID for bulk activity');
-      return;
-    }
-    
-    const bulkActivityLink = document.getElementById('bulkActivityLink');
-    const bulkActivityBadge = document.getElementById('bulkActivityBadge');
-    
-    if (!bulkActivityLink) {
-      console.log('Bulk activity link element not found');
-      return;
-    }
-    
-    console.log('Fetching bulk activity analysis...');
-    
-    fetch(`/api/files/${currentFileId}/bulk-activity`)
-      .then(res => {
-        console.log('Bulk activity response status:', res.status);
-        return res.json();
-      })
-      .then(analysis => {
-        console.log('Bulk activity analysis:', analysis);
-        
-        if (analysis.summary.total_batches === 0 && analysis.one_by_one.length === 0) {
-          console.log('No bulk activity data, hiding link');
-          bulkActivityLink.style.display = 'none';
-          return;
+
+  function renderReasonFilterChips(container, analysis) {
+    const filters = window._bulkApplyBatchFilters;
+    const allActive = !filters || filters.size === 0;
+
+    let html = '<div class="bulk-reason-filters"><span class="bulk-reason-filters-label">Filter batches:</span>';
+    html += `<button type="button" class="bulk-reason-filter-chip${allActive ? ' active' : ''}" data-reason="ALL">All</button>`;
+
+    REASON_FILTER_ORDER.forEach(code => {
+      const meta = code === 'PK'
+        ? { label: 'PK conflicts', color: '#8b5cf6' }
+        : BULK_CLOSURE_REASON_META[code];
+      if (!meta) return;
+      const isActive = code === 'PK'
+        ? filters && filters.has('PK')
+        : filters && filters.has(code);
+      const count = code === 'PK'
+        ? (analysis.bulk_finish_reasons?.PKi || 0) + (analysis.bulk_finish_reasons?.PKu || 0) + (analysis.bulk_finish_reasons?.PKd || 0)
+        : (analysis.bulk_finish_reasons?.[code] || 0);
+      if (code !== 'Normal' && count === 0 && code !== 'PK') return;
+      html += `<button type="button" class="bulk-reason-filter-chip${isActive ? ' active' : ''}" data-reason="${code}" style="--chip-color:${meta.color}">${meta.label || code}<span class="chip-count">${count}</span></button>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('.bulk-reason-filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const reason = chip.dataset.reason;
+        if (reason === 'ALL') {
+          window._bulkApplyBatchFilters = null;
+        } else {
+          if (!window._bulkApplyBatchFilters) window._bulkApplyBatchFilters = new Set();
+          if (window._bulkApplyBatchFilters.has(reason)) window._bulkApplyBatchFilters.delete(reason);
+          else window._bulkApplyBatchFilters.add(reason);
+          if (window._bulkApplyBatchFilters.size === 0) window._bulkApplyBatchFilters = null;
         }
-        
-        console.log('Showing bulk activity link with', analysis.summary.total_batches, 'batches');
-        bulkActivityLink.style.display = 'flex';
-        bulkActivityBadge.textContent = `(${analysis.summary.total_batches} batches)`;
-        
-        // Store analysis for later rendering
+        window._bulkApplyBatchPage = 1;
+        renderReasonFilterChips(container, analysis);
+        const tbody = document.getElementById('bulkApplyBatchesTbody');
+        const pag = document.getElementById('bulkApplyBatchesPagination');
+        if (tbody && pag) {
+          const meta = renderBatchesTableBody(tbody, analysis);
+          renderBatchesPagination(pag, meta, analysis);
+        }
+      });
+    });
+  }
+
+  function renderCloseReasonSummary(analysis) {
+    if (!analysis.bulk_finish_reasons || Object.keys(analysis.bulk_finish_reasons).length === 0) return '';
+
+    let chips = '<div class="report-detail-box"><div style="margin-bottom:4px;">Close Reasons <span class="bulk-reason-hint">(click a filter below to narrow batches)</span>:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
+    for (const [reason, count] of Object.entries(analysis.bulk_finish_reasons)) {
+      const meta = BULK_CLOSURE_REASON_META[reason] || { label: reason, color: 'var(--text-secondary)' };
+      const title = meta.desc ? `${meta.label}: ${meta.desc}` : meta.label;
+      chips += `<span class="report-reason-chip" title="${title}"><span style="color:${meta.color};font-weight:bold;">${reason}</span><span>${meta.chipLabel || meta.label}:</span><span class="chip-count">${count}</span></span>`;
+    }
+    chips += '</div></div>';
+    return chips;
+  }
+
+  function buildUnifiedTableList(perTableStats, bulkMapByTable) {
+    const allTableNames = new Set();
+    (perTableStats || []).forEach(stat => allTableNames.add(stat.table));
+    Object.keys(bulkMapByTable).forEach(table => allTableNames.add(table));
+
+    const unified = Array.from(allTableNames).map(tableName => {
+      const existingStat = (perTableStats || []).find(s => s.table === tableName);
+      return existingStat || { table: tableName, insert: 0, update: 0, delete: 0, total: 0 };
+    });
+
+    unified.sort((a, b) => (bulkMapByTable[b.table] || []).length - (bulkMapByTable[a.table] || []).length);
+    return unified;
+  }
+
+  function switchBulkApplyTab(tabName) {
+    window._bulkApplyActiveTab = tabName;
+    document.querySelectorAll('.bulk-apply-tab-btn').forEach(btn => {
+      btn.classList.toggle('bulk-apply-tab-active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.bulk-apply-tab-panel').forEach(panel => {
+      panel.classList.toggle('bulk-apply-tab-active', panel.dataset.tab === tabName);
+    });
+  }
+
+  window.switchBulkApplyTab = switchBulkApplyTab;
+
+  function renderBulkActivity(analysis, targetElement) {
+    const content = targetElement || document.getElementById('bulkActivityMainContent');
+    if (!content) return;
+    content.innerHTML = '';
+
+    const bulkMapByTable = buildBulkMapByTable(window.bulkMapData || []);
+    const insights = buildBulkApplyInsights(analysis);
+    const mapInsights = window.bulkMapInsights || [];
+    const stats = window.bulkMapStats;
+    const summary = analysis.summary || {};
+    const unifiedTables = buildUnifiedTableList(analysis.per_table_stats, bulkMapByTable);
+    const activeTab = window._bulkApplyActiveTab || 'overview';
+    const warnSvg = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg>';
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bulk-apply-report';
+
+    const header = document.createElement('div');
+    header.className = 'bulk-apply-report-title';
+    header.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 11a1 1 0 011-1h2a1 1 0 011 1v3a1 1 0 01-1 1H2a1 1 0 01-1-1v-3zM6 7a1 1 0 011-1h2a1 1 0 011 1v7a1 1 0 01-1 1H7a1 1 0 01-1-1V7zM11 3a1 1 0 011-1h2a1 1 0 011 1v11a1 1 0 01-1 1h-2a1 1 0 01-1-1V3z"/></svg><span>Bulk Apply</span>';
+    wrapper.appendChild(header);
+
+    const allInsights = [...insights, ...mapInsights];
+    if (allInsights.length > 0) {
+      const insightsDiv = document.createElement('div');
+      insightsDiv.innerHTML = renderInsightsHtml(allInsights);
+      wrapper.appendChild(insightsDiv);
+    }
+
+    const tabBar = document.createElement('div');
+    tabBar.className = 'bulk-apply-tab-bar';
+    const tabs = [
+      { id: 'overview', label: 'Overview', count: summary.total_batches || 0 },
+      { id: 'tables', label: 'Tables', count: unifiedTables.length },
+      { id: 'onebyone', label: 'One-by-One', count: analysis.one_by_one?.length || 0 }
+    ];
+    tabs.forEach(tab => {
+      if (tab.id === 'onebyone' && tab.count === 0) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bulk-apply-tab-btn';
+      btn.dataset.tab = tab.id;
+      btn.innerHTML = `${tab.label}<span class="bulk-apply-tab-count">${tab.count}</span>`;
+      btn.addEventListener('click', () => switchBulkApplyTab(tab.id));
+      tabBar.appendChild(btn);
+    });
+    wrapper.appendChild(tabBar);
+
+    // --- Overview panel ---
+    const overviewPanel = document.createElement('div');
+    overviewPanel.className = 'bulk-apply-tab-panel';
+    overviewPanel.dataset.tab = 'overview';
+
+    const avgChg = summary.total_batches > 0 ? Math.round(summary.total_changes / summary.total_batches) : 0;
+    let overviewHtml = `<div class="bulk-activity-section"><div class="bulk-section-label bulk-section-summary"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V3zM2 7a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V7zM2 11a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1v-1z"/></svg><span>Summary</span></div><div class="bulk-stats-grid"><div class="bulk-stat-item"><div class="bulk-stat-label">Total Batches</div><div class="bulk-stat-value">${summary.total_batches || 0}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Total Changes</div><div class="bulk-stat-value">${(summary.total_changes || 0).toLocaleString()}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Total Applies</div><div class="bulk-stat-value">${summary.total_applies || 0}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Avg/Batch</div><div class="bulk-stat-value">${avgChg}</div></div></div>`;
+
+    if (summary.one_by_one_switches > 0) {
+      overviewHtml += `<div class="bulk-stats-warning">${warnSvg}<span style="color:#f59e0b;font-weight:bold;">One-by-One</span><span>${summary.one_by_one_switches} switches</span></div>`;
+    }
+    if (summary.no_bulk_total > 0 || summary.no_pk_total > 0) {
+      overviewHtml += '<div class="bulk-stats-issues">';
+      if (summary.no_bulk_total > 0) overviewHtml += `<span style="color:#ef4444;display:flex;align-items:center;gap:4px;">${warnSvg}${summary.no_bulk_total} no-bulk</span>`;
+      if (summary.no_pk_total > 0) overviewHtml += `<span style="color:#ef4444;display:flex;align-items:center;gap:4px;">${warnSvg}${summary.no_pk_total} no-PK</span>`;
+      overviewHtml += '</div>';
+    }
+
+    overviewHtml += renderCloseReasonSummary(analysis);
+    if (analysis.bulk_finish_reasons && Object.keys(analysis.bulk_finish_reasons).length > 0) {
+      overviewHtml += renderClosureReasonBreakdown(analysis.bulk_finish_reasons, { title: 'Close Reason Mix' });
+    }
+
+    if (summary.file_operations_count > 0) {
+      const avgC = (summary.file_compress_time_total / summary.file_operations_count).toFixed(2);
+      const avgU = (summary.file_upload_time_total / summary.file_operations_count).toFixed(2);
+      const tot = (summary.file_compress_time_total + summary.file_upload_time_total).toFixed(2);
+      overviewHtml += `<div class="report-detail-box"><div style="margin-bottom:4px;">File Ops (${summary.file_operations_count}):</div><div style="display:flex;gap:12px;flex-wrap:wrap;"><span>Compress: <span style="color:#3b82f6;font-weight:bold;">${avgC}s</span></span><span>Upload: <span style="color:#10b981;font-weight:bold;">${avgU}s</span></span><span>Total: <span class="chip-count">${tot}s</span></span></div></div>`;
+    }
+    overviewHtml += '</div>';
+
+    overviewPanel.innerHTML = overviewHtml;
+
+    if (analysis.batches && analysis.batches.length > 0) {
+      const batchesSection = document.createElement('div');
+      batchesSection.className = 'bulk-activity-section';
+      batchesSection.innerHTML = `<div class="bulk-section-label bulk-section-batches"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 0a.5.5 0 01.5.5V1h8V.5a.5.5 0 011 0V1h1a2 2 0 012 2v11a2 2 0 01-2 2H2a2 2 0 01-2-2V3a2 2 0 012-2h1V.5a.5.5 0 01.5-.5zM2 2a1 1 0 00-1 1v1h14V3a1 1 0 00-1-1H2zm13 3H1v9a1 1 0 001 1h12a1 1 0 001-1V5z"/></svg><span>Batches (${analysis.batches.length})</span></div><div id="bulkApplyReasonFilters"></div><table class="bulk-activity-table"><thead><tr><th style="width:6%;">#</th><th style="width:18%;">Time</th><th style="width:12%;">Changes</th><th style="width:10%;">Applies</th><th style="width:14%;">Reason</th><th>Tables</th></tr></thead><tbody id="bulkApplyBatchesTbody"></tbody></table><div id="bulkApplyBatchesPagination"></div>`;
+      overviewPanel.appendChild(batchesSection);
+
+      const filterContainer = batchesSection.querySelector('#bulkApplyReasonFilters');
+      const tbody = batchesSection.querySelector('#bulkApplyBatchesTbody');
+      const paginationEl = batchesSection.querySelector('#bulkApplyBatchesPagination');
+      renderReasonFilterChips(filterContainer, analysis);
+      const meta = renderBatchesTableBody(tbody, analysis);
+      renderBatchesPagination(paginationEl, meta, analysis);
+    }
+
+    wrapper.appendChild(overviewPanel);
+
+    // --- Tables panel ---
+    const tablesPanel = document.createElement('div');
+    tablesPanel.className = 'bulk-apply-tab-panel';
+    tablesPanel.dataset.tab = 'tables';
+
+    if (unifiedTables.length === 0) {
+      tablesPanel.innerHTML = '<p class="placeholder-text-small">No per-table bulk map data found</p>';
+    } else {
+      let tablesHtml = '<div class="bulk-activity-section">';
+      if (stats && stats.total_operations > 0) {
+        const singlePctColor = stats.single_record_percent > 40 ? '#ef4444' : stats.single_record_percent > 20 ? '#f59e0b' : '#10b981';
+        tablesHtml += `<div class="report-stats-bar"><span>Ops: <span class="stat-val">${stats.total_operations}</span></span><span>Single (1:1): <span style="color:${singlePctColor};font-weight:bold;">${stats.single_record_operations} (${stats.single_record_percent}%)</span></span><span>Avg Batch: <span style="color:#3b82f6;font-weight:bold;">${stats.avg_batch_size} rec</span></span><span>Max: <span style="color:#10b981;font-weight:bold;">${stats.max_batch_size.toLocaleString()} rec</span></span><span>Avg Apply: <span class="stat-val">${stats.avg_gap_seconds}s</span></span></div>`;
+      }
+      tablesHtml += '<div class="bulk-table-picker"><label for="bulkApplyTableSelect">Table</label><select id="bulkApplyTableSelect" class="bulk-table-select"></select></div><div id="bulkApplyTablePanel"></div></div>';
+      tablesPanel.innerHTML = tablesHtml;
+
+      const select = tablesPanel.querySelector('#bulkApplyTableSelect');
+      unifiedTables.forEach(stat => {
+        const opCount = (bulkMapByTable[stat.table] || []).length;
+        const opt = document.createElement('option');
+        opt.value = stat.table;
+        opt.textContent = `${stat.table} (${opCount} ops)`;
+        select.appendChild(opt);
+      });
+
+      const panelEl = tablesPanel.querySelector('#bulkApplyTablePanel');
+      const renderSelectedTable = () => {
+        const tableName = select.value;
+        panelEl.innerHTML = renderBulkTableOperationsHtml(bulkMapByTable[tableName] || []);
+        attachBulkMapRowClickHandlers(panelEl);
+      };
+      select.addEventListener('change', renderSelectedTable);
+      renderSelectedTable();
+    }
+    wrapper.appendChild(tablesPanel);
+
+    // --- One-by-One panel ---
+    if (analysis.one_by_one && analysis.one_by_one.length > 0) {
+      const oboPanel = document.createElement('div');
+      oboPanel.className = 'bulk-apply-tab-panel';
+      oboPanel.dataset.tab = 'onebyone';
+      let oboHtml = `<div class="bulk-activity-section"><div class="bulk-section-label bulk-section-obo">${warnSvg}<span>One-by-One (${analysis.one_by_one.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:35%;">Table</th><th style="width:25%;">Start</th><th style="width:25%;">End</th><th style="width:15%;">Failed</th></tr></thead><tbody>`;
+      analysis.one_by_one.forEach(obo => {
+        const fc = obo.failed_executions > 0 ? '#ef4444' : '#10b981';
+        oboHtml += `<tr><td class="report-td-obo-table">${obo.table}</td><td class="report-td-muted-mono">${obo.start_time || 'N/A'}</td><td class="report-td-muted-mono">${obo.end_time || 'N/A'}</td><td style="color:${fc};">${obo.failed_executions}</td></tr>`;
+      });
+      oboHtml += '</tbody></table></div>';
+      oboPanel.innerHTML = oboHtml;
+      wrapper.appendChild(oboPanel);
+    }
+
+    if (!summary.total_batches && unifiedTables.length === 0 && !(analysis.one_by_one?.length)) {
+      content.innerHTML = '<p class="placeholder-text-small">No bulk apply data found</p>';
+      return;
+    }
+
+    content.appendChild(wrapper);
+    switchBulkApplyTab(activeTab);
+
+    window._tempFileOperations = analysis.file_operations;
+    window._tempFileOpsStats = analysis.file_ops_stats || null;
+    window._tempFileOpsInsights = analysis.file_ops_insights || [];
+  }
+
+  function fetchBulkMap() {
+    if (!currentFileId) return;
+
+    fetch(`/api/files/${currentFileId}/bulk-map?limit=500`)
+      .then(res => res.json())
+      .then(response => {
+        const messages = response.messages || response;
+        if (!messages || messages.length === 0) {
+          window.bulkMapData = null;
+          window.bulkMapStats = null;
+          window.bulkMapInsights = [];
+        } else {
+          window.bulkMapData = messages;
+          window.bulkMapStats = response.stats || null;
+          window.bulkMapInsights = response.insights || [];
+        }
+        refreshBulkApplyReportLink();
+        const view = document.getElementById('bulkActivityMainView');
+        if (view && view.style.display === 'block' && window.bulkActivityData) {
+          renderBulkActivity(window.bulkActivityData);
+        }
+      })
+      .catch(err => {
+        console.error('Failed to load bulk map:', err);
+        window.bulkMapData = null;
+        refreshBulkApplyReportLink();
+      });
+  }
+
+  function fetchBulkActivity() {
+    if (!currentFileId) return;
+
+    fetch(`/api/files/${currentFileId}/bulk-activity`)
+      .then(res => res.json())
+      .then(analysis => {
         window.bulkActivityData = analysis;
-        
-        // Show/hide file operations link based on whether there are file operations
+        refreshBulkApplyReportLink();
+
         const fileOpsLink = document.getElementById('fileOperationsLink');
         const fileOpsCount = document.getElementById('fileOperationsCount');
         if (fileOpsLink && analysis.file_operations && analysis.file_operations.length > 0) {
-          console.log('Showing file operations link with', analysis.file_operations.length, 'operations');
           fileOpsLink.style.display = 'flex';
           fileOpsCount.textContent = `(${analysis.file_operations.length})`;
           window._tempFileOperations = analysis.file_operations;
@@ -5626,505 +6048,300 @@ document.addEventListener("DOMContentLoaded", () => {
       })
       .catch(err => {
         console.error('Failed to load bulk activity:', err);
-        bulkActivityLink.style.display = 'none';
+        window.bulkActivityData = null;
+        refreshBulkApplyReportLink();
       });
   }
-  
-  function renderBulkActivity(analysis, targetElement) {
-    const bulkActivityContent = targetElement || document.getElementById('bulkActivityMainContent');
-    if (!bulkActivityContent) return;
-    
-    // Clear existing content first
-    bulkActivityContent.innerHTML = '';
-    
-    // Group bulk map data by table if available
-    const bulkMapByTable = {};
-    if (window.bulkMapData) {
-      window.bulkMapData.forEach(msg => {
-        const tableMatch = msg.text.match(/(?:INSERT|UPDATE|DELETE|MERGE)\s+'([^']+)'\.+'([^']+)'/);
-        if (tableMatch) {
-          const tableName = `${tableMatch[1]}.${tableMatch[2]}`;
-          if (!bulkMapByTable[tableName]) {
-            bulkMapByTable[tableName] = [];
-          }
-          
-          const seqMatch = msg.text.match(/seq\s+([\d:]+)/);
-          const operationMatch = msg.text.match(/\]\w:\s+bulk_map:\s+seq\s+[\d:]+\s+(\w+)/);
-          const timestampMatch = msg.text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-          
-          const seqParts = seqMatch ? seqMatch[1].split(':') : ['0'];
-          const seqStart = parseInt(seqParts[0]);
-          const seqEnd = seqParts[1] ? parseInt(seqParts[1]) : seqStart;
-          const rowCount = seqParts.length === 2 ? seqEnd - seqStart + 1 : 1;
-          
-          bulkMapByTable[tableName].push({
-            seq: seqMatch ? seqMatch[1] : 'N/A',
-            operation: operationMatch ? operationMatch[1] : 'MERGE',
-            timestamp: timestampMatch ? timestampMatch[1] : null,
-            line: msg.line,
-            text: msg.text,
-            gap_to_finish: msg.gap_to_finish,  // Gap from backend
-            rowCount: rowCount
-          });
-        }
-      });
-    }
-    
-    let html = '';
-    const summary = analysis.summary;
-    
-    // Generate Performance Insights for Bulk Activity
-    const bulkActivityInsights = [];
-    
-    // Insight: File operations efficiency correlation
-    if (analysis.file_operations && analysis.file_operations.length > 1) {
-      const fileOps = analysis.file_operations;
-      const sizes = fileOps.map(op => op.file_size);
-      const times = fileOps.map(op => op.upload_time);
-      
-      const avgSize = sizes.reduce((a, b) => a + b, 0) / sizes.length;
-      const avgTime = times.reduce((a, b) => a + b, 0) / times.length;
-      const minSize = Math.min(...sizes);
-      const maxSize = Math.max(...sizes);
-      const sizeRatio = maxSize / minSize;
-      
-      // Check for latency-dominated uploads
-      if (sizeRatio > 10) {
-        const smallest = fileOps.find(op => op.file_size === minSize);
-        const largest = fileOps.find(op => op.file_size === maxSize);
-        
-        if (smallest && largest) {
-          const timeRatio = largest.upload_time / smallest.upload_time;
-          if (timeRatio < 2) {
-            bulkActivityInsights.push({
-              type: 'file_upload_latency',
-              severity: 'warning',
-              title: 'Network Latency Dominates Upload Time',
-              message: `File sizes vary ${sizeRatio.toFixed(0)}x (${smallest.file_size_str} to ${largest.file_size_str}), but upload times are similar (~${avgTime.toFixed(1)}s). This indicates fixed network overhead is the bottleneck, not data transfer speed.`,
-              recommendation: 'Batch more changes together to reduce the number of file uploads and minimize the impact of connection overhead.'
-            });
-          }
-        }
-      }
-      
-      // Check if too many small batches
-      const smallBatches = analysis.batches ? analysis.batches.filter(b => b.changes < 100) : [];
-      if (smallBatches.length > analysis.batches?.length * 0.5) {
-        bulkActivityInsights.push({
-          type: 'many_small_batches',
-          severity: 'info',
-          title: 'Many Small Batches',
-          message: `${smallBatches.length} of ${analysis.batches.length} batches (${Math.round(smallBatches.length * 100 / analysis.batches.length)}%) contain fewer than 100 changes. Small batches increase file upload overhead.`,
-          recommendation: 'Review batch settings or consider if transaction patterns are causing frequent small commits.'
-        });
-      }
-    }
-    
-    // Insight: Frequent bulk finish reasons indicating issues
-    if (analysis.bulk_finish_reasons) {
-      const memoryFinishes = analysis.bulk_finish_reasons['MEM'] || 0;
-      const timeoutFinishes = (analysis.bulk_finish_reasons['TIM'] || 0) + (analysis.bulk_finish_reasons['TMO'] || 0);
-      const pkConflicts = (analysis.bulk_finish_reasons['PKi'] || 0) + 
-                          (analysis.bulk_finish_reasons['PKu'] || 0) + 
-                          (analysis.bulk_finish_reasons['PKd'] || 0);
-      
-      if (memoryFinishes > summary.total_batches * 0.1) {
-        bulkActivityInsights.push({
-          type: 'memory_pressure',
-          severity: 'warning',
-          title: 'Memory Pressure Detected',
-          message: `${memoryFinishes} batches (${Math.round(memoryFinishes * 100 / summary.total_batches)}%) closed due to memory limits. This forces smaller batches and more frequent file uploads.`,
-          recommendation: 'Consider increasing apply memory settings or reducing the number of tables in the task.'
-        });
-      }
-      
-      if (timeoutFinishes > summary.total_batches * 0.2) {
-        bulkActivityInsights.push({
-          type: 'timeout_batches',
-          severity: 'info',
-          title: 'Timeout-Triggered Batches',
-          message: `${timeoutFinishes} batches (${Math.round(timeoutFinishes * 100 / summary.total_batches)}%) closed due to timeout. This is normal for low-traffic periods but may indicate suboptimal batch interval settings.`,
-          recommendation: 'If timeouts are frequent during high-activity periods, consider adjusting batch timeout settings.'
-        });
-      }
-      
-      if (pkConflicts > 0) {
-        bulkActivityInsights.push({
-          type: 'pk_conflicts',
-          severity: 'warning',
-          title: 'Primary Key Conflicts',
-          message: `${pkConflicts} batches encountered PK conflicts requiring batch separation. This reduces efficiency.`,
-          recommendation: 'Review source transaction patterns or consider enabling change data coalescing.'
-        });
-      }
-    }
-    
-    // Insight: One-by-one mode
-    if (summary.one_by_one_switches > 0) {
-      bulkActivityInsights.push({
-        type: 'one_by_one',
-        severity: 'error',
-        title: 'One-by-One Processing Detected',
-        message: `${summary.one_by_one_switches} tables switched to one-by-one mode. This dramatically reduces apply performance.`,
-        recommendation: 'Check for constraint violations, data type mismatches, or target table issues causing bulk apply failures.'
-      });
-    }
-    
-    // Render Performance Insights - compact notices
-    if (bulkActivityInsights.length > 0) {
-      bulkActivityInsights.forEach(insight => {
-        const colors = { warning: '#f59e0b', info: '#3b82f6', error: '#ef4444' };
-        const c = colors[insight.severity] || colors.info;
-        html += `<div class="report-insight-row" style="border-left-color:${c}"><span style="color:${c};font-weight:600;white-space:nowrap;">${insight.title}:</span><span style="flex:1;">${insight.message}</span><span style="color:#10b981;cursor:help;" title="${insight.recommendation}">💡</span></div>`;
-      });
-    }
-    
-    // Summary Section
-    const avgChg = summary.total_batches > 0 ? Math.round(summary.total_changes / summary.total_batches) : 0;
-    html += `<div class="bulk-activity-section"><div style="margin:0 0 6px 0;font-size:0.7rem;color:#fbbf24;display:flex;align-items:center;gap:4px;"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V3zM2 7a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1V7zM2 11a1 1 0 011-1h10a1 1 0 011 1v1a1 1 0 01-1 1H3a1 1 0 01-1-1v-1z"/></svg><span>Summary</span></div><div class="bulk-stats-grid"><div class="bulk-stat-item"><div class="bulk-stat-label">Total Batches</div><div class="bulk-stat-value">${summary.total_batches}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Total Changes</div><div class="bulk-stat-value">${summary.total_changes.toLocaleString()}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Total Applies</div><div class="bulk-stat-value">${summary.total_applies}</div></div><div class="bulk-stat-item"><div class="bulk-stat-label">Avg/Batch</div><div class="bulk-stat-value">${avgChg}</div></div></div>`;
-    
-    const warnSvg = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 5zm0 8a1 1 0 100-2 1 1 0 000 2z"/></svg>';
-    
-    if (summary.one_by_one_switches > 0) {
-      html += `<div class="bulk-stats-warning">${warnSvg}<span style="color:#f59e0b;font-weight:bold;">One-by-One</span><span>${summary.one_by_one_switches} switches</span></div>`;
-    }
-    
-    if (summary.no_bulk_total > 0 || summary.no_pk_total > 0) {
-      html += '<div class="bulk-stats-issues">';
-      if (summary.no_bulk_total > 0) {
-        html += `<span style="color:#ef4444;display:flex;align-items:center;gap:4px;">${warnSvg}${summary.no_bulk_total} no-bulk</span>`;
-      }
-      if (summary.no_pk_total > 0) {
-        html += `<span style="color:#ef4444;display:flex;align-items:center;gap:4px;">${warnSvg}${summary.no_pk_total} no-PK</span>`;
-      }
-      html += '</div>';
-    }
-    
-    // Display bulk finish reasons
-    if (analysis.bulk_finish_reasons && Object.keys(analysis.bulk_finish_reasons).length > 0) {
-      const reasonLabels = {
-        'MEM': { label: 'Mem', color: '#ef4444' },
-        'TIM': { label: 'Stream TMO', color: '#f59e0b' },
-        'TMO': { label: 'Bulk TMO', color: '#f59e0b' },
-        'RES': { label: 'Resume', color: '#3b82f6' },
-        'SNG': { label: 'Single', color: '#10b981' },
-        'PKi': { label: 'PK-ins', color: '#8b5cf6' },
-        'PKu': { label: 'PK-upd', color: '#8b5cf6' },
-        'PKd': { label: 'PK-del', color: '#8b5cf6' },
-        'Normal': { label: 'Normal', color: '#10b981' }
-      };
-      let reasonsHtml = '<div class="report-detail-box"><div style="margin-bottom:4px;">Close Reasons:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
-      for (const [reason, count] of Object.entries(analysis.bulk_finish_reasons)) {
-        const info = reasonLabels[reason] || { label: reason, color: 'var(--text-secondary)' };
-        reasonsHtml += `<span class="report-reason-chip"><span style="color:${info.color};font-weight:bold;">${reason}</span><span>${info.label}:</span><span class="chip-count">${count}</span></span>`;
-      }
-      reasonsHtml += '</div></div>';
-      html += reasonsHtml;
-    }
-    
-    // Display file operations statistics
-    if (summary.file_operations_count && summary.file_operations_count > 0) {
-      const avgC = (summary.file_compress_time_total / summary.file_operations_count).toFixed(2);
-      const avgU = (summary.file_upload_time_total / summary.file_operations_count).toFixed(2);
-      const tot = (summary.file_compress_time_total + summary.file_upload_time_total).toFixed(2);
-      html += `<div class="report-detail-box"><div style="margin-bottom:4px;">File Ops (${summary.file_operations_count}):</div><div style="display:flex;gap:12px;flex-wrap:wrap;"><span>Compress: <span style="color:#3b82f6;font-weight:bold;">${avgC}s</span></span><span>Upload: <span style="color:#10b981;font-weight:bold;">${avgU}s</span></span><span>Total: <span class="chip-count">${tot}s</span></span></div></div>`;
-    }
-    
-    html += '</div>';
-    
-    // Batches Section
-    if (analysis.batches && analysis.batches.length > 0) {
-      html += `<div class="bulk-activity-section"><div style="margin:0 0 6px 0;font-size:0.7rem;color:#10b981;display:flex;align-items:center;gap:4px;"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 0a.5.5 0 01.5.5V1h8V.5a.5.5 0 011 0V1h1a2 2 0 012 2v11a2 2 0 01-2 2H2a2 2 0 01-2-2V3a2 2 0 012-2h1V.5a.5.5 0 01.5-.5zM2 2a1 1 0 00-1 1v1h14V3a1 1 0 00-1-1H2zm13 3H1v9a1 1 0 001 1h12a1 1 0 001-1V5z"/></svg><span>Batches (${analysis.batches.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:6%;">#</th><th style="width:18%;">Time</th><th style="width:12%;">Changes</th><th style="width:10%;">Applies</th><th style="width:14%;">Reason</th><th>Tables</th></tr></thead><tbody>`;
-      
-      analysis.batches.slice(0, 50).forEach((batch, idx) => {
-        const rc = batch.finish_reason === 'Normal' ? 'normal' : batch.finish_reason.includes('timeout') ? 'timeout' : 'memory';
-        const tbls = batch.tables.length > 0 ? batch.tables.slice(0, 2).join(', ') + (batch.tables.length > 2 ? ` +${batch.tables.length - 2}` : '') : 'N/A';
-        html += `<tr><td class="report-td-index">${idx + 1}</td><td class="report-td-muted-mono">${batch.start_time || 'N/A'}</td><td>${batch.changes.toLocaleString()}</td><td>${batch.applies}</td><td><span class="batch-reason-badge batch-reason-${rc}">${batch.finish_reason}</span></td><td class="report-td-tables-col">${tbls}</td></tr>`;
-      });
-      
-      html += '</tbody></table>';
-      if (analysis.batches.length > 50) {
-        html += `<p class="report-footnote">Showing 50 of ${analysis.batches.length}</p>`;
-      }
-      html += '</div>';
-    }
-    
-    // One-by-One Section
-    if (analysis.one_by_one && analysis.one_by_one.length > 0) {
-      html += `<div class="bulk-activity-section"><div style="margin:0 0 6px 0;font-size:0.7rem;color:#f59e0b;display:flex;align-items:center;gap:4px;">${warnSvg}<span>One-by-One (${analysis.one_by_one.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:35%;">Table</th><th style="width:25%;">Start</th><th style="width:25%;">End</th><th style="width:15%;">Failed</th></tr></thead><tbody>`;
-      
-      analysis.one_by_one.forEach(obo => {
-        const fc = obo.failed_executions > 0 ? '#ef4444' : '#10b981';
-        html += `<tr><td class="report-td-obo-table">${obo.table}</td><td class="report-td-muted-mono">${obo.start_time||'N/A'}</td><td class="report-td-muted-mono">${obo.end_time||'N/A'}</td><td style="color:${fc};">${obo.failed_executions}</td></tr>`;
-      });
-      
-      html += '</tbody></table></div>';
-    }
-    
-    // Store data for later processing
-    window._tempPerTableStats = analysis.per_table_stats;
-    window._tempBulkMapByTable = bulkMapByTable;
-    window._tempFileOperations = analysis.file_operations;
-    window._tempFileOpsStats = analysis.file_ops_stats || null;
-    window._tempFileOpsInsights = analysis.file_ops_insights || [];
-    
-    if (html === '') {
-      html = '<p class="placeholder-text-small">No bulk activity data found</p>';
-    }
-    
-    bulkActivityContent.innerHTML = html;
-    
-    // Create Per-Table Tabs section using new DOM-based approach
-    if ((window._tempPerTableStats && window._tempPerTableStats.length > 0) || (window._tempBulkMapByTable && Object.keys(window._tempBulkMapByTable).length > 0)) {
-      const perTableStats = window._tempPerTableStats || [];
-      const bulkMapByTable = window._tempBulkMapByTable || {};
-      
-      // Create a merged list of all tables from both per_table_stats and bulk_map
-      const allTableNames = new Set();
-      perTableStats.forEach(stat => allTableNames.add(stat.table));
-      Object.keys(bulkMapByTable).forEach(table => allTableNames.add(table));
-      
-      // Build a unified table list with stats
-      const unifiedTableStats = Array.from(allTableNames).map(tableName => {
-        const existingStat = perTableStats.find(s => s.table === tableName);
-        return existingStat || {
-          table: tableName,
-          insert: 0,
-          update: 0,
-          delete: 0,
-          total: 0
-        };
-      });
-      
-      // Sort by bulk map operations count (descending)
-      unifiedTableStats.sort((a, b) => {
-        const aCount = (bulkMapByTable[a.table] || []).length;
-        const bCount = (bulkMapByTable[b.table] || []).length;
-        return bCount - aCount;
-      });
-      
-      // Create section wrapper
-      const section = document.createElement('div');
-      section.className = 'bulk-activity-section';
-      
-      // Create header
-      const header = document.createElement('div');
-      header.style.cssText = 'margin:0 0 6px 0;font-size:0.7rem;color:#3b82f6;display:flex;align-items:center;gap:4px;';
-      header.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4zm2-1a1 1 0 00-1 1v1h10V4a1 1 0 00-1-1H4zM3 7v5a1 1 0 001 1h8a1 1 0 001-1V7H3z"/></svg><span>Table Details</span>';
-      section.appendChild(header);
-      
-      // Create tabs wrapper
-      const tabsWrapper = document.createElement('div');
-      tabsWrapper.className = 'ba-tabs-wrapper';
-      
-      // Create tabs header
-      const tabsHeader = document.createElement('div');
-      tabsHeader.className = 'ba-tabs-header';
-      tabsHeader.id = 'baTabsHeader';
-      
-      // Create panels container
-      const panelsContainer = document.createElement('div');
-      panelsContainer.className = 'ba-panels-container';
-      panelsContainer.id = 'baPanelsContainer';
-      
-      // Create tabs and panels
-      unifiedTableStats.forEach((stat, idx) => {
-        // Create tab button with bulk map operations count (not total changes)
-        const bulkMapForThisTable = bulkMapByTable[stat.table] || [];
-        const operationsCount = bulkMapForThisTable.length;
-        
-        const tabButton = document.createElement('button');
-        tabButton.className = `ba-tab-button ${idx === 0 ? 'ba-active' : ''}`;
-        tabButton.setAttribute('data-table', stat.table);
-        tabButton.innerHTML = `${stat.table.split('.')[1] || stat.table}<span class="ba-tab-count">${operationsCount.toLocaleString()}</span>`;
-        tabButton.addEventListener('click', () => switchBulkTableTab(stat.table));
-        tabsHeader.appendChild(tabButton);
-        
-        // Create panel
-        const panel = document.createElement('div');
-        panel.className = `ba-tab-panel ${idx === 0 ? 'ba-active' : ''}`;
-        panel.setAttribute('data-table', stat.table);
-        
-        // Calculate stats from bulk map data
-        const bulkMapForTable = bulkMapByTable[stat.table] || [];
-        const operationCounts = { INSERT: 0, UPDATE: 0, DELETE: 0, MERGE: 0 };
-        let singleRecordCount = 0;
-        bulkMapForTable.forEach(op => {
-          operationCounts[op.operation] = (operationCounts[op.operation] || 0) + 1;
-          if (op.rowCount === 1) {
-            singleRecordCount++;
-          }
-        });
-        
-        // Build panel content - include MERGE if present
-        const hasMerge = operationCounts.MERGE > 0;
-        const totOps = (operationCounts.INSERT + operationCounts.UPDATE + operationCounts.DELETE + operationCounts.MERGE).toLocaleString();
-        let panelHTML = `<div class="table-summary"><div class="table-summary-grid" style="grid-template-columns:repeat(${hasMerge ? 6 : 5},1fr);"><div class="table-summary-stat"><div class="table-summary-stat-label">INSERT</div><div class="table-summary-stat-value stat-insert">${operationCounts.INSERT.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">UPDATE</div><div class="table-summary-stat-value stat-update">${operationCounts.UPDATE.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">DELETE</div><div class="table-summary-stat-value stat-delete">${operationCounts.DELETE.toLocaleString()}</div></div>${hasMerge ? `<div class="table-summary-stat"><div class="table-summary-stat-label">MERGE</div><div class="table-summary-stat-value stat-merge">${operationCounts.MERGE.toLocaleString()}</div></div>` : ''}<div class="table-summary-stat"><div class="table-summary-stat-label">SINGLE</div><div class="table-summary-stat-value stat-single">${singleRecordCount.toLocaleString()}</div></div><div class="table-summary-stat"><div class="table-summary-stat-label">TOTAL</div><div class="table-summary-stat-value">${totOps}</div></div></div></div>`;
-        
-        if (bulkMapForTable.length > 0) {
-          panelHTML += `<div style="margin:6px 0 4px 0;font-size:0.65rem;color:#10b981;display:flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm2 1v2h2V4H4zm3 0v2h2V4H7zm3 0v2h2V4h-2zM4 7v2h2V7H4zm3 0v2h2V7H7zm3 0v2h2V7h-2zM4 10v2h2v-2H4zm3 0v2h2v-2H7zm3 0v2h2v-2h-2z"/></svg><span>Bulk Map (${bulkMapForTable.length})</span></div><table class="bulk-activity-table"><thead><tr><th style="width:20%;">Seq</th><th style="width:10%;">Recs</th><th style="width:13%;">Op</th><th style="width:16%;">Time</th><th style="width:10%;">Gap</th><th style="width:10%;">RPS</th><th style="width:21%;">Line</th></tr></thead><tbody>`;
-          
-          // Calculate gaps
-          const timeGaps = [];
-          bulkMapForTable.forEach((op) => {
-            if (op.gap_to_finish !== null && op.gap_to_finish !== undefined) {
-              timeGaps.push(op.gap_to_finish);
-            }
-          });
-          const avgGap = timeGaps.length > 0 ? timeGaps.reduce((a, b) => a + b, 0) / timeGaps.length : 0;
-          
-          // Render rows
-          bulkMapForTable.forEach((op) => {
-            const opClass = op.operation.toLowerCase();
-            let timeGap = op.gap_to_finish;
-            let gapClass = '';
-            let rps = null;
-            
-            if (timeGap !== null && timeGap !== undefined) {
-              if (timeGap > 0) {
-                rps = (op.rowCount / timeGap).toFixed(2);
-              }
-              
-              if (timeGap > avgGap && avgGap > 0) {
-                gapClass = 'gap-large';
-              } else if (timeGap < 0.5) {
-                gapClass = 'gap-small';
-              } else if (timeGap < 2) {
-                gapClass = 'gap-medium';
-              }
-            }
-            
-            const isSingleRecord = op.rowCount === 1;
-            const rowClass = isSingleRecord ? 'single-record-row' : '';
-            
-            const gapCellClass = gapClass === 'gap-large' ? 'report-td-gap-bad' : gapClass === 'gap-medium' ? 'report-td-gap-warn' : 'report-td-gap-good';
-            
-            panelHTML += `
-              <tr class="${gapClass} ${rowClass}" data-line="${op.line}" style="cursor: pointer;" title="Click to jump to log line ${op.line}">
-                <td class="report-td-mono">${op.seq}</td>
-                <td class="report-td-mono">${Math.round(op.rowCount).toLocaleString()}</td>
-                <td><span class="operation-badge operation-${opClass}">${op.operation}</span></td>
-                <td class="report-td-muted-mono">${op.timestamp ? op.timestamp.split('T')[1] : 'N/A'}</td>
-                <td class="${gapCellClass}">${timeGap ? '+' + timeGap.toFixed(2) + 's' : '-'}</td>
-                <td class="report-td-rps">${rps ? rps : '-'}</td>
-                <td class="report-td-line">${op.line}</td>
-              </tr>
-            `;
-          });
-          
-          panelHTML += `</tbody></table>`;
-        } else {
-          panelHTML += `<p class="report-empty-note">No bulk map data available for this table.</p>`;
-        }
-        
-        panel.innerHTML = panelHTML;
-        panelsContainer.appendChild(panel);
-      });
-      
-      // Assemble and append
-      tabsWrapper.appendChild(tabsHeader);
-      tabsWrapper.appendChild(panelsContainer);
-      section.appendChild(tabsWrapper);
-      bulkActivityContent.appendChild(section);
-      
-      // Clean up temp variables
-      delete window._tempPerTableStats;
-      delete window._tempBulkMapByTable;
-    }
-    
-    // Add click handlers for bulk map operations
-    bulkActivityContent.querySelectorAll('tbody tr[data-line]').forEach(row => {
-      row.addEventListener('click', () => {
-        const lineNum = parseInt(row.dataset.line);
-        
-        // Switch to Log View tab
-        const logViewTab = document.querySelector('.tab-btn[data-tab="log-tab"]');
-        if (logViewTab) logViewTab.click();
-        
-        showBulkMapNotification();
 
-        // Jump to the line
-        setTimeout(() => {
-          jumpToLineAndHighlight(lineNum, '');
-        }, 100);
-      });
-    });
-  }
-  
-  // Switch between bulk table tabs (for bulk activity) - new implementation
-  window.switchBulkTableTab = function(tableName) {
-    const tabsHeader = document.getElementById('baTabsHeader');
-    const panelsContainer = document.getElementById('baPanelsContainer');
-    
-    if (!tabsHeader || !panelsContainer) return;
-    
-    // Update tab buttons
-    const tabs = tabsHeader.querySelectorAll('.ba-tab-button');
-    tabs.forEach(tab => {
-      if (tab.getAttribute('data-table') === tableName) {
-        tab.classList.add('ba-active');
-      } else {
-        tab.classList.remove('ba-active');
-      }
-    });
-    
-    // Update panels
-    const panels = panelsContainer.querySelectorAll('.ba-tab-panel');
-    panels.forEach(panel => {
-      if (panel.getAttribute('data-table') === tableName) {
-        panel.classList.add('ba-active');
-      } else {
-        panel.classList.remove('ba-active');
-      }
-    });
+  window.renderClosureReasonLegendHtml = (reasons) => renderClosureReasonLegendHtml(false, reasons);
+  window.BULK_CLOSURE_REASON_META = BULK_CLOSURE_REASON_META;
+
+  window.showBulkMapInMain = function () {
+    window._bulkApplyActiveTab = 'tables';
+    window.showBulkActivityInMain();
   };
-  
-  // Switch between bulk map tabs (new implementation)
-  window.switchBulkMapTab = function(tableName) {
-    const tabsHeader = document.getElementById('bmTabsHeader');
-    const panelsContainer = document.getElementById('bmPanelsContainer');
-    
-    if (!tabsHeader || !panelsContainer) return;
-    
-    // Update tab buttons
-    const tabs = tabsHeader.querySelectorAll('.bm-tab-button');
-    tabs.forEach(tab => {
-      if (tab.getAttribute('data-table') === tableName) {
-        tab.classList.add('bm-active');
-      } else {
-        tab.classList.remove('bm-active');
-      }
-    });
-    
-    // Update panels
-    const panels = panelsContainer.querySelectorAll('.bm-tab-panel');
-    panels.forEach(panel => {
-      if (panel.getAttribute('data-table') === tableName) {
-        panel.classList.add('bm-active');
-      } else {
-        panel.classList.remove('bm-active');
-      }
-    });
-  };
-  
-  // Switch to bulk activity view in main area
-  window.showBulkActivityInMain = function() {
-    // Hide all analysis views
+
+  window.showBulkActivityInMain = function () {
     document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
-    document.getElementById('threadActivityControls').style.display = 'none';
-    
-    // Show bulk activity view
+    const controls = document.getElementById('threadActivityControls');
+    if (controls) controls.style.display = 'none';
+
     const bulkActivityView = document.getElementById('bulkActivityMainView');
-    bulkActivityView.style.display = 'block';
-    
-    // Set active report link
+    if (bulkActivityView) bulkActivityView.style.display = 'block';
+
     setActiveReportLink('bulkActivityLink');
-    
-    // Render bulk activity if data is available
+
     if (window.bulkActivityData) {
       renderBulkActivity(window.bulkActivityData);
+    } else if (window.bulkMapData) {
+      renderBulkActivity({ summary: {}, batches: [], one_by_one: [], per_table_stats: [], bulk_finish_reasons: {} });
     }
   };
+
+  function formatDurationSeconds(sec) {
+    if (sec == null || Number.isNaN(sec)) return '—';
+    const s = Math.abs(sec);
+    if (s < 60) return `${s.toFixed(1)}s`;
+    if (s < 3600) {
+      const m = Math.floor(s / 60);
+      const r = Math.round(s % 60);
+      return `${m}m ${r}s`;
+    }
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+
+  function formatBytesShort(bytes) {
+    if (bytes == null || bytes === 0) return '0';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let v = bytes;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
+  function flStatusBadge(status) {
+    const map = {
+      complete: { color: '#10b981', label: 'Complete' },
+      loading: { color: '#3b82f6', label: 'Loading' },
+      initializing: { color: '#8b5cf6', label: 'Initializing' },
+      reloading: { color: '#f59e0b', label: 'Reloading' },
+      error: { color: '#ef4444', label: 'Error' },
+    };
+    const m = map[status] || { color: '#6b7280', label: status || 'Unknown' };
+    return `<span class="fl-status-badge" style="color:${m.color};border-color:${m.color};">${m.label}</span>`;
+  }
+
+  function renderFullLoadInsights(insights) {
+    if (!insights || !insights.length) return '';
+    let html = '<div class="bulk-activity-section"><div class="bulk-section-label"><span>Insights</span></div>';
+    insights.forEach(ins => {
+      const color = ins.severity === 'error' ? '#ef4444' : ins.severity === 'warning' ? '#f59e0b' : '#3b82f6';
+      html += `<div class="report-detail-box" style="border-left:3px solid ${color};margin-bottom:8px;">`;
+      html += `<div style="font-weight:600;color:${color};margin-bottom:2px;">${ins.title || ins.type}</div>`;
+      html += `<div style="font-size:0.8rem;">${ins.message || ''}</div>`;
+      if (ins.recommendation) {
+        html += `<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px;">→ ${ins.recommendation}</div>`;
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function renderFullLoadSegmentRows(segments) {
+    if (!segments || !segments.length) {
+      return '<tr><td colspan="9" class="placeholder-text-small">No segment data</td></tr>';
+    }
+    const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString());
+    return segments.map(s => {
+      const split = s.split_predicate
+        ? `<div class="fl-split-pred" title="${String(s.split_predicate).replace(/"/g, '&quot;')}">${s.split_predicate}</div>`
+        : '—';
+      return `<tr class="fl-seg-row">
+        <td>#${s.segment_num}${s.segment_total ? `/${s.segment_total}` : ''}</td>
+        <td>${s.subtask ?? '—'}</td>
+        <td>${flStatusBadge(s.status)}</td>
+        <td class="report-td-muted-mono">${fmtNum(s.rows_sent)}</td>
+        <td class="report-td-muted-mono">${fmtNum(s.rows_received)}</td>
+        <td>${formatDurationSeconds(s.unload_duration_seconds)}</td>
+        <td>${formatDurationSeconds(s.gap_unload_to_load_seconds)}</td>
+        <td>${formatDurationSeconds(s.total_duration_seconds)}</td>
+        <td>${split}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderFullLoadActivity(report) {
+    const content = document.getElementById('fullLoadActivityMainContent');
+    if (!content) return;
+    content.innerHTML = '';
+
+    if (!report || (!report.available && !(report.tables && report.tables.length))) {
+      content.innerHTML = '<p class="placeholder-text-small">No full load activity found</p>';
+      return;
+    }
+
+    const summary = report.summary || {};
+    const tables = report.tables || [];
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bulk-apply-report full-load-report';
+
+    const header = document.createElement('div');
+    header.className = 'bulk-apply-report-title';
+    header.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 01.5.5v2.5a1 1 0 001 1h12a1 1 0 001-1v-2.5a.5.5 0 011 0v2.5a2 2 0 01-2 2H2a2 2 0 01-2-2v-2.5a.5.5 0 01.5-.5z"/><path d="M7.646 1.146a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 2.707V11.5a.5.5 0 01-1 0V2.707L5.354 4.854a.5.5 0 11-.708-.708l3-3z"/></svg><span>Full Load Activity</span>';
+    wrapper.appendChild(header);
+
+    const insightsHtml = renderFullLoadInsights(report.insights || []);
+    if (insightsHtml) {
+      const insightsDiv = document.createElement('div');
+      insightsDiv.innerHTML = insightsHtml;
+      wrapper.appendChild(insightsDiv);
+    }
+
+    let overviewHtml = `<div class="bulk-activity-section"><div class="bulk-section-label bulk-section-summary"><span>Summary</span></div>
+      <div class="bulk-stats-grid">
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Tables</div><div class="bulk-stat-value">${summary.tables_total || 0}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Loaded</div><div class="bulk-stat-value" style="color:#10b981;">${summary.tables_loaded || 0}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Loading</div><div class="bulk-stat-value" style="color:#3b82f6;">${summary.tables_loading || 0}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Failed / Reloads</div><div class="bulk-stat-value" style="color:${(summary.reload_events || 0) > 0 ? '#ef4444' : 'inherit'};">${summary.tables_failed || 0} / ${summary.reload_events || 0}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Rows Loaded</div><div class="bulk-stat-value">${(summary.total_rows_received || 0).toLocaleString()}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Volume</div><div class="bulk-stat-value">${formatBytesShort(summary.total_volume_transferred || 0)}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Max Segments</div><div class="bulk-stat-value">${summary.max_parallel_segments || 0}</div></div>
+        <div class="bulk-stat-item"><div class="bulk-stat-label">Duration</div><div class="bulk-stat-value">${formatDurationSeconds(summary.duration_seconds)}</div></div>
+      </div>`;
+    const flDone = summary.full_load_completed
+      ? '<span style="color:#10b981;">✓ Full Load Completed</span>'
+      : '<span style="color:#f59e0b;">○ Full Load Not Completed</span>';
+    overviewHtml += `<div class="report-detail-box" style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;">${flDone}`;
+    if (summary.running_mode) overviewHtml += `<span>Mode: <strong>${summary.running_mode}</strong></span>`;
+    if (summary.task_name) overviewHtml += `<span>Task: <strong>${summary.task_name}</strong></span>`;
+    overviewHtml += '</div></div>';
+
+    const overview = document.createElement('div');
+    overview.innerHTML = overviewHtml;
+    wrapper.appendChild(overview);
+
+    // Tables
+    const tablesSection = document.createElement('div');
+    tablesSection.className = 'bulk-activity-section';
+    tablesSection.innerHTML = `<div class="bulk-section-label"><span>Tables (${tables.length})</span></div>
+      <table class="bulk-activity-table fl-tables-table"><thead><tr>
+        <th style="width:3%;"></th>
+        <th>Table</th>
+        <th>Status</th>
+        <th>Segs</th>
+        <th>Rows</th>
+        <th>Volume</th>
+        <th>Unload</th>
+        <th>Max Gap</th>
+        <th>Duration</th>
+        <th>Attempts</th>
+      </tr></thead><tbody id="flTablesTbody"></tbody></table>`;
+    wrapper.appendChild(tablesSection);
+
+    const tbody = tablesSection.querySelector('#flTablesTbody');
+    tables.forEach((t, idx) => {
+      const tr = document.createElement('tr');
+      tr.className = 'fl-table-row';
+      tr.dataset.idx = String(idx);
+      const segsLabel = t.segmented
+        ? `${t.segments_complete || 0}/${t.segment_count || (t.segments || []).length}`
+        : '1';
+      tr.innerHTML = `
+        <td><button type="button" class="fl-expand-btn" aria-label="Expand">▸</button></td>
+        <td class="report-td-obo-table">${t.table_name || `${t.schema}.${t.table}`}</td>
+        <td>${flStatusBadge(t.status)}</td>
+        <td>${segsLabel}</td>
+        <td class="report-td-muted-mono">${(t.rows_received || 0).toLocaleString()}</td>
+        <td>${formatBytesShort(t.volume_transferred || 0)}</td>
+        <td>${formatDurationSeconds(t.unload_duration_seconds)}</td>
+        <td>${formatDurationSeconds(t.max_unload_to_load_gap_seconds)}</td>
+        <td>${formatDurationSeconds(t.duration_seconds)}</td>
+        <td>${t.attempts_total || 1}${(t.reload_count || 0) > 0 ? ` <span style="color:#ef4444;">(${t.reload_count} reload)</span>` : ''}</td>`;
+      tbody.appendChild(tr);
+
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'fl-detail-row';
+      detailTr.style.display = 'none';
+      const segs = t.segments || [];
+      const prior = t.prior_attempt_segments || [];
+      let detailHtml = `<td colspan="10"><div class="fl-segment-detail">
+        <div class="fl-detail-meta">Id=${t.table_id} · start ${t.init_start || t.load_start || '—'} · end ${t.load_end || '—'}</div>
+        <table class="bulk-activity-table fl-seg-table"><thead><tr>
+          <th>Seg</th><th>Subtask</th><th>Status</th><th>Sent</th><th>Recv</th><th>Unload</th><th>Gap</th><th>Total</th><th>Split</th>
+        </tr></thead><tbody>${renderFullLoadSegmentRows(segs)}</tbody></table>`;
+      if (prior.length) {
+        detailHtml += `<div class="fl-prior-label">Prior attempts (${prior.length} segment records)</div>
+          <table class="bulk-activity-table fl-seg-table fl-prior-segs"><thead><tr>
+            <th>Seg</th><th>Subtask</th><th>Status</th><th>Sent</th><th>Recv</th><th>Unload</th><th>Gap</th><th>Total</th><th>Split</th>
+          </tr></thead><tbody>${renderFullLoadSegmentRows(prior)}</tbody></table>`;
+      }
+      detailHtml += '</div></td>';
+      detailTr.innerHTML = detailHtml;
+      tbody.appendChild(detailTr);
+
+      const btn = tr.querySelector('.fl-expand-btn');
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = detailTr.style.display !== 'none';
+        detailTr.style.display = open ? 'none' : 'table-row';
+        btn.textContent = open ? '▸' : '▾';
+      });
+    });
+
+    content.appendChild(wrapper);
+  }
+
+  function refreshFullLoadReportLink() {
+    const link = document.getElementById('fullLoadActivityLink');
+    const badge = document.getElementById('fullLoadActivityBadge');
+    const data = window.fullLoadActivityData;
+    if (!link) return;
+    const tables = data?.tables?.length || 0;
+    const available = data?.available || tables > 0;
+    if (available) {
+      link.style.display = 'flex';
+      if (badge) badge.textContent = `(${tables})`;
+    } else {
+      link.style.display = 'none';
+    }
+  }
+
+  function fetchFullLoadActivity() {
+    if (!currentFileId) return;
+    fetch(`/api/files/${currentFileId}/full-load-activity`)
+      .then(res => res.json())
+      .then(report => {
+        window.fullLoadActivityData = report;
+        refreshFullLoadReportLink();
+        const view = document.getElementById('fullLoadActivityMainView');
+        if (view && view.style.display === 'block') {
+          renderFullLoadActivity(report);
+        }
+      })
+      .catch(err => {
+        console.error('Failed to load full load activity:', err);
+        window.fullLoadActivityData = null;
+        refreshFullLoadReportLink();
+      });
+  }
+
+  window.showFullLoadActivityInMain = function () {
+    document.querySelectorAll('.analysis-view').forEach(v => v.style.display = 'none');
+    const controls = document.getElementById('threadActivityControls');
+    if (controls) controls.style.display = 'none';
+
+    const view = document.getElementById('fullLoadActivityMainView');
+    if (view) view.style.display = 'block';
+    setActiveReportLink('fullLoadActivityLink');
+
+    if (window.fullLoadActivityData) {
+      renderFullLoadActivity(window.fullLoadActivityData);
+    } else {
+      const content = document.getElementById('fullLoadActivityMainContent');
+      if (content) content.innerHTML = '<p class="placeholder-text-small">Loading full load activity...</p>';
+      fetchFullLoadActivity();
+    }
+  };
+  // Helper to set active report link
+  function setActiveReportLink(activeId) {
+    const reportLinks = ['logSummaryLink', 'bulkActivityLink', 'fullLoadActivityLink', 'fileOperationsLink', 'issuesLink', 'performanceCockpitLink', 'releaseNotesLink'];
+    reportLinks.forEach(id => {
+      const link = document.getElementById(id);
+      if (link) {
+        if (id === activeId) {
+          link.classList.add('active');
+        } else {
+          link.classList.remove('active');
+        }
+      }
+    });
+  }
 
   // Switch to file operations view in main area
   window.showFileOperationsInMain = function() {
@@ -6492,6 +6709,12 @@ document.addEventListener("DOMContentLoaded", () => {
               <button class="font-size-btn" onclick="adjustFontSize('issues', 1)" title="Increase font size">A+</button>
             </div>
           </div>
+          <div class="issues-fts-search">
+            <input type="text" id="issueFtsInput" placeholder="Full-text search (keywords)..." onkeydown="if(event.key==='Enter')window.runFtsSearch()">
+            <button class="fts-search-btn" onclick="window.runFtsSearch()" title="Search">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/></svg>
+            </button>
+          </div>
           ${timelineHtml}
         </div>
         <div class="issues-list" id="issuesList">
@@ -6524,6 +6747,12 @@ document.addEventListener("DOMContentLoaded", () => {
             <button class="issue-resolve-icon-btn" onclick="event.stopPropagation(); window.openIssueResolution(${idx});" title="Get Resolution">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/>
+              </svg>
+            </button>
+            <button class="issue-resolve-icon-btn issue-related-btn" onclick="event.stopPropagation(); window.showRelatedContext(${idx}, ${issue.occurrences[0]?.line_number || 0});" title="Related Context">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6 3.5A1.5 1.5 0 017.5 2h1A1.5 1.5 0 0110 3.5v1A1.5 1.5 0 018.5 6h-1A1.5 1.5 0 016 4.5v-1zM1 8.5A1.5 1.5 0 012.5 7h1A1.5 1.5 0 015 8.5v1A1.5 1.5 0 013.5 11h-1A1.5 1.5 0 011 9.5v-1zm10 0A1.5 1.5 0 0112.5 7h1A1.5 1.5 0 0115 8.5v1a1.5 1.5 0 01-1.5 1.5h-1A1.5 1.5 0 0111 9.5v-1z"/>
+                <path d="M6.5 4.5h3M3 8.5V6.5a1 1 0 011-1h1.5M13 8.5V6.5a1 1 0 00-1-1h-1.5" stroke="currentColor" fill="none" stroke-width=".7"/>
               </svg>
             </button>
           </div>
@@ -6621,7 +6850,108 @@ document.addEventListener("DOMContentLoaded", () => {
       panel.classList.toggle('collapsed');
     }
   };
-  
+
+  // Show Related Context for an issue
+  window.showRelatedContext = function(issueIdx, lineNumber) {
+    if (!window.currentFileId || !lineNumber) return;
+    const panel = document.getElementById('issueResolutionPanel');
+    if (panel) {
+      panel.classList.remove('collapsed');
+      const inner = panel.querySelector('.issue-resolution-inner');
+      if (inner) inner.innerHTML = '<p style="padding:12px;opacity:0.7;">Loading related context...</p>';
+      const titleEl = document.getElementById('resolutionPanelTitle');
+      if (titleEl) titleEl.textContent = `Related Context (line ${lineNumber + 1})`;
+    }
+
+    fetch(`/api/files/${window.currentFileId}/issues/related?line_number=${lineNumber}`)
+      .then(r => r.json())
+      .then(result => {
+        const inner = panel ? panel.querySelector('.issue-resolution-inner') : null;
+        if (!inner) return;
+        const data = result.data || result;
+        if (result.status === 'weak' || !data.neighbors || data.neighbors.length === 0) {
+          inner.innerHTML = '<p style="padding:12px;opacity:0.6;">No strong structural neighbors found for this error.</p>';
+          return;
+        }
+        let html = '<div class="related-context-results">';
+        data.neighbors.forEach(n => {
+          const label = n.label || (n.line_number != null ? `Line ${n.line_number + 1}` : n.node_id);
+          const typeTag = n.type || n.edge_type || '';
+          const scoreStr = n.score != null ? ` (${(n.score * 100).toFixed(0)}%)` : '';
+          html += `<div class="related-item" ${n.line_number != null ? `onclick="window.scrollToLogLine(${n.line_number})" style="cursor:pointer"` : ''}>`;
+          html += `<span class="related-type-tag">${escapeHtml(typeTag)}</span>`;
+          html += `<span class="related-label">${escapeHtml(label)}${scoreStr}</span>`;
+          if (n.context_lines && n.context_lines.length > 0) {
+            html += `<div class="related-snippet">${n.context_lines.map(l => escapeHtml(l)).join('<br>')}</div>`;
+          }
+          html += '</div>';
+        });
+        if (data.findings && data.findings.length > 0) {
+          html += '<div class="related-findings-section"><strong>Saved Findings:</strong>';
+          data.findings.forEach(f => {
+            html += `<div class="related-item finding"><span class="related-type-tag">finding</span><span class="related-label">${escapeHtml(f.label)}</span></div>`;
+          });
+          html += '</div>';
+        }
+        html += '</div>';
+        inner.innerHTML = html;
+      })
+      .catch(err => {
+        const inner = panel ? panel.querySelector('.issue-resolution-inner') : null;
+        if (inner) inner.innerHTML = `<p style="padding:12px;color:#ef4444;">Error: ${err.message}</p>`;
+      });
+  };
+
+  // FTS Search
+  window.runFtsSearch = function() {
+    const input = document.getElementById('issueFtsInput');
+    if (!input || !input.value.trim() || !window.currentFileId) return;
+    const q = input.value.trim();
+    const issuesList = document.getElementById('issuesList');
+    if (!issuesList) return;
+
+    const originalContent = issuesList.innerHTML;
+    issuesList.innerHTML = '<p style="padding:12px;opacity:0.7;">Searching...</p>';
+
+    fetch(`/api/files/${window.currentFileId}/search/fts?q=${encodeURIComponent(q)}&limit=50`)
+      .then(r => r.json())
+      .then(result => {
+        if (!result.results || result.results.length === 0) {
+          issuesList.innerHTML = `<p style="padding:12px;opacity:0.6;">No matches for "<strong>${escapeHtml(q)}</strong>".</p>
+            <button class="fts-back-btn" onclick="window.clearFtsSearch()">Back to Issues</button>`;
+          window._ftsOriginalContent = originalContent;
+          return;
+        }
+        let html = `<div class="fts-results-header">
+          <span>${result.results.length} match${result.results.length !== 1 ? 'es' : ''} for "<strong>${escapeHtml(q)}</strong>"</span>
+          <button class="fts-back-btn" onclick="window.clearFtsSearch()">Back to Issues</button>
+        </div>`;
+        result.results.forEach(r => {
+          html += `<div class="fts-result-item" onclick="window.scrollToLogLine(${r.line_number})" style="cursor:pointer">
+            <span class="issue-line-number">${r.line_number + 1}</span>
+            <span class="fts-result-text">${escapeHtml(r.text)}</span>
+          </div>`;
+        });
+        issuesList.innerHTML = html;
+        window._ftsOriginalContent = originalContent;
+      })
+      .catch(err => {
+        issuesList.innerHTML = `<p style="padding:12px;color:#ef4444;">Search error: ${err.message}</p>
+          <button class="fts-back-btn" onclick="window.clearFtsSearch()">Back to Issues</button>`;
+        window._ftsOriginalContent = originalContent;
+      });
+  };
+
+  window.clearFtsSearch = function() {
+    const issuesList = document.getElementById('issuesList');
+    const input = document.getElementById('issueFtsInput');
+    if (issuesList && window._ftsOriginalContent) {
+      issuesList.innerHTML = window._ftsOriginalContent;
+      delete window._ftsOriginalContent;
+    }
+    if (input) input.value = '';
+  };
+
   // Format timeline time for display
   function formatTimelineTime(timestamp) {
     if (!timestamp) return '';
@@ -8262,8 +8592,13 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Header
     parts.push(`<div class="cockpit-container"><div class="cockpit-header"><h2 style="margin:0;display:flex;align-items:center;gap:6px;"><svg width="20" height="20" viewBox="0 0 16 16" fill="#8b5cf6"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 3.5a.5.5 0 011 0v4.793l2.354 2.353a.5.5 0 01-.708.708l-2.5-2.5A.5.5 0 017 8.5v-5z"/></svg>Performance Cockpit</h2><span class="data-points">${data.latency_profile?.data_points || 0} data points</span></div>`);
+
+    // Source Analysis first when present
+    if (data.source_analysis && (data.source_analysis.total_source_errors > 0 || data.source_analysis.total_reconnects > 0)) {
+      parts.push(`<div class="cockpit-section source-section-top"><h3>Source-Side Analysis</h3>${renderSourceAnalysis(data.source_analysis)}</div>`);
+    }
     
-    // Task Configuration (moved to top)
+    // Task Configuration
     if (data.config && Object.keys(data.config).length > 0) {
       parts.push(`<div class="cockpit-section config-section"><h3>Task Configuration</h3>${renderConfig(data.config)}</div>`);
     }
@@ -8281,7 +8616,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Batch Analysis
     const batchIssuesHtml = renderBatchIssues(data.batch_issues);
-    parts.push(`<div class="cockpit-section"><h3>Batch Behavior Analysis</h3><div class="batch-analysis-grid">${renderBatchAnalysis(data.batch_profile)}</div>${batchIssuesHtml}</div>`);
+    parts.push(`<div class="cockpit-section"><h3>Batch Behavior Analysis</h3>${renderBatchBehaviorSection(data.batch_profile)}${batchIssuesHtml}</div>`);
     
     // Pain Tables
     parts.push(`<div class="cockpit-section"><h3>Pain Tables (by performance impact)</h3>${renderPainTables(data.pain_tables)}</div>`);
@@ -8309,19 +8644,9 @@ document.addEventListener("DOMContentLoaded", () => {
       parts.push(`<div class="cockpit-section"><h3>CDC Pipeline Health</h3>${renderCDCPipeline(data.cdc_pipeline)}</div>`);
     }
     
-    // Source Analysis (conditional)
-    if (data.source_analysis && (data.source_analysis.total_source_errors > 0 || data.source_analysis.total_reconnects > 0)) {
-      parts.push(`<div class="cockpit-section"><h3>Source-Side Analysis</h3>${renderSourceAnalysis(data.source_analysis)}</div>`);
-    }
-    
     parts.push(`</div>`); // Close cockpit-container
     
     content.innerHTML = parts.join('');
-    
-    // Render charts if Plotly is available
-    if (data.batch_profile?.closure_reasons && Object.keys(data.batch_profile.closure_reasons).length > 0) {
-      renderClosureReasonChart(data.batch_profile.closure_reasons);
-    }
   }
   
   function renderBottleneckIndicator(bottleneck, latencyProfile) {
@@ -8403,63 +8728,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     html += '</div>';
     return html;
-  }
-  
-  function renderBatchAnalysis(batchProfile) {
-    if (!batchProfile || batchProfile.total_batches === 0) {
-      return '<p class="cockpit-empty-msg">No batch data</p>';
-    }
-    
-    const sz = batchProfile.size_stats || {};
-    const dur = batchProfile.duration_stats || {};
-    const warn = sz.single_record_pct > 20 ? ' warning' : '';
-    
-    return `<div class="batch-stat-card"><div class="batch-stat-value">${batchProfile.total_batches}</div><div class="batch-stat-label">Total Batches</div></div><div class="batch-stat-card"><div class="batch-stat-value">${sz.avg?.toFixed(1)||0}</div><div class="batch-stat-label">Avg Size</div></div><div class="batch-stat-card"><div class="batch-stat-value">${dur.avg?.toFixed(1)||0}s</div><div class="batch-stat-label">Avg Duration</div></div><div class="batch-stat-card${warn}"><div class="batch-stat-value">${sz.single_record_pct?.toFixed(1)||0}%</div><div class="batch-stat-label">Single-Record</div></div><div id="closureReasonChart" class="closure-reason-chart"></div>`;
-  }
-  
-  function renderClosureReasonChart(closureReasons) {
-    const chartDiv = document.getElementById('closureReasonChart');
-    if (!chartDiv || !window.Plotly) return;
-    
-    const labels = Object.keys(closureReasons);
-    const values = Object.values(closureReasons);
-    
-    const closureColors = {
-      'PKi': '#ef4444',
-      'PKu': '#f97316',
-      'PKd': '#f59e0b',
-      'MEM': '#8b5cf6',
-      'TIM': '#3b82f6',
-      'TMO': '#06b6d4',
-      'SNG': '#10b981',
-      'RES': '#84cc16',
-      'LOAD': '#6b7280',
-      'Normal': '#22c55e'
-    };
-    
-    const colors = labels.map(l => closureColors[l] || '#6b7280');
-    
-    const data = [{
-      type: 'pie',
-      values: values,
-      labels: labels,
-      marker: { colors: colors },
-      textinfo: 'label+percent',
-      textposition: 'inside',
-      hole: 0.4,
-      hoverinfo: 'label+value+percent'
-    }];
-    
-    const layout = {
-      paper_bgcolor: 'transparent',
-      plot_bgcolor: 'transparent',
-      font: { color: '#9ca3af', size: 9 },
-      margin: { t: 5, b: 5, l: 5, r: 5 },
-      showlegend: false,
-      height: 100
-    };
-    
-    Plotly.newPlot(chartDiv, data, layout, { displayModeBar: false });
   }
   
   function renderBatchIssues(issues) {
@@ -9176,8 +9444,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const unavailableReportDefs = {
     logSummaryLink:          { name: 'Log Summary',   reason: 'Log summary data could not be extracted from this log file' },
     performanceCockpitLink:  { name: 'Performance',   reason: 'No performance or latency data was found in this log file' },
-    bulkMapLink:             { name: 'Bulk Map',      reason: 'No bulk-map (Full Load table mapping) operations were detected in this log' },
-    bulkActivityLink:        { name: 'Bulk Activity',  reason: 'No bulk-load activity was detected in this log file' },
+    bulkActivityLink:        { name: 'Bulk Apply',    reason: 'No bulk apply batches or bulk-map operations were detected in this log' },
+    fullLoadActivityLink:    { name: 'Full Load',     reason: 'No full load table/segment activity was detected in this log' },
     fileOperationsLink:      { name: 'File Ops',      reason: 'No file-transfer operations were found in this log file' },
     issuesLink:              { name: 'Issues',        reason: 'No issues were detected, or the log has not been fully analyzed yet' },
     releaseNotesLink:        { name: 'Release Notes', reason: 'Task version could not be detected from the log, so release notes cannot be matched' },

@@ -252,7 +252,13 @@ class SavedFindingsManager {
                             </span>
                             ${sourceTag}
                             <span class="finding-date">${dateStr}</span>
-                            <button class="finding-delete-btn" data-finding-id="${finding.id}" title="Delete finding">
+                            <button type="button" class="finding-copy-btn" data-finding-id="${finding.id}" title="Copy finding text">
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                    <path d="M4 1.5H3a2 2 0 00-2 2V14a2 2 0 002 2h10a2 2 0 002-2V3.5a2 2 0 00-2-2h-1v1h1a1 1 0 011 1V14a1 1 0 01-1 1H3a1 1 0 01-1-1V3.5a1 1 0 011-1h1v-1z"/>
+                                    <path d="M9.5 1a.5.5 0 01.5.5v1a.5.5 0 01-.5.5h-3a.5.5 0 01-.5-.5v-1a.5.5 0 01.5-.5h3zm-3-1A1.5 1.5 0 005 1.5v1A1.5 1.5 0 006.5 4h3A1.5 1.5 0 0011 2.5v-1A1.5 1.5 0 009.5 0h-3z"/>
+                                </svg>
+                            </button>
+                            <button type="button" class="finding-delete-btn" data-finding-id="${finding.id}" title="Delete finding">
                                 ×
                             </button>
                         </div>
@@ -266,6 +272,22 @@ class SavedFindingsManager {
         
         container.innerHTML = html;
         
+        // Bind copy buttons
+        container.querySelectorAll('.finding-copy-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const findingId = btn.dataset.findingId;
+                const finding = this.findings.find(f => String(f.id) === findingId);
+                if (!finding) return;
+                const text = this._getFindingCopyText(finding);
+                if (!text) {
+                    if (window.showToast) window.showToast('Nothing to copy', 'error');
+                    return;
+                }
+                await this._copyTextToClipboard(text);
+            });
+        });
+
         // Bind delete buttons
         container.querySelectorAll('.finding-delete-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
@@ -299,8 +321,10 @@ class SavedFindingsManager {
             'analysis_report': 'Analysis',
             'analysis_insight': 'Analysis',
             'log_stats': 'Log Stats',
-            'bulk_map': 'Bulk Map',
-            'bulkMapMainView': 'Bulk Map',
+            'bulk_map': 'Bulk Apply',
+            'bulkMapMainView': 'Bulk Apply',
+            'bulkActivityMainView': 'Bulk Apply',
+            'fullLoadActivityMainView': 'Full Load Activity',
             'bulkActivityMainView': 'Bulk Activity',
             'fileOperationsMainView': 'File Operations',
             'performanceCockpitMainView': 'Performance',
@@ -631,6 +655,7 @@ class SavedFindingsManager {
                 const c = await cr.json();
                 const p = String(c.provider || '').toLowerCase();
                 if (p === 'lmstudio') hint = 'local model (LM Studio)';
+                else if (p === 'openai_api') hint = 'OpenAI API (local)';
                 else if (p === 'gemini') hint = 'Google Gemini';
                 else if (p === 'openrouter') hint = 'OpenRouter';
             }
@@ -1177,6 +1202,53 @@ class SavedFindingsManager {
         this._dragSrcEl = null;
     }
     
+    // ── Copy ─────────────────────────────────────────────────
+
+    _getFindingCopyText(finding) {
+        const parts = [];
+        if (finding.title) parts.push(String(finding.title).trim());
+
+        const meta = finding.metadata || {};
+        let body = '';
+        if (meta.content_format === 'html' && meta.content_html) {
+            body = this._htmlToPlainText(meta.content_html);
+        } else if (finding.content) {
+            body = String(finding.content).trim();
+        }
+        if (body) parts.push(body);
+
+        const metaParts = [];
+        if (finding.line_number) metaParts.push(`Line ${finding.line_number}`);
+        if (meta.severity) metaParts.push(String(meta.severity).toUpperCase());
+        if (meta.component) metaParts.push(String(meta.component));
+        if (metaParts.length) parts.push(metaParts.join(' · '));
+
+        return parts.join('\n\n').trim();
+    }
+
+    _htmlToPlainText(html) {
+        if (!html) return '';
+        const tmp = document.createElement('div');
+        tmp.innerHTML = sanitizeFindingHtml(html);
+        return (tmp.innerText || tmp.textContent || '').trim();
+    }
+
+    async _copyTextToClipboard(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            if (window.showToast) window.showToast('Copied to clipboard');
+        } catch {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;left:-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            if (window.showToast) window.showToast('Copied to clipboard');
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────
     
     escapeHtml(text) {

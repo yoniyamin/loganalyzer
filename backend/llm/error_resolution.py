@@ -174,6 +174,64 @@ def _safe_excerpt(text: Optional[str], limit: int = 1200) -> Optional[str]:
     return text[:limit] + "…"
 
 
+def _build_structural_facts(db: Session, file_id: int, line_number: Optional[int], max_tokens: int = 1500) -> Optional[str]:
+    """Build ranked, token-budgeted XML structural_facts from the graph neighborhood."""
+    if line_number is None:
+        return None
+    try:
+        from backend.core.graph import get_related_context, build_adjacency
+        from backend.core.graph_cache import load_cached_graph, save_graph_cache
+        from backend.core.context_ranker import (
+            rank_neighbors, deduplicate_facts, build_structural_facts_xml,
+        )
+        from backend.database import LogFile
+
+        graph, hit = load_cached_graph(db, file_id)
+        if not hit:
+            graph = build_adjacency(db, file_id)
+            save_graph_cache(db, file_id, graph)
+
+        result = get_related_context(db, file_id, line_number, max_hops=2, max_results=15, graph=graph)
+        if result.get("weak"):
+            return None
+
+        neighbors = result.get("neighbors", [])
+        if not neighbors:
+            return None
+
+        # Get total lines for temporal scoring
+        lf = db.query(LogFile).filter(LogFile.id == file_id).first()
+        total_lines = lf.line_count if lf else 1
+
+        # Rank → dedup → build XML
+        ranked = rank_neighbors(neighbors, line_number, total_lines)
+        deduped = deduplicate_facts(ranked)
+        xml = build_structural_facts_xml(deduped, line_number, max_tokens=max_tokens)
+        return xml
+    except Exception as e:
+        logger.debug("structural_facts build failed: %s", e)
+        return None
+
+
+def _effective_sanitize_log_for_llm(text: str) -> str:
+    """Sanitize log text before sending to cloud LLMs.
+
+    Strips: IP addresses, file paths with user dirs, long hex tokens, GUIDs.
+    Preserves: error codes, timestamps, table/column names, component names.
+    """
+    if not text:
+        return text
+    # Strip IP addresses
+    text = re.sub(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?\b', '[IP]', text)
+    # Strip Windows-style paths with usernames
+    text = re.sub(r'[A-Z]:\\Users\\[^\\]+\\', 'C:\\Users\\[USER]\\', text)
+    # Strip long hex tokens (>16 chars)
+    text = re.sub(r'\b[0-9a-fA-F]{16,}\b', '[TOKEN]', text)
+    # Strip GUIDs
+    text = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b', '[GUID]', text)
+    return text
+
+
 def resolve_issue(
     db: Session,
     file_id: int,
@@ -185,23 +243,35 @@ def resolve_issue(
     tavily_api_key: Optional[str] = None,
     full_error_text: Optional[str] = None,
     custom_query: Optional[str] = None,
+    line_number: Optional[int] = None,
+    sanitize_for_cloud: bool = True,
 ) -> Dict[str, Any]:
     """
-    Resolve an issue by aggregating KB, AI report snippet, and Tavily answer.
+    Resolve an issue by aggregating KB, AI report snippet, structural facts, and Tavily answer.
     """
     response: Dict[str, Any] = {
         "kb": {"matches": []},
         "ai_report": None,
         "tavily": None,
+        "structural_facts": None,
     }
 
     db_hint = _get_task_db_hint(db, file_id)
-    # Use custom query if provided, otherwise build from error details
     if custom_query:
         query = custom_query
     else:
         query = _build_query(message_summary, error_code, db_hint, component, full_error_text)
     response["query"] = query
+
+    # Structural facts from graph neighborhood
+    structural_facts = _build_structural_facts(db, file_id, line_number)
+    if structural_facts:
+        if sanitize_for_cloud:
+            structural_facts = _effective_sanitize_log_for_llm(structural_facts)
+        response["structural_facts"] = structural_facts
+        # Enrich query with structural context for better KB/search matching
+        if structural_facts and not custom_query:
+            query = query + " " + re.sub(r'<[^>]+>', ' ', structural_facts)[:150]
 
     # KB retrieval via dedicated KB collection (not log embeddings)
     try:

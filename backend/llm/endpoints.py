@@ -14,7 +14,7 @@ import logging
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
 from sqlalchemy import text
@@ -26,6 +26,13 @@ from backend.database import get_db, LLMConfig, LLMReport, LogFile, KBArticle
 from backend.llm.client import get_llm_client, set_api_key, DEFAULT_MODEL
 from backend.llm.gemini_client import get_gemini_client, set_gemini_api_key, DEFAULT_GEMINI_MODEL, GEMINI_MODELS
 from backend.llm.lmstudio_client import get_lmstudio_client, set_lmstudio_base_url, DEFAULT_LMSTUDIO_BASE_URL
+from backend.llm.openai_api_client import (
+    get_openai_api_client,
+    set_openai_api_base_url,
+    set_openai_api_key,
+    DEFAULT_OPENAI_API_BASE_URL,
+    DEFAULT_OPENAI_API_KEY,
+)
 from backend.llm.report_generator import ReportGenerator
 from backend.llm.vectorstore import get_vector_store
 from backend.llm.error_resolution import resolve_issue
@@ -40,6 +47,9 @@ logger = logging.getLogger(__name__)
 PROVIDER_GEMINI = "gemini"
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_LMSTUDIO = "lmstudio"
+PROVIDER_OPENAI_API = "openai_api"
+
+LOCAL_LLM_PROVIDERS = frozenset({PROVIDER_LMSTUDIO, PROVIDER_OPENAI_API})
 
 
 router = APIRouter(prefix="/llm", tags=["LLM"])
@@ -51,13 +61,17 @@ router = APIRouter(prefix="/llm", tags=["LLM"])
 
 class ConfigRequest(BaseModel):
     """Request to save LLM configuration."""
-    provider: Optional[str] = "gemini"  # "gemini", "openrouter", or "lmstudio"
+    provider: Optional[str] = "gemini"  # gemini, openrouter, lmstudio, or openai_api
     gemini_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
     lmstudio_base_url: Optional[str] = None       # LM Studio server URL
     lmstudio_temperature: Optional[float] = None  # 0.0–2.0, default 0.3
     lmstudio_max_tokens: Optional[int] = None     # response length cap, default 1500
+    openai_api_base_url: Optional[str] = None   # OpenAI-compatible local server URL
+    openai_api_key: Optional[str] = None          # optional placeholder key (e.g. flm)
+    openai_api_temperature: Optional[float] = None
+    openai_api_max_tokens: Optional[int] = None
     default_model: Optional[str] = None  # Report / insights model (provider-specific)
     compile_model: Optional[str] = None  # Findings compile-email model; empty = same as default_model
     web_search_enabled: Optional[bool] = None  # Enable web search in reports
@@ -76,6 +90,11 @@ class ConfigResponse(BaseModel):
     lmstudio_base_url: Optional[str] = None
     lmstudio_temperature: Optional[float] = None
     lmstudio_max_tokens: Optional[int] = None
+    openai_api_configured: bool = False
+    openai_api_base_url: Optional[str] = None
+    openai_api_temperature: Optional[float] = None
+    openai_api_max_tokens: Optional[int] = None
+    openai_api_key_preview: Optional[str] = None
     gemini_api_key_preview: Optional[str] = None
     openrouter_api_key_preview: Optional[str] = None
     tavily_configured: bool = False
@@ -157,6 +176,9 @@ class ReportResponse(BaseModel):
     kb_references: Optional[List[ReferenceItem]] = None
     release_notes_references: Optional[List[ReferenceItem]] = None
     focus_mode: Optional[str] = None
+    llm_duration_seconds: Optional[float] = None
+    generation_duration_seconds: Optional[float] = None
+    validation: Optional[dict] = None
 
 
 class ReportHistoryItem(BaseModel):
@@ -167,6 +189,9 @@ class ReportHistoryItem(BaseModel):
     completion_tokens: int
     cost_usd: float
     generated_at: datetime
+    llm_duration_seconds: Optional[float] = None
+    generation_duration_seconds: Optional[float] = None
+    focus_mode: Optional[str] = None
 
 
 class ReportHistoryResponse(BaseModel):
@@ -266,7 +291,7 @@ def _effective_compile_model(config: Optional[LLMConfig], provider: str) -> str:
         return str(report).strip()
     if provider == PROVIDER_GEMINI:
         return DEFAULT_GEMINI_MODEL
-    if provider == PROVIDER_LMSTUDIO:
+    if provider in LOCAL_LLM_PROVIDERS:
         return ""
     return DEFAULT_MODEL
 
@@ -286,6 +311,47 @@ def _ensure_lmstudio_column(db: Session):
                 db.commit()
             except Exception as e:
                 logger.warning("Failed to add %s column: %s", col, e)
+
+
+def _ensure_openai_api_column(db: Session):
+    """Ensure all openai_api_* columns exist."""
+    for col, ddl in [
+        ("openai_api_base_url", "ALTER TABLE llm_config ADD COLUMN openai_api_base_url VARCHAR"),
+        ("openai_api_key_encrypted", "ALTER TABLE llm_config ADD COLUMN openai_api_key_encrypted VARCHAR"),
+        ("openai_api_temperature", "ALTER TABLE llm_config ADD COLUMN openai_api_temperature REAL"),
+        ("openai_api_max_tokens", "ALTER TABLE llm_config ADD COLUMN openai_api_max_tokens INTEGER"),
+    ]:
+        try:
+            db.execute(text(f"SELECT {col} FROM llm_config LIMIT 1"))
+        except Exception:
+            try:
+                db.execute(text(ddl))
+                db.commit()
+            except Exception as e:
+                logger.warning("Failed to add %s column: %s", col, e)
+
+
+def _openai_api_settings(config: Optional[LLMConfig]) -> tuple:
+    """Return (base_url, api_key) for the OpenAI-compatible local client."""
+    stored_url = getattr(config, "openai_api_base_url", None) if config else None
+    base_url = stored_url or DEFAULT_OPENAI_API_BASE_URL
+    api_key = DEFAULT_OPENAI_API_KEY
+    if config and getattr(config, "openai_api_key_encrypted", None):
+        try:
+            decoded = _decode_api_key(config.openai_api_key_encrypted)
+            if decoded and decoded.strip():
+                api_key = decoded.strip()
+        except Exception:
+            pass
+    return base_url, api_key
+
+
+def _sync_openai_api_client(config: Optional[LLMConfig]):
+    """Apply stored OpenAI API settings to the singleton client."""
+    base_url, api_key = _openai_api_settings(config)
+    client = get_openai_api_client()
+    client.set_base_url(base_url)
+    client.set_api_key(api_key)
 
 
 def _ensure_sanitize_cloud_column(db: Session):
@@ -312,7 +378,7 @@ def _effective_sanitize_log_for_llm(db: Session) -> bool:
     if not config:
         return True
     prov = (config.provider or PROVIDER_GEMINI).strip().lower()
-    if prov == PROVIDER_LMSTUDIO:
+    if prov in LOCAL_LLM_PROVIDERS:
         return False
     raw = getattr(config, "sanitize_log_for_cloud_llm", True)
     if raw is None:
@@ -382,6 +448,7 @@ def get_config(db: Session = Depends(get_db)):
     """Get current LLM configuration status."""
     _ensure_tavily_column(db)
     _ensure_lmstudio_column(db)
+    _ensure_openai_api_column(db)
     _ensure_compile_model_column(db)
     _ensure_sanitize_cloud_column(db)
     config = db.query(LLMConfig).first()
@@ -396,6 +463,8 @@ def get_config(db: Session = Depends(get_db)):
             openrouter_configured=False,
             lmstudio_configured=False,
             lmstudio_base_url=DEFAULT_LMSTUDIO_BASE_URL,
+            openai_api_configured=False,
+            openai_api_base_url=DEFAULT_OPENAI_API_BASE_URL,
             tavily_configured=False,
             web_search_enabled=False,
             sanitize_log_for_cloud_llm=True,
@@ -409,10 +478,15 @@ def get_config(db: Session = Depends(get_db)):
     lmstudio_configured = bool(getattr(config, "lmstudio_base_url", None))
     stored_lmstudio_temperature = getattr(config, "lmstudio_temperature", None)
     stored_lmstudio_max_tokens = getattr(config, "lmstudio_max_tokens", None)
+    stored_openai_api_url = getattr(config, "openai_api_base_url", None) or DEFAULT_OPENAI_API_BASE_URL
+    openai_api_configured = bool(getattr(config, "openai_api_base_url", None))
+    stored_openai_api_temperature = getattr(config, "openai_api_temperature", None)
+    stored_openai_api_max_tokens = getattr(config, "openai_api_max_tokens", None)
 
     # Get API key previews
     gemini_preview = None
     openrouter_preview = None
+    openai_api_preview = None
     tavily_preview = None
     
     if gemini_configured:
@@ -429,6 +503,13 @@ def get_config(db: Session = Depends(get_db)):
         except Exception:
             openrouter_preview = "***"
     
+    if getattr(config, "openai_api_key_encrypted", None):
+        try:
+            openai_api_key = _decode_api_key(config.openai_api_key_encrypted)
+            openai_api_preview = _get_api_key_preview(openai_api_key)
+        except Exception:
+            openai_api_preview = "***"
+
     if tavily_configured and getattr(config, "tavily_api_key_encrypted", None):
         try:
             tavily_key = _decode_api_key(config.tavily_api_key_encrypted)
@@ -441,7 +522,8 @@ def get_config(db: Session = Depends(get_db)):
     is_configured = (
         (provider == PROVIDER_GEMINI and gemini_configured)
         or (provider == PROVIDER_OPENROUTER and openrouter_configured)
-        or (provider == PROVIDER_LMSTUDIO)  # LM Studio is always "configured" — no key needed
+        or (provider == PROVIDER_LMSTUDIO)
+        or (provider == PROVIDER_OPENAI_API)
     )
     
     stored_sanitize = getattr(config, "sanitize_log_for_cloud_llm", True)
@@ -461,6 +543,11 @@ def get_config(db: Session = Depends(get_db)):
         lmstudio_base_url=stored_lmstudio_url,
         lmstudio_temperature=stored_lmstudio_temperature,
         lmstudio_max_tokens=stored_lmstudio_max_tokens,
+        openai_api_configured=openai_api_configured,
+        openai_api_base_url=stored_openai_api_url,
+        openai_api_temperature=stored_openai_api_temperature,
+        openai_api_max_tokens=stored_openai_api_max_tokens,
+        openai_api_key_preview=openai_api_preview,
         gemini_api_key_preview=gemini_preview,
         openrouter_api_key_preview=openrouter_preview,
         tavily_configured=tavily_configured,
@@ -476,6 +563,7 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     """Save LLM configuration (API keys and preferences)."""
     _ensure_tavily_column(db)
     _ensure_lmstudio_column(db)
+    _ensure_openai_api_column(db)
     _ensure_compile_model_column(db)
     _ensure_sanitize_cloud_column(db)
     # Get or create config
@@ -517,6 +605,20 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         config.lmstudio_temperature = max(0.0, min(2.0, request.lmstudio_temperature))
     if request.lmstudio_max_tokens is not None:
         config.lmstudio_max_tokens = max(256, min(8192, request.lmstudio_max_tokens))
+
+    if request.openai_api_base_url is not None:
+        url = request.openai_api_base_url.strip() or DEFAULT_OPENAI_API_BASE_URL
+        config.openai_api_base_url = url
+        set_openai_api_base_url(url)
+    if request.openai_api_key is not None:
+        key = request.openai_api_key.strip()
+        if key:
+            config.openai_api_key_encrypted = _encode_api_key(key)
+            set_openai_api_key(key)
+    if request.openai_api_temperature is not None:
+        config.openai_api_temperature = max(0.0, min(2.0, request.openai_api_temperature))
+    if request.openai_api_max_tokens is not None:
+        config.openai_api_max_tokens = max(256, min(8192, request.openai_api_max_tokens))
 
     # Validate that selected provider has necessary configuration
     provider = request.provider or config.provider or PROVIDER_GEMINI
@@ -561,9 +663,14 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
     lmstudio_configured = bool(getattr(config, "lmstudio_base_url", None))
     stored_lmstudio_temperature = getattr(config, "lmstudio_temperature", None)
     stored_lmstudio_max_tokens = getattr(config, "lmstudio_max_tokens", None)
+    stored_openai_api_url = getattr(config, "openai_api_base_url", None) or DEFAULT_OPENAI_API_BASE_URL
+    openai_api_configured = bool(getattr(config, "openai_api_base_url", None))
+    stored_openai_api_temperature = getattr(config, "openai_api_temperature", None)
+    stored_openai_api_max_tokens = getattr(config, "openai_api_max_tokens", None)
 
     gemini_preview = None
     openrouter_preview = None
+    openai_api_preview = None
     tavily_preview = None
     
     if gemini_configured:
@@ -577,6 +684,14 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
             openrouter_preview = _get_api_key_preview(_decode_api_key(config.api_key_encrypted))
         except Exception:
             openrouter_preview = "***"
+
+    if getattr(config, "openai_api_key_encrypted", None):
+        try:
+            openai_api_preview = _get_api_key_preview(
+                _decode_api_key(config.openai_api_key_encrypted)
+            )
+        except Exception:
+            openai_api_preview = "***"
     
     if tavily_configured and getattr(config, "tavily_api_key_encrypted", None):
         try:
@@ -599,6 +714,11 @@ def save_config(request: ConfigRequest, db: Session = Depends(get_db)):
         lmstudio_base_url=stored_lmstudio_url,
         lmstudio_temperature=stored_lmstudio_temperature,
         lmstudio_max_tokens=stored_lmstudio_max_tokens,
+        openai_api_configured=openai_api_configured,
+        openai_api_base_url=stored_openai_api_url,
+        openai_api_temperature=stored_openai_api_temperature,
+        openai_api_max_tokens=stored_openai_api_max_tokens,
+        openai_api_key_preview=openai_api_preview,
         gemini_api_key_preview=gemini_preview,
         openrouter_api_key_preview=openrouter_preview,
         tavily_configured=tavily_configured,
@@ -616,6 +736,7 @@ def test_connection(
 ):
     """Test the API connection with the configured key."""
     _ensure_lmstudio_column(db)
+    _ensure_openai_api_column(db)
     config = db.query(LLMConfig).first()
     test_provider = provider or (config.provider if config else PROVIDER_GEMINI)
     
@@ -644,6 +765,14 @@ def test_connection(
             success=result["success"],
             message=result["message"],
             model_count=result.get("model_count")
+        )
+    elif test_provider == PROVIDER_OPENAI_API:
+        _sync_openai_api_client(config)
+        result = get_openai_api_client().test_connection()
+        return TestConnectionResponse(
+            success=result["success"],
+            message=result["message"],
+            model_count=result.get("model_count"),
         )
     else:
         _ensure_client_configured(db)
@@ -726,6 +855,7 @@ def get_models(
         refresh: If True, force refresh the model list from the API (OpenRouter only).
     """
     _ensure_lmstudio_column(db)
+    _ensure_openai_api_column(db)
     config = db.query(LLMConfig).first()
     use_provider = provider or (config.provider if config else PROVIDER_GEMINI)
     
@@ -773,6 +903,26 @@ def get_models(
                 )
                 for m in models
             ]
+        )
+    elif use_provider == PROVIDER_OPENAI_API:
+        _sync_openai_api_client(config)
+        models = get_openai_api_client().get_models()
+        return ModelsResponse(
+            provider=PROVIDER_OPENAI_API,
+            models=[
+                ModelInfo(
+                    id=m.id,
+                    name=m.name,
+                    description=m.description,
+                    context_length=m.context_length,
+                    prompt_price=0.0,
+                    completion_price=0.0,
+                    is_free=True,
+                    provider=PROVIDER_OPENAI_API,
+                    capabilities=[],
+                )
+                for m in models
+            ],
         )
     else:
         # Return OpenRouter models
@@ -856,12 +1006,14 @@ def get_report(
     except Exception:
         pass
 
+    from backend.llm.report_formatter import display_report_content
+
     return {
         "exists": True,
         "report_id": existing.id,
         "file_id": existing.file_id,
         "model_used": existing.model_used,
-        "report_content": existing.report_content,
+        "report_content": display_report_content(existing.report_content),
         "prompt_tokens": existing.prompt_tokens,
         "completion_tokens": existing.completion_tokens,
         "cost_usd": existing.cost_usd,
@@ -870,6 +1022,9 @@ def get_report(
         "chart_image_base64": chart_b64,
         "kb_references": kb_refs,
         "release_notes_references": rn_refs,
+        "llm_duration_seconds": getattr(existing, "llm_duration_seconds", None),
+        "generation_duration_seconds": getattr(existing, "generation_duration_seconds", None),
+        "focus_mode": getattr(existing, "focus_mode", None),
     }
 
 
@@ -936,6 +1091,9 @@ def generate_report(
                 chart_image_base64=cached_chart_b64,
                 kb_references=cached_kb,
                 release_notes_references=cached_rn,
+                llm_duration_seconds=getattr(existing, "llm_duration_seconds", None),
+                generation_duration_seconds=getattr(existing, "generation_duration_seconds", None),
+                focus_mode=getattr(existing, "focus_mode", None),
             )
     
     # Get default model if not specified
@@ -959,7 +1117,16 @@ def generate_report(
             web_search=request.web_search,
             focus_mode=request.focus_mode,
         )
-        logger.info(f"Report generated successfully for file_id={file_id}")
+        gen_dur = result.get("generation_duration_seconds")
+        llm_dur = result.get("llm_duration_seconds")
+        prep_dur = round(gen_dur - llm_dur, 2) if gen_dur and llm_dur else None
+        logger.info(
+            "Report generated successfully for file_id=%d in %.1fs (llm=%.1fs, prep=%.1fs)",
+            file_id,
+            gen_dur or 0,
+            llm_dur or 0,
+            prep_dur or 0,
+        )
     except GenerationCancelled:
         was_cancelled = True
         logger.info(f"Report generation cancelled for file_id={file_id}")
@@ -991,7 +1158,12 @@ def generate_report(
         completion_tokens=result["completion_tokens"],
         cost_usd=result["cost_usd"],
         report_content=result["report_content"],
-        generated_at=datetime.utcnow()
+        generated_at=datetime.utcnow(),
+        llm_duration_seconds=result.get("llm_duration_seconds"),
+        generation_duration_seconds=result.get("generation_duration_seconds"),
+        focus_mode=result.get("focus_mode"),
+        web_search=request.web_search,
+        quick=request.quick,
     )
     db.add(report)
     db.commit()
@@ -1010,7 +1182,10 @@ def generate_report(
         chart_image_base64=result.get("chart_image_base64"),
         kb_references=[ReferenceItem(**r) for r in result["kb_references"]] if result.get("kb_references") else None,
         release_notes_references=[ReferenceItem(**r) for r in result["release_notes_references"]] if result.get("release_notes_references") else None,
-        focus_mode=request.focus_mode,
+        focus_mode=report.focus_mode,
+        llm_duration_seconds=report.llm_duration_seconds,
+        generation_duration_seconds=report.generation_duration_seconds,
+        validation=result.get("validation"),
     )
 
 
@@ -1036,7 +1211,10 @@ def get_report_history(file_id: int, db: Session = Depends(get_db)):
                 prompt_tokens=r.prompt_tokens,
                 completion_tokens=r.completion_tokens,
                 cost_usd=r.cost_usd,
-                generated_at=r.generated_at
+                generated_at=r.generated_at,
+                llm_duration_seconds=getattr(r, "llm_duration_seconds", None),
+                generation_duration_seconds=getattr(r, "generation_duration_seconds", None),
+                focus_mode=getattr(r, "focus_mode", None),
             )
             for r in reports
         ],
@@ -1351,16 +1529,21 @@ def get_report_by_id(report_id: int, db: Session = Depends(get_db)):
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
     
+    from backend.llm.report_formatter import display_report_content
+
     return ReportResponse(
         report_id=report.id,
         file_id=report.file_id,
         model_used=report.model_used,
-        report_content=report.report_content,
+        report_content=display_report_content(report.report_content),
         prompt_tokens=report.prompt_tokens,
         completion_tokens=report.completion_tokens,
         cost_usd=report.cost_usd,
         generated_at=report.generated_at,
-        cached=True
+        cached=True,
+        llm_duration_seconds=getattr(report, "llm_duration_seconds", None),
+        generation_duration_seconds=getattr(report, "generation_duration_seconds", None),
+        focus_mode=getattr(report, "focus_mode", None),
     )
 
 
@@ -1409,7 +1592,11 @@ def export_report_docx(file_id: int, report_id: int, db: Session = Depends(get_d
     meta.add_run(f"Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
     meta.add_run(f"Tokens: {report.prompt_tokens:,} input / {report.completion_tokens:,} output\n")
     cost_str = "FREE" if report.cost_usd == 0 else f"${report.cost_usd:.4f}"
-    meta.add_run(f"Cost: {cost_str}")
+    meta.add_run(f"Cost: {cost_str}\n")
+    gen_dur = getattr(report, "generation_duration_seconds", None)
+    llm_dur = getattr(report, "llm_duration_seconds", None)
+    if gen_dur is not None:
+        meta.add_run(f"Generation time: {gen_dur:.1f}s (LLM: {llm_dur:.1f}s)" if llm_dur is not None else f"Generation time: {gen_dur:.1f}s")
     
     doc.add_paragraph()  # Spacer
     
@@ -1509,7 +1696,9 @@ def report_preflight(file_id: int, db: Session = Depends(get_db)):
         has_performance: whether latency/batch telemetry exists
         error_count / perf_sample_count: counts for UI display
     """
-    from backend.database import LogError, LogPerformance, LogBatch
+    from backend.database import (
+        LogError, LogPerformance, LogBatch, LogTaskConfig, LogLineMeta, LogTableStats,
+    )
 
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not file:
@@ -1518,16 +1707,37 @@ def report_preflight(file_id: int, db: Session = Depends(get_db)):
     error_count = db.query(LogError).filter(LogError.file_id == file_id).count()
     perf_count = db.query(LogPerformance).filter(LogPerformance.file_id == file_id).count()
     batch_count = db.query(LogBatch).filter(LogBatch.file_id == file_id).count()
+    warning_count = db.query(LogLineMeta).filter(
+        LogLineMeta.file_id == file_id,
+        LogLineMeta.severity == "W",
+    ).count()
+    has_task_config = db.query(LogTaskConfig).filter(
+        LogTaskConfig.file_id == file_id,
+    ).first() is not None
+    has_table_stats = db.query(LogTableStats).filter(
+        LogTableStats.file_id == file_id,
+    ).count() > 0
+    has_fl_activity = db.query(LogLineMeta).filter(
+        LogLineMeta.file_id == file_id,
+        LogLineMeta.component.in_(["SOURCE_UNLOAD", "TARGET_LOAD", "TABLES_MANAGER"]),
+    ).first() is not None
 
     has_errors = error_count > 0
-    has_performance = (perf_count > 0) or (batch_count > 0)
-    needs_focus = not has_errors and not has_performance
+    has_performance = (perf_count > 0) or (batch_count > 0) or has_table_stats
+    has_full_load = has_fl_activity
+    has_substantive_data = (
+        has_errors or has_performance or has_full_load or has_task_config
+    )
+    needs_focus = not has_substantive_data
 
     return {
         "needs_focus": needs_focus,
         "has_errors": has_errors,
         "has_performance": has_performance,
+        "has_full_load": has_full_load,
+        "has_task_config": has_task_config,
         "error_count": error_count,
+        "warning_count": warning_count,
         "perf_sample_count": perf_count,
         "batch_count": batch_count,
     }
@@ -1576,6 +1786,384 @@ def cancel_report_generation(file_id: int):
     set_progress(file_id, "cancelled", "Stopping model…")
     logger.info(f"Cancel requested for report generation file_id={file_id}")
     return {"success": True, "cancelled": True}
+
+
+# ============================================================
+# Prompt Lab Endpoints
+# ============================================================
+
+
+class PromptLabStatusResponse(BaseModel):
+    """Whether dev-gated prompt-lab compare is enabled on this server."""
+    compare_enabled: bool
+    flm_metrics: Optional[dict] = None
+
+
+@router.get("/prompt-lab/status", response_model=PromptLabStatusResponse)
+def prompt_lab_status():
+    """Return prompt-lab feature flags for the UI."""
+    from backend.llm.flm_metrics import get_flm_metrics
+
+    return PromptLabStatusResponse(
+        compare_enabled=_prompt_lab_enabled(),
+        flm_metrics=get_flm_metrics(),
+    )
+
+
+class ReportPromptPreviewRequest(BaseModel):
+    """Request to preview the report prompt without calling the LLM."""
+    quick: bool = False
+    web_search: bool = False
+    focus_mode: Optional[str] = None
+    include_chart: bool = False
+    fetch_external: bool = False
+    payload_format: Optional[str] = "markdown"
+    include_graph: bool = True
+
+
+class ReportPromptPreviewResponse(BaseModel):
+    """Response containing the full report prompt and metadata."""
+    prompt_text: str
+    est_tokens: int
+    context_stats: dict
+    provider: str
+    compact: bool
+    focus_mode: Optional[str] = None
+    web_search: bool = False
+    quick: bool = False
+    message_count: int
+    payload_format: str = "markdown"
+
+
+@router.post("/report/{file_id}/prompt-preview", response_model=ReportPromptPreviewResponse)
+def report_prompt_preview(
+    file_id: int,
+    request: ReportPromptPreviewRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Preview the complete report prompt that would be sent to the LLM.
+
+    Read-only — no LLM call is made. Uses the same build_report_messages()
+    path as real report generation for full parity.
+    """
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        generator = ReportGenerator(db)
+        bundle = generator.build_report_messages(
+            file_id,
+            quick=request.quick,
+            web_search=request.web_search,
+            focus_mode=request.focus_mode,
+            include_chart=request.include_chart,
+            fetch_external=request.fetch_external,
+            cancel_check=False,
+            payload_format=request.payload_format,
+            include_graph=request.include_graph,
+        )
+    except Exception as e:
+        logger.error(f"Prompt preview failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Prompt preview failed: {e}")
+
+    return ReportPromptPreviewResponse(
+        prompt_text=bundle.prompt_text,
+        est_tokens=bundle.est_tokens,
+        context_stats=bundle.context_stats,
+        provider=bundle.provider,
+        compact=bundle.compact,
+        focus_mode=bundle.focus_mode,
+        web_search=bundle.web_search,
+        quick=bundle.quick,
+        message_count=len(bundle.messages),
+        payload_format=bundle.payload_format,
+    )
+
+
+class CompareVariant(BaseModel):
+    """A single model variant to compare."""
+    provider: str  # gemini | openrouter | lmstudio | openai_api
+    model: Optional[str] = None
+    temperature: float = 0.3
+
+
+class ReportCompareRequest(BaseModel):
+    """Request to compare report output across models."""
+    baseline: CompareVariant
+    variants: List[CompareVariant] = []
+    quick: bool = False
+    web_search: bool = False
+    focus_mode: Optional[str] = None
+    include_chart: bool = False
+    fetch_external: bool = False
+    payload_format: Optional[str] = "markdown"
+    include_graph: bool = True
+    persist: bool = False
+    save_sample: bool = False
+
+
+class CompareRunResult(BaseModel):
+    """Result from a single compare run."""
+    provider: str
+    model: Optional[str] = None
+    temperature: float = 0.3
+    llm_duration_seconds: Optional[float] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    content_excerpt: str = ""
+    content: Optional[str] = None
+    error: Optional[str] = None
+    grade: Optional[dict] = None
+
+
+class ReportCompareResponse(BaseModel):
+    """Response from a multi-model compare run."""
+    file_id: int
+    baseline: CompareRunResult
+    variants: List[CompareRunResult]
+    prompt_est_tokens: int
+    prompt_text: Optional[str] = None
+    context_stats: Optional[dict] = None
+    compare_options: Optional[dict] = None
+    sample_path: Optional[str] = None
+
+
+def _prompt_lab_enabled() -> bool:
+    return os.environ.get("LOG_ANALYZER_PROMPT_LAB", "").strip() in ("1", "true", "yes")
+
+
+def _grade_compare_result(
+    run: CompareRunResult,
+    *,
+    db,
+    file_id: int,
+    bundle,
+    quick: bool,
+) -> CompareRunResult:
+    """Attach deterministic grader output to a compare run."""
+    if run.error or not (run.content or "").strip():
+        return run
+    from backend.llm.report_validator import build_validation_context, grade_llm_output
+
+    ctx = build_validation_context(db, file_id, bundle)
+    ctx.quick = quick
+    run.grade = grade_llm_output(
+        run.content,
+        ctx,
+        input_tokens=run.prompt_tokens or bundle.est_tokens,
+        output_tokens=run.completion_tokens,
+    )
+    return run
+
+
+def _run_single_compare(
+    generator: "ReportGenerator",
+    variant: CompareVariant,
+    messages: List[Dict[str, str]],
+    chart_image_data: Optional[bytes],
+    quick: bool,
+    file_id: int,
+) -> CompareRunResult:
+    """Execute a single LLM call for one compare variant."""
+    import time as _t
+    from backend.llm.client import get_llm_client
+    from backend.llm.gemini_client import get_gemini_client, DEFAULT_GEMINI_MODEL
+    from backend.llm.lmstudio_client import get_lmstudio_client, LMSTUDIO_DEFAULT_MAX_TOKENS
+    from backend.llm.openai_api_client import get_openai_api_client, OPENAI_API_DEFAULT_MAX_TOKENS
+
+    prov = variant.provider.strip().lower()
+    model = variant.model or ""
+    temp = variant.temperature
+    max_out = 800 if quick else 8192
+
+    try:
+        t0 = _t.perf_counter()
+        if prov == "gemini":
+            client = get_gemini_client()
+            if not model:
+                model = DEFAULT_GEMINI_MODEL
+            result = client.complete(
+                messages=messages, model=model, max_tokens=max_out,
+                temperature=temp, image_data=chart_image_data,
+            )
+        elif prov == "lmstudio":
+            client = get_lmstudio_client()
+            max_out = min(max_out, LMSTUDIO_DEFAULT_MAX_TOKENS)
+            result = client.complete(
+                messages=messages, model=model, max_tokens=max_out,
+                temperature=temp,
+            )
+        elif prov == "openai_api":
+            client = get_openai_api_client()
+            max_out = min(max_out, OPENAI_API_DEFAULT_MAX_TOKENS)
+            result = client.complete(
+                messages=messages, model=model, max_tokens=max_out,
+                temperature=temp,
+            )
+        elif prov == "openrouter":
+            client = get_llm_client()
+            result = client.complete(
+                messages=messages, model=model, max_tokens=max_out,
+                temperature=temp, image_data=chart_image_data,
+            )
+        else:
+            return CompareRunResult(
+                provider=prov, model=model, temperature=temp,
+                error=f"Unknown provider: {prov}",
+            )
+        dur = round(_t.perf_counter() - t0, 2)
+        content = result.content or ""
+        if content.strip():
+            from backend.llm.report_formatter import normalize_report_markdown
+
+            content, _ = normalize_report_markdown(content)
+        return CompareRunResult(
+            provider=prov, model=result.model or model, temperature=temp,
+            llm_duration_seconds=dur,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            cost_usd=result.cost_usd,
+            content_excerpt=content[:500],
+            content=content if _prompt_lab_enabled() else None,
+        )
+    except Exception as e:
+        return CompareRunResult(
+            provider=prov, model=model, temperature=temp,
+            error=str(e)[:300],
+        )
+
+
+@router.post("/report/{file_id}/compare", response_model=ReportCompareResponse)
+def report_compare(
+    file_id: int,
+    request: ReportCompareRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Run the same report prompt against multiple models for comparison.
+
+    Gated behind the LOG_ANALYZER_PROMPT_LAB=1 env var.
+    """
+    if not _prompt_lab_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Prompt lab is disabled. Set LOG_ANALYZER_PROMPT_LAB=1 to enable.",
+        )
+
+    if len(request.variants) > 5:
+        raise HTTPException(status_code=400, detail="Max 5 variants allowed")
+
+    file = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        generator = ReportGenerator(db)
+        bundle = generator.build_report_messages(
+            file_id,
+            quick=request.quick,
+            web_search=request.web_search,
+            focus_mode=request.focus_mode,
+            include_chart=request.include_chart,
+            fetch_external=request.fetch_external,
+            cancel_check=False,
+            payload_format=request.payload_format,
+            include_graph=request.include_graph,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prompt build failed: {e}")
+
+    # Run baseline
+    baseline_result = _run_single_compare(
+        generator, request.baseline, bundle.messages,
+        bundle.chart_image_data, request.quick, file_id,
+    )
+    baseline_result = _grade_compare_result(
+        baseline_result,
+        db=db,
+        file_id=file_id,
+        bundle=bundle,
+        quick=request.quick,
+    )
+
+    # Run variants
+    variant_results = []
+    for v in request.variants:
+        run = _run_single_compare(
+            generator, v, bundle.messages,
+            bundle.chart_image_data, request.quick, file_id,
+        )
+        variant_results.append(
+            _grade_compare_result(
+                run,
+                db=db,
+                file_id=file_id,
+                bundle=bundle,
+                quick=request.quick,
+            )
+        )
+
+    # Optional sample export
+    sample_path = None
+    if request.save_sample:
+        try:
+            import hashlib
+            from pathlib import Path
+            from datetime import datetime as _dt
+
+            samples_dir = Path("prompt_lab_samples")
+            samples_dir.mkdir(exist_ok=True)
+            stamp = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+            prompt_hash = hashlib.sha256(
+                bundle.prompt_text.encode("utf-8")
+            ).hexdigest()[:12]
+            fname = f"{file_id}_{stamp}_{prompt_hash}.json"
+            sample = {
+                "file_id": file_id,
+                "prompt_hash": prompt_hash,
+                "est_tokens": bundle.est_tokens,
+                "context_stats": bundle.context_stats,
+                "system_prompt_variant": "compact" if bundle.compact else "full",
+                "quick": request.quick,
+                "web_search": request.web_search,
+                "focus_mode": request.focus_mode,
+                "include_chart": request.include_chart,
+                "fetch_external": request.fetch_external,
+                "payload_format": request.payload_format,
+                "include_graph": request.include_graph,
+                "baseline": baseline_result.model_dump(),
+                "baseline_temperature": request.baseline.temperature,
+                "variants": [v.model_dump() for v in variant_results],
+                "variant_temperatures": [v.temperature for v in request.variants],
+            }
+            (samples_dir / fname).write_text(
+                json.dumps(sample, indent=2, default=str), encoding="utf-8"
+            )
+            sample_path = str(samples_dir / fname)
+        except Exception as e:
+            logger.warning(f"Failed to save compare sample: {e}")
+
+    return ReportCompareResponse(
+        file_id=file_id,
+        baseline=baseline_result,
+        variants=variant_results,
+        prompt_est_tokens=bundle.est_tokens,
+        prompt_text=bundle.prompt_text if _prompt_lab_enabled() else None,
+        context_stats=bundle.context_stats if _prompt_lab_enabled() else None,
+        compare_options={
+            "quick": request.quick,
+            "web_search": request.web_search,
+            "focus_mode": request.focus_mode,
+            "include_chart": request.include_chart,
+            "fetch_external": request.fetch_external,
+            "payload_format": request.payload_format,
+            "include_graph": request.include_graph,
+        },
+        sample_path=sample_path,
+    )
 
 
 # ============================================================
@@ -1667,6 +2255,13 @@ def export_report_docx(file_id: int, db: Session = Depends(get_db)):
     doc.add_paragraph(f"Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M:%S') if report.generated_at else 'Unknown'}")
     doc.add_paragraph(f"Model: {report.model_used}")
     doc.add_paragraph(f"Tokens: {report.prompt_tokens + report.completion_tokens} (Cost: ${report.cost_usd:.4f})")
+    gen_dur2 = getattr(report, "generation_duration_seconds", None)
+    llm_dur2 = getattr(report, "llm_duration_seconds", None)
+    if gen_dur2 is not None:
+        dur_text = f"Generation time: {gen_dur2:.1f}s"
+        if llm_dur2 is not None:
+            dur_text += f" (LLM: {llm_dur2:.1f}s)"
+        doc.add_paragraph(dur_text)
     doc.add_paragraph()
     
     # Parse markdown content and convert to Word
@@ -2528,7 +3123,7 @@ def save_finding(
     db: Session = Depends(get_db)
 ):
     """Save a finding (log line, Q/A thread, or custom note)."""
-    from backend.database import SavedFinding
+    from backend.database import SavedFinding, FileVersion
     import json
     
     # Check file exists
@@ -2546,6 +3141,11 @@ def save_finding(
         metadata_json=json.dumps(request.metadata) if request.metadata else None
     )
     db.add(finding)
+
+    fv = db.query(FileVersion).filter(FileVersion.file_id == request.file_id).first()
+    if fv:
+        fv.findings_epoch = (fv.findings_epoch or 0) + 1
+
     db.commit()
     db.refresh(finding)
     
@@ -2687,6 +3287,9 @@ def _compile_findings_email_with_llm(
             lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
             lmstudio = get_lmstudio_client()
             lmstudio.set_base_url(lmstudio_url)
+        elif provider == PROVIDER_OPENAI_API:
+            _sync_openai_api_client(config)
+            openai_api = get_openai_api_client()
         else:
             if not config.api_key_encrypted:
                 raise HTTPException(status_code=400, detail="OpenRouter API key not configured.")
@@ -2742,6 +3345,17 @@ def _compile_findings_email_with_llm(
                 cancel_file_id=file_id,
                 cancel_kind="compile",
             )
+        elif provider == PROVIDER_OPENAI_API:
+            oa_temp = getattr(config, "openai_api_temperature", None)
+            oa_max = getattr(config, "openai_api_max_tokens", None)
+            result = openai_api.complete(
+                messages=messages,
+                model=model,
+                max_tokens=oa_max if oa_max is not None else max_tokens,
+                temperature=oa_temp if oa_temp is not None else 0.3,
+                cancel_file_id=file_id,
+                cancel_kind="compile",
+            )
         else:
             result = openrouter.complete(
                 messages=messages,
@@ -2772,7 +3386,7 @@ def save_finding_from_thread(
     db: Session = Depends(get_db)
 ):
     """Save a Q/A thread as a finding."""
-    from backend.database import AIThread, SavedFinding
+    from backend.database import AIThread, SavedFinding, FileVersion
     import json
     
     thread = db.query(AIThread).filter(AIThread.id == thread_id).first()
@@ -2795,6 +3409,11 @@ def save_finding_from_thread(
         })
     )
     db.add(finding)
+
+    fv = db.query(FileVersion).filter(FileVersion.file_id == thread.file_id).first()
+    if fv:
+        fv.findings_epoch = (fv.findings_epoch or 0) + 1
+
     db.commit()
     db.refresh(finding)
     
@@ -2941,13 +3560,19 @@ def delete_finding(
     db: Session = Depends(get_db)
 ):
     """Delete a saved finding."""
-    from backend.database import SavedFinding
+    from backend.database import SavedFinding, FileVersion
     
     finding = db.query(SavedFinding).filter(SavedFinding.id == finding_id).first()
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
     
+    file_id = finding.file_id
     db.delete(finding)
+
+    fv = db.query(FileVersion).filter(FileVersion.file_id == file_id).first()
+    if fv:
+        fv.findings_epoch = (fv.findings_epoch or 0) + 1
+
     db.commit()
     
     return {"success": True, "message": "Finding deleted"}

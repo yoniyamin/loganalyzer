@@ -196,6 +196,10 @@ class LogVectorStore:
                 lines.append("\n## Recommendations")
                 for rec in data["recommendations"][:5]:  # Top 5
                     lines.append(f"- [{rec.get('priority', 'medium')}] {rec.get('title', '')}: {rec.get('description', '')}")
+
+            fl_nested = data.get("full_load_activity")
+            if fl_nested and fl_nested.get("available"):
+                lines.append(self._format_summary_for_embedding(fl_nested, "full_load_activity"))
         
         elif summary_type == "batch_analysis":
             if "batch_profile" in data:
@@ -212,6 +216,28 @@ class LogVectorStore:
                 lines.append(f"- Total errors: {es.get('total', 0)}")
                 if "by_component" in es:
                     lines.append(f"- By component: {json.dumps(es['by_component'])}")
+
+        elif summary_type == "full_load_activity":
+            fls = data.get("summary") or data
+            lines.append("\n## Full Load Activity")
+            lines.append(f"- Completed: {fls.get('full_load_completed', False)}")
+            lines.append(
+                f"- Tables: {fls.get('tables_total', 0)} total, "
+                f"{fls.get('tables_loaded', 0)} loaded, "
+                f"{fls.get('tables_loading', 0)} loading, "
+                f"{fls.get('tables_failed', 0)} failed"
+            )
+            lines.append(f"- Rows received: {fls.get('total_rows_received', 0)}")
+            lines.append(f"- Reload events: {fls.get('reload_events', 0)}")
+            lines.append(f"- Duration seconds: {fls.get('duration_seconds')}")
+            for t in (data.get("tables") or [])[:8]:
+                lines.append(
+                    f"- Table {t.get('table_name')}: status={t.get('status')}, "
+                    f"segs={t.get('segments_complete')}/{t.get('segment_count')}, "
+                    f"rows={t.get('rows_received')}, reloads={t.get('reload_count', 0)}"
+                )
+            for ins in (data.get("insights") or [])[:5]:
+                lines.append(f"- Insight [{ins.get('severity')}]: {ins.get('title')} — {ins.get('message')}")
         
         else:
             # Generic formatting for other types

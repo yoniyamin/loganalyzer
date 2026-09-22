@@ -111,6 +111,7 @@ class AIConfigModal {
                             <label for="aiProviderSelect">AI Provider</label>
                             <select id="aiProviderSelect" class="ai-select">
                                 <option value="lmstudio">LM Studio (local)</option>
+                                <option value="openai_api">OpenAI API (local)</option>
                                 <option value="gemini">Google Gemini</option>
                                 <option value="openrouter">OpenRouter</option>
                             </select>
@@ -160,6 +161,51 @@ class AIConfigModal {
                                     <div class="ai-param-group">
                                         <label for="aiLMStudioMaxTokens">Max Output Tokens</label>
                                         <input type="number" id="aiLMStudioMaxTokens" class="ai-input ai-param-input"
+                                               value="1500" min="256" max="4096" step="128" placeholder="1500">
+                                        <p class="ai-help-text">Response length cap. Higher = more detail, slower.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- OpenAI-compatible local server (e.g. FastFlowLM) -->
+                        <div class="ai-form-group ai-openai-api-section" id="openaiApiSection" style="display: none;">
+                            <label for="aiOpenAIApiUrl">OpenAI API Base URL</label>
+                            <div class="ai-input-wrapper">
+                                <input type="text" id="aiOpenAIApiUrl" class="ai-input"
+                                       value="http://127.0.0.1:52625/v1" placeholder="http://127.0.0.1:52625/v1" autocomplete="off">
+                            </div>
+                            <p class="ai-help-text">
+                                OpenAI-compatible endpoint for local servers (e.g. FastFlowLM: <code>flm serve &lt;model&gt;</code>).
+                                Include <code>/v1</code> or omit it — both work.
+                            </p>
+
+                            <label for="aiOpenAIApiKey" style="margin-top: 12px;">API Key (optional)</label>
+                            <div class="ai-input-wrapper">
+                                <input type="password" id="aiOpenAIApiKey" class="ai-input"
+                                       placeholder="flm" autocomplete="off">
+                                <button class="ai-toggle-visibility" id="aiToggleOpenAIApiKey" type="button">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p class="ai-help-text">
+                                Many local servers accept any placeholder (e.g. <code>flm</code>). Leave blank to use the default.
+                            </p>
+
+                            <div class="ai-lmstudio-params">
+                                <div class="ai-param-row">
+                                    <div class="ai-param-group">
+                                        <label for="aiOpenAIApiTemp">Temperature</label>
+                                        <input type="number" id="aiOpenAIApiTemp" class="ai-input ai-param-input"
+                                               value="0.3" min="0" max="2" step="0.05" placeholder="0.3">
+                                        <p class="ai-help-text">Lower = more focused. 0.1–0.4 recommended for reports.</p>
+                                    </div>
+                                    <div class="ai-param-group">
+                                        <label for="aiOpenAIApiMaxTokens">Max Output Tokens</label>
+                                        <input type="number" id="aiOpenAIApiMaxTokens" class="ai-input ai-param-input"
                                                value="1500" min="256" max="4096" step="128" placeholder="1500">
                                         <p class="ai-help-text">Response length cap. Higher = more detail, slower.</p>
                                     </div>
@@ -243,7 +289,7 @@ class AIConfigModal {
                         <!-- Mandatory log sanitization (cloud only — LM Studio hides this block) -->
                         <div class="ai-sanitize-mandatory-notice" id="aiCloudSanitizeNotice">
                             <strong>Log sanitization is required</strong> for Google Gemini and OpenRouter. Identifiers are redacted before any log-derived content is sent to the cloud. This is always on for these providers and cannot be turned off.
-                            <br><span style="color: var(--text-muted, #585b70);">LM Studio runs locally and does not use this cloud sanitization path.</span>
+                            <br><span style="color: var(--text-muted, #585b70);">LM Studio and OpenAI API (local) run on your machine and do not use this cloud sanitization path.</span>
                         </div>
 
                         <!-- Web Search Option -->
@@ -285,7 +331,7 @@ class AIConfigModal {
                                 <h3>Sanitization Rules</h3>
                                 <p class="ai-sanitization-desc">
                                     For <strong>Google Gemini</strong> and <strong>OpenRouter</strong>, log-derived content is always sanitized before it is sent to the model (required; cannot be disabled).
-                                    <strong>LM Studio</strong> runs locally and does not use this cloud sanitization path for prompts.
+                                    <strong>LM Studio</strong> and <strong>OpenAI API (local)</strong> run on your machine and do not use this cloud sanitization path for prompts.
                                     KB articles are never modified.
                                     Embeddings in the vector index are still sanitized to protect stored chunks.
                                     Use this tab to preview rules and test samples.
@@ -314,13 +360,21 @@ class AIConfigModal {
                     </div>
                     
                     <div class="ai-modal-footer">
-                        <button class="ai-btn ai-btn-secondary" id="aiTestConnection">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                                <polyline points="22 4 12 14.01 9 11.01"/>
-                            </svg>
-                            Test Connection
-                        </button>
+                        <div class="ai-modal-footer-left">
+                            <button class="ai-btn ai-btn-secondary" id="aiTestConnection">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                    <polyline points="22 4 12 14.01 9 11.01"/>
+                                </svg>
+                                Test Connection
+                            </button>
+                            <button type="button" class="ai-btn ai-btn-secondary" id="aiOpenPromptLabBtn" title="Inspect report prompts and compare models">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                    <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/>
+                                </svg>
+                                Prompt Lab…
+                            </button>
+                        </div>
                         <div style="display: flex; gap: 8px;">
                             <button class="ai-btn ai-btn-secondary" id="aiCancelBtn">Cancel</button>
                             <button class="ai-btn ai-btn-primary" id="aiSaveBtn">
@@ -403,6 +457,12 @@ class AIConfigModal {
             input.type = isPassword ? 'text' : 'password';
         });
 
+        document.getElementById('aiToggleOpenAIApiKey').addEventListener('click', () => {
+            const input = document.getElementById('aiOpenAIApiKey');
+            const isPassword = input.type === 'password';
+            input.type = isPassword ? 'text' : 'password';
+        });
+
         // Toggle password visibility - Tavily
         document.getElementById('aiToggleTavilyKey').addEventListener('click', () => {
             const input = document.getElementById('aiTavilyKey');
@@ -433,6 +493,12 @@ class AIConfigModal {
         document.getElementById('aiTestConnection').addEventListener('click', () => {
             this.testConnection();
         });
+
+        document.getElementById('aiOpenPromptLabBtn')?.addEventListener('click', () => {
+            if (window.promptLabModal) {
+                window.promptLabModal.open();
+            }
+        });
         
         // Save
         document.getElementById('aiSaveBtn').addEventListener('click', () => {
@@ -440,6 +506,11 @@ class AIConfigModal {
         });
     }
     
+    _isLocalProvider(provider = this.selectedProvider) {
+        const p = (provider || '').toLowerCase();
+        return p === 'lmstudio' || p === 'openai_api';
+    }
+
     switchProvider(provider) {
         this.selectedProvider = provider;
 
@@ -461,10 +532,11 @@ class AIConfigModal {
         document.getElementById('geminiSection').style.display = provider === 'gemini' ? 'block' : 'none';
         document.getElementById('openrouterSection').style.display = provider === 'openrouter' ? 'block' : 'none';
         document.getElementById('lmstudioSection').style.display = provider === 'lmstudio' ? 'block' : 'none';
+        document.getElementById('openaiApiSection').style.display = provider === 'openai_api' ? 'block' : 'none';
         document.getElementById('customModelSection').style.display = provider === 'openrouter' ? 'block' : 'none';
         const cloudExtras = document.getElementById('aiCloudExtras');
         if (cloudExtras) {
-            cloudExtras.style.display = provider === 'lmstudio' ? 'none' : 'block';
+            cloudExtras.style.display = this._isLocalProvider(provider) ? 'none' : 'block';
         }
     }
     
@@ -494,6 +566,18 @@ class AIConfigModal {
                 if (this.currentConfig.lmstudio_max_tokens != null) {
                     const maxTokInput = document.getElementById('aiLMStudioMaxTokens');
                     if (maxTokInput) maxTokInput.value = this.currentConfig.lmstudio_max_tokens;
+                }
+                if (this.currentConfig.openai_api_base_url) {
+                    const oaUrl = document.getElementById('aiOpenAIApiUrl');
+                    if (oaUrl) oaUrl.value = this.currentConfig.openai_api_base_url;
+                }
+                if (this.currentConfig.openai_api_temperature != null) {
+                    const oaTemp = document.getElementById('aiOpenAIApiTemp');
+                    if (oaTemp) oaTemp.value = this.currentConfig.openai_api_temperature;
+                }
+                if (this.currentConfig.openai_api_max_tokens != null) {
+                    const oaMax = document.getElementById('aiOpenAIApiMaxTokens');
+                    if (oaMax) oaMax.value = this.currentConfig.openai_api_max_tokens;
                 }
                 this.updateStatusDisplay();
                 await this.loadModels();
@@ -640,6 +724,9 @@ class AIConfigModal {
                 lmLoadHint = loaded
                     ? `<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#22c55e;font-weight:500;">Status: loaded in LM Studio — ready for ${taskHint}.</div>`
                     : `<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#f59e0b;">Status: not loaded — LM Studio will load this model on first ${taskHint} request.</div>`;
+            } else if (this.selectedProvider === 'openai_api') {
+                const taskHint = target === 'compile' ? 'compile email' : 'insights reports';
+                lmLoadHint = `<div class="model-lm-load-hint" style="margin-top:8px;font-size:0.78rem;color:#22c55e;font-weight:500;">Local OpenAI API model — ready for ${taskHint} when the server is running.</div>`;
             }
             
             infoDiv.innerHTML = `
@@ -669,6 +756,7 @@ class AIConfigModal {
                 { icon: '✨', ok: false, title: 'Gemini API key not saved', mark: '−' },
                 { icon: '🔀', ok: false, title: 'OpenRouter API key not saved', mark: '−' },
                 { icon: '🖥️', ok: true, title: 'LM Studio — local inference (no cloud API key)', mark: '✓' },
+                { icon: '🔌', ok: true, title: 'OpenAI API — local server (http://127.0.0.1:52625/v1)', mark: '✓' },
                 { icon: '🌐', ok: false, title: 'Tavily not configured (optional)', mark: '−' },
             ]);
             return;
@@ -705,6 +793,12 @@ class AIConfigModal {
                 mark: '✓',
             },
             {
+                icon: '🔌',
+                ok: true,
+                title: `OpenAI API base URL: ${c.openai_api_base_url || 'http://127.0.0.1:52625/v1'}`,
+                mark: '✓',
+            },
+            {
                 icon: '🌐',
                 ok: tavOk,
                 title: tavOk
@@ -719,6 +813,7 @@ class AIConfigModal {
         const c = this.currentConfig;
         const geminiInput = document.getElementById('aiGeminiKey');
         const openrouterInput = document.getElementById('aiApiKey');
+        const openaiApiInput = document.getElementById('aiOpenAIApiKey');
         const tavilyInput = document.getElementById('aiTavilyKey');
         if (!c) return;
         if (c.gemini_api_key_preview && geminiInput) {
@@ -726,6 +821,11 @@ class AIConfigModal {
         }
         if (c.openrouter_api_key_preview && openrouterInput) {
             openrouterInput.placeholder = c.openrouter_api_key_preview;
+        }
+        if (c.openai_api_key_preview && openaiApiInput) {
+            openaiApiInput.placeholder = c.openai_api_key_preview;
+        } else if (openaiApiInput && !openaiApiInput.value) {
+            openaiApiInput.placeholder = 'flm';
         }
         if (c.tavily_api_key_preview && tavilyInput) {
             tavilyInput.placeholder = c.tavily_api_key_preview;
@@ -751,9 +851,9 @@ class AIConfigModal {
     async testConnection() {
         const resultDiv = document.getElementById('aiTestResult');
         
-        // Get API key based on selected provider (not applicable for LM Studio)
-        const isLMStudio = this.selectedProvider === 'lmstudio';
-        const apiKey = isLMStudio ? null
+        const isLocal = this._isLocalProvider();
+        const isOpenAIApi = this.selectedProvider === 'openai_api';
+        const apiKey = isLocal ? null
             : this.selectedProvider === 'gemini'
                 ? document.getElementById('aiGeminiKey').value
                 : document.getElementById('aiApiKey').value;
@@ -765,14 +865,28 @@ class AIConfigModal {
         
         try {
             // For cloud providers: save the key first if entered.
-            // For LM Studio: save the URL so the backend uses the latest value.
-            if (isLMStudio) {
+            // For local providers: save URL/settings so the backend uses the latest values.
+            if (this.selectedProvider === 'lmstudio') {
                 const lmUrl = document.getElementById('aiLMStudioUrl')?.value.trim() || 'http://localhost:1234';
                 const testPayload = { provider: 'lmstudio', lmstudio_base_url: lmUrl };
                 const rawTemp = parseFloat(document.getElementById('aiLMStudioTemp')?.value);
                 if (!isNaN(rawTemp)) testPayload.lmstudio_temperature = rawTemp;
                 const rawMaxTok = parseInt(document.getElementById('aiLMStudioMaxTokens')?.value, 10);
                 if (!isNaN(rawMaxTok)) testPayload.lmstudio_max_tokens = rawMaxTok;
+                await fetch('/api/llm/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(testPayload)
+                });
+            } else if (isOpenAIApi) {
+                const oaUrl = document.getElementById('aiOpenAIApiUrl')?.value.trim() || 'http://127.0.0.1:52625/v1';
+                const testPayload = { provider: 'openai_api', openai_api_base_url: oaUrl };
+                const oaKey = document.getElementById('aiOpenAIApiKey')?.value.trim();
+                if (oaKey) testPayload.openai_api_key = oaKey;
+                const rawTemp = parseFloat(document.getElementById('aiOpenAIApiTemp')?.value);
+                if (!isNaN(rawTemp)) testPayload.openai_api_temperature = rawTemp;
+                const rawMaxTok = parseInt(document.getElementById('aiOpenAIApiMaxTokens')?.value, 10);
+                if (!isNaN(rawMaxTok)) testPayload.openai_api_max_tokens = rawMaxTok;
                 await fetch('/api/llm/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -847,10 +961,12 @@ class AIConfigModal {
         // Use custom route for OpenRouter report model when provided
         const modelToUse = (this.selectedProvider === 'openrouter' && customModel) ? customModel : reportModel;
         
-        // Validate that selected provider has a key (LM Studio never needs one)
+        const openaiApiKey = document.getElementById('aiOpenAIApiKey')?.value.trim() || '';
+
+        // Validate that selected provider has a key (local providers never need one)
         const isGemini = this.selectedProvider === 'gemini';
-        const isLMStudio = this.selectedProvider === 'lmstudio';
-        const isConfigured = isLMStudio ? true
+        const isLocal = this._isLocalProvider();
+        const isConfigured = isLocal ? true
             : isGemini
                 ? (geminiKey || this.currentConfig?.gemini_configured)
                 : (openrouterKey || this.currentConfig?.openrouter_configured);
@@ -873,7 +989,7 @@ class AIConfigModal {
                 ai_enabled: aiEnabled,
                 auto_generate: autoGenerate
             };
-            if (!isLMStudio) {
+            if (!isLocal) {
                 payload.sanitize_log_for_cloud_llm = true;
             }
             if (tavilyKey) {
@@ -887,13 +1003,20 @@ class AIConfigModal {
             if (openrouterKey) {
                 payload.openrouter_api_key = openrouterKey;
             }
-            // LM Studio: include base URL and generation parameters
-            if (isLMStudio) {
+            if (this.selectedProvider === 'lmstudio') {
                 payload.lmstudio_base_url = document.getElementById('aiLMStudioUrl')?.value.trim() || 'http://localhost:1234';
                 const rawTemp = parseFloat(document.getElementById('aiLMStudioTemp')?.value);
                 if (!isNaN(rawTemp)) payload.lmstudio_temperature = rawTemp;
                 const rawMaxTok = parseInt(document.getElementById('aiLMStudioMaxTokens')?.value, 10);
                 if (!isNaN(rawMaxTok)) payload.lmstudio_max_tokens = rawMaxTok;
+            }
+            if (this.selectedProvider === 'openai_api') {
+                payload.openai_api_base_url = document.getElementById('aiOpenAIApiUrl')?.value.trim() || 'http://127.0.0.1:52625/v1';
+                if (openaiApiKey) payload.openai_api_key = openaiApiKey;
+                const rawTemp = parseFloat(document.getElementById('aiOpenAIApiTemp')?.value);
+                if (!isNaN(rawTemp)) payload.openai_api_temperature = rawTemp;
+                const rawMaxTok = parseInt(document.getElementById('aiOpenAIApiMaxTokens')?.value, 10);
+                if (!isNaN(rawMaxTok)) payload.openai_api_max_tokens = rawMaxTok;
             }
             
             const response = await fetch('/api/llm/config', {
@@ -940,6 +1063,7 @@ class AIConfigModal {
         document.getElementById('aiTestResult').style.display = 'none';
         document.getElementById('aiApiKey').value = '';
         document.getElementById('aiGeminiKey').value = '';
+        document.getElementById('aiOpenAIApiKey').value = '';
         document.getElementById('aiCustomModel').value = '';
         document.getElementById('aiTavilyKey').value = '';
         
@@ -967,7 +1091,7 @@ class AIConfigModal {
         const aiEnabled = document.getElementById('aiEnabled')?.checked ?? true;
         const sections = [
             'providerSection', 'geminiSection', 'openrouterSection',
-            'lmstudioSection', 'customModelSection', 'aiModelsSection'
+            'lmstudioSection', 'openaiApiSection', 'customModelSection', 'aiModelsSection'
         ];
         for (const id of sections) {
             const el = document.getElementById(id);

@@ -40,6 +40,8 @@ _TUNING_RELEVANT_NAMES = frozenset({
     "pollingInterval",
     "PacketSize",
     "cdcBatchSize",
+    "cdcMinFileSize",
+    "cdcBatchTimeOut",
     "parallelASMReadThreads",
     "readAheadBlocks",
     "maxLogsInLogMinerSession",
@@ -223,8 +225,15 @@ def get_endpoint_tuning_params(endpoint_type: str) -> List[Dict[str, str]]:
             "level": item.get("level", ""),
         })
 
-    # Sort: executeTimeout and cdcTimeout first, then alphabetical
-    priority = {"executeTimeout": 0, "cdcTimeout": 1, "loadTimeout": 2}
+    # Sort: timeout params first, then Databricks batch params, then alphabetical
+    priority = {
+        "executeTimeout": 0,
+        "cdcTimeout": 1,
+        "loadTimeout": 2,
+        "cdcMinFileSize": 3,
+        "cdcBatchTimeOut": 4,
+        "cdcBatchSize": 5,
+    }
     results.sort(key=lambda p: (priority.get(p["name"], 99), p["name"]))
 
     return results

@@ -8,7 +8,11 @@ import os
 import uuid
 from datetime import datetime
 
-from backend.database import get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex, LogOracleRedoRead, LogOracleRedoLogSession, UserSettings, QuickPattern
+from backend.database import (
+    get_db, LogFile, LogStats, LogPerformance, LogError, LogIndex,
+    LogOracleRedoRead, LogOracleRedoLogSession, UserSettings, QuickPattern,
+    LogBatch, LogTableStats, LogTaskConfig, FileVersion, LogLineMeta,
+)
 from backend.core.indexer import process_log_file
 from backend.core.reader import LogReader
 from backend.paths import upload_dir
@@ -45,23 +49,41 @@ async def register_local_file(
     existing_file = db.query(LogFile).filter(LogFile.file_path == file_path).first()
     
     if existing_file:
-        # File already exists - re-index it
-        # Clear existing indexes and stats
-        db.query(LogIndex).filter(LogIndex.file_id == existing_file.id).delete()
-        db.query(LogPerformance).filter(LogPerformance.file_id == existing_file.id).delete()
-        db.query(LogStats).filter(LogStats.file_id == existing_file.id).delete()
-        db.query(LogError).filter(LogError.file_id == existing_file.id).delete()
-        
-        # Update status
+        import sqlite3
+        fid = existing_file.id
+        # Status flip first
         existing_file.status = "indexing"
         existing_file.line_count = 0
         existing_file.upload_time = datetime.utcnow()
         db.commit()
-        
-        # Trigger re-indexing
-        background_tasks.add_task(process_log_file, db, existing_file.id)
-        
-        return {"id": existing_file.id, "filename": existing_file.filename, "status": "indexing"}
+
+        # Full delete list
+        db.query(LogIndex).filter(LogIndex.file_id == fid).delete()
+        db.query(LogPerformance).filter(LogPerformance.file_id == fid).delete()
+        db.query(LogOracleRedoRead).filter(LogOracleRedoRead.file_id == fid).delete()
+        db.query(LogOracleRedoLogSession).filter(LogOracleRedoLogSession.file_id == fid).delete()
+        db.query(LogStats).filter(LogStats.file_id == fid).delete()
+        db.query(LogError).filter(LogError.file_id == fid).delete()
+        db.query(LogBatch).filter(LogBatch.file_id == fid).delete()
+        db.query(LogTableStats).filter(LogTableStats.file_id == fid).delete()
+        db.query(LogTaskConfig).filter(LogTaskConfig.file_id == fid).delete()
+        db.query(LogLineMeta).filter(LogLineMeta.file_id == fid).delete()
+        db.query(FileVersion).filter(FileVersion.file_id == fid).delete()
+        db.commit()
+        try:
+            db_url = str(db.get_bind().url).replace('sqlite:///', '')
+            conn = sqlite3.connect(db_url)
+            conn.execute("DELETE FROM log_lines_fts WHERE file_id = ?", (fid,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+        from backend.core.graph_cache import invalidate_cache
+        invalidate_cache(fid)
+
+        background_tasks.add_task(process_log_file, db, fid)
+        return {"id": fid, "filename": existing_file.filename, "status": "indexing"}
     
     # Create new DB Entry
     log_file = LogFile(
@@ -576,6 +598,24 @@ def get_bulk_map_messages(file_id: int, limit: int = 500, db: Session = Depends(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
+@router.get("/files/{file_id}/full-load-activity")
+def get_full_load_activity(file_id: int, db: Session = Depends(get_db)):
+    """Analyze full-load unload/load activity per table and segment."""
+    from backend.core.extractors import analyze_full_load_file
+
+    f = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not os.path.exists(f.file_path):
+        raise HTTPException(status_code=404, detail="File not found at path")
+
+    try:
+        return analyze_full_load_file(f.file_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to analyze full load activity: {str(e)}")
+
+
 @router.get("/files/{file_id}/bulk-activity")
 def get_bulk_activity_analysis(file_id: int, db: Session = Depends(get_db)):
     """Analyze bulk apply activity similar to apply_summary.pl script."""
@@ -1088,24 +1128,44 @@ async def reindex_file(
 ):
     """Re-index an existing log file, optionally re-embedding for AI analysis."""
     from backend.database import SessionLocal
-    
+    import sqlite3
+
     log_file = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not log_file:
         raise HTTPException(status_code=404, detail="File not found")
-    
-    # Check if file still exists
+
     if not os.path.exists(log_file.file_path):
         raise HTTPException(status_code=404, detail=f"File not found at path: {log_file.file_path}")
-    
-    # Clear existing indexes and stats
+
+    # 1. Flip status FIRST (prevents serving stale data during delete)
+    log_file.status = "indexing"
+    log_file.line_count = 0
+    db.commit()
+
+    # 2. Delete all derived rows (full list)
     db.query(LogIndex).filter(LogIndex.file_id == file_id).delete()
     db.query(LogPerformance).filter(LogPerformance.file_id == file_id).delete()
     db.query(LogOracleRedoRead).filter(LogOracleRedoRead.file_id == file_id).delete()
     db.query(LogOracleRedoLogSession).filter(LogOracleRedoLogSession.file_id == file_id).delete()
     db.query(LogStats).filter(LogStats.file_id == file_id).delete()
     db.query(LogError).filter(LogError.file_id == file_id).delete()
+    db.query(LogBatch).filter(LogBatch.file_id == file_id).delete()
+    db.query(LogTableStats).filter(LogTableStats.file_id == file_id).delete()
+    db.query(LogTaskConfig).filter(LogTaskConfig.file_id == file_id).delete()
+    db.query(LogLineMeta).filter(LogLineMeta.file_id == file_id).delete()
+    db.query(FileVersion).filter(FileVersion.file_id == file_id).delete()
     db.commit()
-    
+
+    # Clear FTS entries via raw sqlite (virtual table)
+    try:
+        db_url = str(db.get_bind().url).replace('sqlite:///', '')
+        conn = sqlite3.connect(db_url)
+        conn.execute("DELETE FROM log_lines_fts WHERE file_id = ?", (file_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
     # If re-embedding requested, clear existing embeddings
     reembed = request.reembed if request else False
     embeddings_deleted = 0
@@ -1115,29 +1175,27 @@ async def reindex_file(
             vector_store = get_vector_store()
             embeddings_deleted = vector_store.delete_file_embeddings(file_id)
         except Exception as e:
-            # Log but don't fail - embeddings will be regenerated anyway
             import logging
             logging.getLogger(__name__).warning(f"Failed to clear embeddings for file {file_id}: {e}")
-    
-    # Set status to indexing
-    log_file.status = "indexing"
-    log_file.line_count = 0
-    db.commit()
-    
-    # Trigger re-indexing in background with new session
+
+    # 3. Invalidate graph cache
+    from backend.core.graph_cache import invalidate_cache
+    invalidate_cache(file_id)
+
+    # 4. Trigger re-indexing in background with new session
     def reindex_task():
         new_db = SessionLocal()
         try:
             process_log_file(new_db, file_id)
         finally:
             new_db.close()
-    
+
     background_tasks.add_task(reindex_task)
-    
+
     message = "Re-indexing started"
     if reembed:
         message += f" (cleared {embeddings_deleted} embeddings for re-embedding)"
-    
+
     return {"id": file_id, "filename": log_file.filename, "status": "indexing", "message": message}
 
 
@@ -1150,161 +1208,252 @@ def get_issues_with_context(
     """
     Get all warnings and errors from the log file with context lines.
     Groups by error type/message for easier analysis.
-    Includes timeline information for visualization.
+    Reads from SQLite (LogError) + LogReader for context — no full readlines().
     """
     import re
-    from datetime import datetime
-    
+
     f = db.query(LogFile).filter(LogFile.id == file_id).first()
     if not f:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
+    if f.status == "indexing":
+        raise HTTPException(status_code=409, detail="File is currently being indexed")
+
+    total_lines = f.line_count or 0
+
+    # Query all errors from SQLite (already deduped at index time)
+    errors = (
+        db.query(LogError)
+        .filter(LogError.file_id == file_id)
+        .order_by(LogError.line_number)
+        .all()
+    )
+
+    if not errors:
+        return {
+            'summary': {'total_issues': 0, 'unique_issues': 0, 'fatal_count': 0, 'error_count': 0, 'warning_count': 0},
+            'timeline': {'start_time': None, 'end_time': None, 'total_lines': total_lines, 'events': []},
+            'issues': []
+        }
+
+    # Build reader for context
     try:
-        # Read all lines from the file
-        with open(f.file_path, 'r', encoding='utf-8', errors='replace') as log:
-            all_lines = log.readlines()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
-    
-    total_lines = len(all_lines)
-    
-    # Pattern to match warnings and errors
-    # Matches: ]W: or ]E: (standard warnings/errors)
-    # Also matches: SQL_ERROR, SqlState patterns
-    issue_pattern = re.compile(
-        r'\](E|W):|'  # Standard [COMPONENT]E: or ]W:
-        r'SQL_ERROR\s+SqlState:\s*(\w+)\s+NativeError:\s*(\d+)|'  # SQL errors with code
-        r'fatal\s+error|'  # Fatal errors
-        r'Failed to execute|'  # Execution failures
-        r'RetCode:\s*SQL_ERROR',  # ODBC errors
-        re.IGNORECASE
-    )
-    
-    # Timestamp pattern - matches various log timestamp formats
-    timestamp_pattern = re.compile(
-        r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?::\d+)?)'
-    )
-    
-    # Find all issues and group them
-    issues_by_type = {}
-    
-    # Track timeline info (all issues with their positions)
-    timeline_events = []
+        reader = LogReader(db, file_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Timeline bounds from first/last error timestamps
     log_start_time = None
     log_end_time = None
-    
-    # Find first and last timestamps for the timeline
-    for line in all_lines[:10]:  # Check first 10 lines
-        ts_match = timestamp_pattern.search(line)
-        if ts_match:
-            log_start_time = ts_match.group(1)
-            break
-    
-    for line in reversed(all_lines[-20:]):  # Check last 20 lines
-        ts_match = timestamp_pattern.search(line)
-        if ts_match:
-            log_end_time = ts_match.group(1)
-            break
-    
-    for line_num, line in enumerate(all_lines):
-        match = issue_pattern.search(line)
-        if match:
-            # Determine issue type and extract error code if present
-            line_stripped = line.strip()
-            
-            # Extract timestamp from the line
-            ts_match = timestamp_pattern.search(line)
-            timestamp = ts_match.group(1) if ts_match else None
-            
-            # Extract the component (e.g., TARGET_APPLY, SOURCE_CAPTURE)
-            component_match = re.search(r'\[(\w+)\s*\]', line)
-            component = component_match.group(1) if component_match else "UNKNOWN"
-            
-            # Determine severity
-            if ']E:' in line:
-                severity = 'error'
-            elif ']W:' in line:
-                severity = 'warning'
-            elif 'fatal' in line.lower():
-                severity = 'fatal'
-            else:
-                severity = 'error'  # SQL_ERROR etc
-            
-            # Extract SQL error code if present
-            sql_match = re.search(r'SqlState:\s*(\w+)\s+NativeError:\s*(\d+)', line)
-            error_code = None
-            if sql_match:
-                error_code = f"SqlState:{sql_match.group(1)} NativeError:{sql_match.group(2)}"
-            
-            # Create a simplified key for grouping (first part of message)
-            # Extract the actual message part after the component
-            msg_match = re.search(r'\][EWT]:\s*(.+?)(?:\s+\([^)]+\.\w+:\d+\))?$', line)
-            if msg_match:
-                message_summary = msg_match.group(1).strip()[:200]  # First 200 chars for full error message
-            else:
-                message_summary = line_stripped[:200]
-            
-            # Create a group key
-            group_key = f"{severity}:{component}:{message_summary}"
-            
-            if group_key not in issues_by_type:
-                issues_by_type[group_key] = {
-                    'severity': severity,
-                    'component': component,
-                    'message_summary': message_summary,
-                    'error_code': error_code,
-                    'occurrences': []
-                }
-            
-            # Get context lines
-            start_idx = max(0, line_num - context_lines)
-            end_idx = min(len(all_lines), line_num + context_lines + 1)
-            
-            context = {
-                'line_number': line_num,
-                'timestamp': timestamp,
-                'text': line_stripped,
-                'before': [{'line': i, 'text': all_lines[i].strip()} for i in range(start_idx, line_num)],
-                'after': [{'line': i, 'text': all_lines[i].strip()} for i in range(line_num + 1, end_idx)]
-            }
-            
-            issues_by_type[group_key]['occurrences'].append(context)
-            
-            # Add to timeline
-            timeline_events.append({
-                'line_number': line_num,
-                'position': (line_num / total_lines) * 100 if total_lines > 0 else 0,
+    for e in errors:
+        if e.timestamp:
+            if not log_start_time:
+                log_start_time = e.timestamp.isoformat()
+            log_end_time = e.timestamp.isoformat()
+
+    issues_by_type = {}
+    timeline_events = []
+
+    for err in errors:
+        text = err.text or ""
+        # Determine severity
+        if ']E:' in text:
+            severity = 'error'
+        elif ']W:' in text:
+            severity = 'warning'
+        elif 'fatal' in text.lower():
+            severity = 'fatal'
+        else:
+            severity = 'error'
+
+        # Message summary for grouping
+        msg_match = re.search(r'\][EWT]:\s*(.+?)(?:\s+\([^)]+\.\w+:\d+\))?$', text)
+        if msg_match:
+            message_summary = msg_match.group(1).strip()[:200]
+        else:
+            message_summary = text[:200]
+
+        group_key = f"{severity}:{err.component or 'UNKNOWN'}:{message_summary}"
+
+        if group_key not in issues_by_type:
+            issues_by_type[group_key] = {
                 'severity': severity,
-                'timestamp': timestamp
-            })
-    
-    # Convert to list and sort by severity then by count
+                'component': err.component or 'UNKNOWN',
+                'message_summary': message_summary,
+                'error_code': err.error_code,
+                'occurrences': []
+            }
+
+        # Get context via LogReader (efficient seek-based)
+        ctx = reader.read_lines_centered(err.line_number, before=context_lines, after=context_lines)
+        ctx_lines = ctx.get("lines", [])
+        center_offset = err.line_number - ctx.get("start", 0)
+
+        before_lines = []
+        after_lines = []
+        for i, l in enumerate(ctx_lines):
+            actual_line = ctx["start"] + i
+            if actual_line < err.line_number:
+                before_lines.append({'line': actual_line, 'text': l})
+            elif actual_line > err.line_number:
+                after_lines.append({'line': actual_line, 'text': l})
+
+        ts_str = err.timestamp.isoformat() if err.timestamp else None
+        context = {
+            'line_number': err.line_number,
+            'timestamp': ts_str,
+            'text': text,
+            'before': before_lines,
+            'after': after_lines,
+        }
+        issues_by_type[group_key]['occurrences'].append(context)
+
+        timeline_events.append({
+            'line_number': err.line_number,
+            'position': (err.line_number / total_lines) * 100 if total_lines > 0 else 0,
+            'severity': severity,
+            'timestamp': ts_str,
+        })
+
     severity_order = {'fatal': 0, 'error': 1, 'warning': 2}
     issues_list = list(issues_by_type.values())
     issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 3), -len(x['occurrences'])))
-    
-    # Calculate summary
+
     summary = {
         'total_issues': sum(len(i['occurrences']) for i in issues_list),
         'unique_issues': len(issues_list),
         'fatal_count': sum(len(i['occurrences']) for i in issues_list if i['severity'] == 'fatal'),
         'error_count': sum(len(i['occurrences']) for i in issues_list if i['severity'] == 'error'),
-        'warning_count': sum(len(i['occurrences']) for i in issues_list if i['severity'] == 'warning')
+        'warning_count': sum(len(i['occurrences']) for i in issues_list if i['severity'] == 'warning'),
     }
-    
-    # Timeline info
+
     timeline = {
         'start_time': log_start_time,
         'end_time': log_end_time,
         'total_lines': total_lines,
-        'events': timeline_events
+        'events': timeline_events,
     }
-    
+
     return {
         'summary': summary,
         'timeline': timeline,
-        'issues': issues_list
+        'issues': issues_list,
     }
+
+
+@router.get("/files/{file_id}/issues/related")
+def get_issues_related(
+    file_id: int,
+    line_number: int = Query(..., description="Anchor error line number"),
+    max_hops: int = Query(2, ge=1, le=3),
+    max_results: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """Get structurally related context for a specific error line."""
+    f = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+    if f.status != "ready":
+        raise HTTPException(status_code=409, detail="File not ready (indexing in progress)")
+
+    from backend.core.graph import get_related_context, build_adjacency
+    from backend.core.graph_cache import load_cached_graph, save_graph_cache
+
+    # Try cache first
+    graph, hit = load_cached_graph(db, file_id)
+    if not hit:
+        graph = build_adjacency(db, file_id)
+        save_graph_cache(db, file_id, graph)
+
+    result = get_related_context(db, file_id, line_number, max_hops=max_hops, max_results=max_results, graph=graph)
+
+    if result.get("weak"):
+        return {"status": "weak", "message": "Insufficient structural neighbors", "data": result}
+
+    return {"status": "ok", "data": result}
+
+
+@router.get("/files/{file_id}/search/fts")
+def search_fts(
+    file_id: int,
+    q: str = Query(..., min_length=1, description="FTS query"),
+    from_line: Optional[int] = Query(None, alias="from", description="Start line filter"),
+    to_line: Optional[int] = Query(None, alias="to", description="End line filter"),
+    component: Optional[str] = Query(None, description="Component filter"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """Full-text search over log lines using FTS5 (keyword mode)."""
+    import sqlite3
+
+    f = db.query(LogFile).filter(LogFile.id == file_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+    if f.status != "ready":
+        raise HTTPException(status_code=409, detail="File not ready (indexing in progress)")
+
+    db_url = str(db.get_bind().url).replace('sqlite:///', '')
+    try:
+        conn = sqlite3.connect(db_url)
+        cursor = conn.cursor()
+
+        # Base FTS query
+        sql = """
+            SELECT fts.line_number, fts.file_id
+            FROM log_lines_fts fts
+            WHERE fts.body MATCH ? AND fts.file_id = ?
+        """
+        params: list = [q, file_id]
+
+        # Apply line range filter via join with log_line_meta
+        if from_line is not None or to_line is not None or component:
+            sql = """
+                SELECT fts.line_number, fts.file_id
+                FROM log_lines_fts fts
+                JOIN log_line_meta m ON m.file_id = fts.file_id AND m.line_number = fts.line_number
+                WHERE fts.body MATCH ? AND fts.file_id = ?
+            """
+            if from_line is not None:
+                sql += " AND m.line_number >= ?"
+                params.append(from_line)
+            if to_line is not None:
+                sql += " AND m.line_number <= ?"
+                params.append(to_line)
+            if component:
+                sql += " AND m.component = ?"
+                params.append(component)
+
+        sql += f" LIMIT {limit}"
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FTS search error: {str(e)}")
+
+    if not rows:
+        return {"results": [], "total": 0}
+
+    # Enrich with line content via LogReader
+    try:
+        reader = LogReader(db, file_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="File not accessible")
+
+    results = []
+    for (line_num, _fid) in rows:
+        ctx = reader.read_lines_centered(line_num, before=1, after=1)
+        lines = ctx.get("lines", [])
+        center_idx = line_num - ctx.get("start", 0)
+        text = lines[center_idx] if 0 <= center_idx < len(lines) else ""
+        results.append({
+            "line_number": line_num,
+            "text": text,
+            "context": lines,
+            "context_start": ctx.get("start", 0),
+        })
+
+    return {"results": results, "total": len(results)}
 
 
 @router.get("/files/{file_id}/log-summary")

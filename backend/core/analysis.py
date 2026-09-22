@@ -268,13 +268,78 @@ class BatchAnalyzer:
             "p95": round(sorted(durations)[int(len(durations) * 0.95)], 2) if len(durations) > 1 else durations[0]
         }
     
+    def get_rps_distribution(self) -> Dict[str, Any]:
+        """Group batches by apply throughput (changes per second)."""
+        buckets_def = [
+            {"key": "stalled", "label": "Stalled", "range": "< 10/s", "min": 0, "max": 10},
+            {"key": "low", "label": "Low", "range": "10–100/s", "min": 10, "max": 100},
+            {"key": "moderate", "label": "Moderate", "range": "100–1K/s", "min": 100, "max": 1000},
+            {"key": "good", "label": "Good", "range": "1K–10K/s", "min": 1000, "max": 10000},
+            {"key": "fast", "label": "Fast", "range": "> 10K/s", "min": 10000, "max": None},
+        ]
+        accum = {
+            b["key"]: {
+                "key": b["key"],
+                "label": b["label"],
+                "range": b["range"],
+                "batch_count": 0,
+                "total_changes": 0,
+                "avg_batch_size": 0,
+            }
+            for b in buckets_def
+        }
+        unknown = {"batch_count": 0, "total_changes": 0}
+        rps_values = []
+        size_by_bucket = {b["key"]: [] for b in buckets_def}
+
+        for batch in self.batches:
+            changes = batch.get("changes_count", 0) or 0
+            duration = batch.get("duration_seconds", 0) or 0
+            if duration <= 0 or changes <= 0:
+                unknown["batch_count"] += 1
+                unknown["total_changes"] += changes
+                continue
+
+            rps = changes / duration
+            rps_values.append(rps)
+            placed = False
+            for b in buckets_def:
+                in_bucket = rps >= b["min"] and (b["max"] is None or rps < b["max"])
+                if in_bucket:
+                    key = b["key"]
+                    accum[key]["batch_count"] += 1
+                    accum[key]["total_changes"] += changes
+                    size_by_bucket[key].append(changes)
+                    placed = True
+                    break
+            if not placed:
+                unknown["batch_count"] += 1
+                unknown["total_changes"] += changes
+
+        buckets_out = []
+        for b in buckets_def:
+            entry = accum[b["key"]]
+            sizes = size_by_bucket[b["key"]]
+            if sizes:
+                entry["avg_batch_size"] = round(statistics.mean(sizes), 1)
+            if entry["batch_count"] > 0:
+                buckets_out.append(entry)
+
+        return {
+            "buckets": buckets_out,
+            "unknown_duration": unknown,
+            "median_rps": round(statistics.median(rps_values), 1) if rps_values else 0,
+            "measured_batches": len(rps_values),
+        }
+
     def get_batch_analysis(self) -> Dict[str, Any]:
         """Complete batch analysis."""
         return {
             "total_batches": len(self.batches),
             "closure_reasons": self.get_closure_reason_distribution(),
             "size_stats": self.get_batch_size_stats(),
-            "duration_stats": self.get_batch_duration_stats()
+            "duration_stats": self.get_batch_duration_stats(),
+            "rps_distribution": self.get_rps_distribution(),
         }
     
     def detect_inefficiencies(self) -> List[Dict]:

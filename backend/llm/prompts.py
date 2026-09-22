@@ -32,6 +32,17 @@ import re
 
 # Import sanitization functions from centralized module
 from backend.llm.sanitizer import sanitize_text, sanitize_dict, sanitize_list
+from backend.llm.evidence_compiler import (
+    EvidenceBudgets,
+    BudgetedSection,
+    build_authoritative_facts,
+    build_error_aggregates,
+    build_focus_payload_plan,
+    enforce_budgets,
+    format_task_config,
+    format_warning_tail,
+    select_representative_excerpts,
+)
 
 # Short troubleshooting-focused descriptions for each Replicate component.
 # Used to enrich error summaries in the LLM prompt with "why this matters".
@@ -185,8 +196,60 @@ def prepare_kb_context(kb_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]
 # SYSTEM PROMPT
 # ============================================================
 
+# Unified audit report contract (cloud + local share this structure).
+AUDIT_REPORT_STRUCTURE = """
+## Report Structure
+Use exactly these 6 sections as Markdown `##` headers (NOT numbered lists like `1.` or `2.`):
+
+## Executive Summary & Health
+Max 3 sentences: **X/5** Health Score (1=Critical, 5=Healthy), severity, primary root cause.
+
+## Key Findings
+Bullets; lead each with occurrence counts from Log Aggregates when provided.
+
+## Performance & Full Load Analysis
+Latency/batch/full-load facts only when telemetry is present; otherwise one sentence on missing diagnostics.
+
+## Issues & Recommendations
+For EACH major issue:
+- **Evidence**: Quote LINE numbers or metrics from the evidence package.
+- **Interpretation**: What it means and impact.
+- **Recommendations**: Concrete steps using Tuning Reference parameter names when provided.
+
+## Error & Component Mapping
+Markdown table: error code | component | LINE(s).
+
+## Risk Assessment
+Max 2 sentences on what degrades or fails if issues persist.
+
+Do not add, merge, or rename sections. If Release Notes or KB sections appear in the evidence package, weave fix IDs (RECOB-XXXX) or article titles into Issues — do not add extra sections.
+"""
+
+AUDIT_OUTPUT_FORMAT = """
+## Output Format
+- Start each section with a `## Section Name` header line — never use `1.` / `2.` numbering as section titles.
+- Complete every section; do not truncate mid-sentence or end with stray characters (`/`, `...`).
+- Use plain text for numbers (e.g. `60 errors`, `714.33s`). No LaTeX.
+"""
+
+AUDIT_DIRECTIVES = """
+## Evidence Rules
+- Counts and metrics in the evidence package are pre-computed in Python — **report them verbatim; do not recalculate**.
+- Quote **LINE** numbers from provided excerpts only.
+- Do NOT invent charts, graphs, or visuals unless the user message says a latency chart is attached.
+- Do NOT invent parameter names outside the Tuning Reference block; if none is provided, say so.
+- Do NOT give generic database administration advice unrelated to quoted log lines.
+- Do NOT fabricate URLs. Reference KB/release-note titles from the evidence package only.
+"""
+
+EVIDENCE_PACKAGE_PREAMBLE = (
+    "Here is the deterministic evidence package for this log. "
+    "Produce the report according to the system contract. "
+    "Do not rediscover or contradict pre-computed facts.\n"
+)
+
 # System prompt for log analysis
-SYSTEM_PROMPT = """You are an expert log analyst specializing in Qlik Replicate (formerly Attunity Replicate) data replication logs. Your role is to analyze log summaries and provide clear, actionable insights.
+SYSTEM_PROMPT = """You are an expert log analyst specializing in Qlik Replicate (formerly Attunity Replicate) data replication logs. Your role is to interpret the evidence package and provide clear, actionable insights.
 
 ## Your Expertise
 - CDC (Change Data Capture) pipelines and data replication
@@ -226,18 +289,7 @@ If the prompt states that **structured performance/latency telemetry was not cap
 6. Format your response in clean Markdown
 7. **Do NOT invent URLs or hyperlinks.** If you reference a KB article or document, use only the title provided in the prompt context. Never fabricate links.
 
-## Report Structure
-Use this outline; omit or shorten a section only when data in the prompt does not support it:
-
-1. **Executive Summary** - 2-3 sentences
-2. **Key Findings** - Bullets (errors/warnings first when present)
-3. **Performance Analysis** - Bottlenecks/latency/throughput **only when telemetry is present**; otherwise one sentence on missing diagnostics
-4. **Issues & Recommendations** - Map each notable error/warning excerpt to probable cause & next steps
-5. **Health Score** - Overall (Healthy / Warning / Critical)
-
-If the user prompt includes a "Release Notes Correlation" section, add a corresponding section in your report correlating issues with known fixes (reference fix IDs like RECOB-XXXX).
-If the user prompt includes a "Relevant Knowledge Base Articles" section, reference those articles when discussing related issues.
-"""
+""" + AUDIT_DIRECTIVES + AUDIT_OUTPUT_FORMAT + AUDIT_REPORT_STRUCTURE
 
 
 # System prompt with web search enabled
@@ -294,19 +346,10 @@ When you find relevant information, include:
 6. Format your response in clean Markdown
 7. **Include web search results** for error codes and issues — but only reference URLs you actually retrieved; do not invent links
 
-## Report Structure
-Use this outline when data permits:
-
-1. **Executive Summary**
-2. **Key Findings** (prioritize surfaced errors/warnings)
-3. **Performance Analysis** — **only substantive when telemetry exists**; otherwise briefly note absent diagnostics
-4. **Issues & Recommendations**
-5. **Error Code Reference** — from web results or KB titles (no fabricated URLs)
-6. **Health Score**
-
-If the user prompt includes a "Release Notes Correlation" section, add a corresponding section in your report correlating issues with known fixes (reference fix IDs like RECOB-XXXX).
-If the user prompt includes a "Relevant Knowledge Base Articles" section, reference those articles when discussing related issues.
-"""
+""" + AUDIT_DIRECTIVES + """
+## Web Search
+Use web search for unfamiliar error codes (SQLSTATE, ORA-xxxx, RECOB-xxxx). Only cite URLs you actually retrieved — never fabricate links. Map web findings into section 5 (Error & Component Mapping) or section 4 (Issues).
+""" + AUDIT_OUTPUT_FORMAT + AUDIT_REPORT_STRUCTURE
 
 
 # ============================================================
@@ -330,18 +373,8 @@ SYSTEM_PROMPT_LOCAL = """You are an expert Qlik Replicate (Attunity Replicate) l
 - Use **plain text** for numbers and units (e.g. `714.33s`, `195 spikes`, `0%`). Never use LaTeX, `$...$` delimiters, or `\\text{}` formatting.
 - If a **Tuning Reference** section is provided, use those specific parameter names and defaults in your recommendations instead of generic advice.
 
-## Report Structure
-1. **Executive Summary** — 2-3 sentences stating severity and root cause
-2. **Key Findings** — Bullets; lead each with occurrence count from Log Aggregates where available
-3. **Performance Analysis** — Only substantive when telemetry is present; otherwise one sentence
-4. **Issues & Recommendations** — For EACH major issue use these subsections:
-   - **Evidence**: Quote the relevant `LINE …` excerpt(s)
-   - **Interpretation**: Explain what the error means and why it matters
-   - **Recommendations**: Concrete next steps with specific parameter names / settings where available
-5. **Error Code Reference** — Short bullet per distinct code found (vendor code + Replicate internal code)
-6. **Health Score** — **X/5** (where 1=Critical, 5=Healthy) plus **one sentence** justification
-
-If Release Notes or KB Articles are provided, incorporate them into your analysis referencing fix IDs (RECOB-XXXX) or article titles.
+""" + AUDIT_DIRECTIVES + AUDIT_OUTPUT_FORMAT + AUDIT_REPORT_STRUCTURE + """
+Use **plain text** for numbers (e.g. `714.33s`, `195 spikes`). Never use LaTeX or `$...$` delimiters.
 """
 
 
@@ -424,16 +457,6 @@ FOCUS_MODES: Dict[str, Dict[str, str]] = {
             "source/target connectivity, and any informational observations. "
             "Do NOT fabricate performance bottlenecks or error patterns that are not in the data."
         ),
-        "analysis_request": (
-            "1. **Task Configuration**: Source/target endpoints, driver versions, task type, "
-            "parallel apply threads, bulk settings.\n"
-            "2. **Health Status**: Overall CDC pipeline state, connectivity, reconnections.\n"
-            "3. **Observations**: Any notable patterns — DDL propagation, table counts, "
-            "supplemental logging status, task duration.\n"
-            "4. **Recommendations**: Configuration improvements, version upgrade suggestions, "
-            "best-practice alignment.\n"
-            "5. **Health Score**: Healthy / Warning / Critical with justification."
-        ),
     },
     "performance": {
         "title": "Performance Analysis",
@@ -444,15 +467,6 @@ FOCUS_MODES: Dict[str, Dict[str, str]] = {
             "sorter behaviour, and any indirect performance signals in the log. "
             "Clearly state when conclusions are inferred rather than measured."
         ),
-        "analysis_request": (
-            "1. **Throughput Assessment**: Records processed, batch sizes, apply times, "
-            "table-level operation counts.\n"
-            "2. **Batch Efficiency**: Closure reasons, single-record batch percentage, "
-            "timeout tuning opportunities.\n"
-            "3. **Resource Signals**: Sorter memory, parallel threads, disk swap events.\n"
-            "4. **Tuning Recommendations**: Ranked by expected impact.\n"
-            "5. **Health Score**: Healthy / Warning / Critical."
-        ),
     },
     "errors": {
         "title": "Error Analysis",
@@ -462,15 +476,6 @@ FOCUS_MODES: Dict[str, Dict[str, str]] = {
             "alerts, connectivity hiccups, DDL issues, or any symptoms that could "
             "indicate latent problems. Be explicit if the log is genuinely clean."
         ),
-        "analysis_request": (
-            "1. **Error/Warning Inventory**: List any errors, warnings, or informational "
-            "alerts found — even minor ones. If none exist, state that clearly.\n"
-            "2. **Symptom Interpretation**: For each finding, explain probable cause.\n"
-            "3. **Latent Risks**: Potential issues that could emerge (e.g., no supplemental "
-            "logging, missing PK, large transactions without sorter storage).\n"
-            "4. **Preventive Actions**: Recommendations to avoid future errors.\n"
-            "5. **Health Score**: Healthy / Warning / Critical."
-        ),
     },
     "configuration": {
         "title": "Configuration Review",
@@ -479,16 +484,6 @@ FOCUS_MODES: Dict[str, Dict[str, str]] = {
             "endpoint settings, driver versions, task parameters (parallel apply, "
             "batch timeout, bulk mode), replication mode (FL/CDC/FL+CDC), "
             "and alignment with Qlik Replicate best practices."
-        ),
-        "analysis_request": (
-            "1. **Endpoint Configuration**: Source and target types, versions, "
-            "connection parameters.\n"
-            "2. **Task Settings**: Batch optimizations, parallel apply, error handling "
-            "policy, DDL handling, LOB settings.\n"
-            "3. **Best-Practice Alignment**: Compare settings against recommended "
-            "defaults for the detected endpoint combination.\n"
-            "4. **Optimization Opportunities**: Specific settings to change and why.\n"
-            "5. **Health Score**: Healthy / Warning / Critical."
         ),
     },
 }
@@ -517,93 +512,6 @@ _TUNING_TRIGGERS_ODBC_TIMEOUT = re.compile(
     r"(?:timed?\s*out|timeout|HYT00|30149|executeTimeout|cdcTimeout|SOURCE_UNLOAD.*error)",
     re.IGNORECASE,
 )
-
-
-_NORMALIZE_PATTERNS = [
-    re.compile(r"\bLINE\s+\d+\b", re.IGNORECASE),
-    re.compile(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"),
-    re.compile(r"\bst_\d+_\w+"),
-    re.compile(r"\b(subtask|line)\s+\d+", re.IGNORECASE),
-]
-
-_CODE_EXTRACT = re.compile(r"\[\d{5,8}\]")
-
-
-def _build_error_aggregates(error_contexts: List[str]) -> str:
-    """Build a deterministic per-pattern aggregation block from error excerpts.
-
-    Groups errors by normalized message pattern and produces a concise summary
-    the model can cite directly.
-    """
-    if not error_contexts:
-        return ""
-
-    from collections import Counter, defaultdict
-
-    pattern_lines: Dict[str, List[int]] = defaultdict(list)
-    pattern_example: Dict[str, str] = {}
-    code_counter: Counter = Counter()
-
-    for block in error_contexts:
-        if not block or not isinstance(block, str):
-            continue
-        lines = block.strip().split("\n")
-        line_num = None
-        component = ""
-        body = block
-
-        if lines and lines[0].startswith("LINE "):
-            header = lines[0]
-            parts = header.split("|")
-            try:
-                line_num = int(parts[0].replace("LINE", "").strip())
-            except (ValueError, IndexError):
-                pass
-            if len(parts) >= 3:
-                component = parts[2].strip()
-            body = "\n".join(lines[1:]) if len(lines) > 1 else header
-
-        normalized = body
-        for pat in _NORMALIZE_PATTERNS:
-            normalized = pat.sub("", normalized)
-        normalized = " ".join(normalized.split())[:160]
-
-        if not normalized:
-            normalized = body[:120]
-
-        pattern_lines[normalized].append(line_num if line_num is not None else 0)
-        if normalized not in pattern_example:
-            pattern_example[normalized] = block.strip()[:300]
-
-        for m in _CODE_EXTRACT.finditer(block):
-            code_counter[m.group(0)] += 1
-
-    if not pattern_lines:
-        return ""
-
-    sorted_patterns = sorted(pattern_lines.items(), key=lambda x: -len(x[1]))
-
-    parts: List[str] = ["## Log Aggregates (computed — authoritative)\n"]
-    parts.append("| # | Occurrences | First LINE | Last LINE | Pattern (normalized) |")
-    parts.append("|---|---|---|---|---|")
-    for idx, (norm, line_nums) in enumerate(sorted_patterns[:10], 1):
-        count = len(line_nums)
-        valid = [ln for ln in line_nums if ln > 0]
-        first = str(min(valid)) if valid else "?"
-        last = str(max(valid)) if valid else "?"
-        display = norm[:100] + ("…" if len(norm) > 100 else "")
-        parts.append(f"| {idx} | {count} | {first} | {last} | {display} |")
-
-    if code_counter:
-        parts.append("\n**Distinct error codes:**")
-        for code, cnt in code_counter.most_common(10):
-            parts.append(f"- `{code}` × {cnt}")
-
-    parts.append(
-        "\nThese counts are computed from the full parsed log. "
-        "Your report MUST reference them; do not say \"several\" or \"multiple\" when a count is given.\n"
-    )
-    return "\n".join(parts)
 
 
 def _build_context_inventory(
@@ -662,6 +570,22 @@ def _build_context_inventory(
     if sa:
         items.append(f"- Source health: {sa.get('health_status', 'unknown').upper()}")
 
+    fl = summary_data.get("full_load_activity") or {}
+    if fl.get("available"):
+        fls = fl.get("summary") or {}
+        parts = [
+            f"{fls.get('tables_total', 0)} table(s)",
+            f"{fls.get('tables_loaded', 0)} loaded",
+        ]
+        if fls.get("tables_loading"):
+            parts.append(f"{fls['tables_loading']} loading")
+        if fls.get("reload_events"):
+            parts.append(f"{fls['reload_events']} reload event(s)")
+        if fls.get("total_rows_received"):
+            parts.append(f"{fls['total_rows_received']:,} rows received")
+        status = "completed" if fls.get("full_load_completed") else "in progress / incomplete"
+        items.append(f"- Full Load Activity: {status} ({', '.join(parts)})")
+
     ora = summary_data.get("oracle_redo_read_analysis") or {}
     olp = summary_data.get("oracle_redo_log_processing") or {}
     if ora.get("has_red_flags"):
@@ -676,6 +600,12 @@ def _build_context_inventory(
         items.append(f"- KB articles: {len(kb_context)} relevant articles included below")
     if release_notes_context:
         items.append(f"- Release notes: {len(release_notes_context)} correlation entries included below")
+
+    cfg = summary_data.get("config") or {}
+    if cfg.get("source_type") or cfg.get("target_type"):
+        src = cfg.get("source_type") or "unknown"
+        tgt = cfg.get("target_type") or "unknown"
+        items.append(f"- Task config: {src} → {tgt} (settings table below)")
 
     return "## Data Available for This Analysis\n" + "\n".join(items) + "\n"
 
@@ -692,6 +622,9 @@ def build_analysis_prompt(
     compact: bool = False,
     focus_mode: Optional[str] = None,
     tuning_reference: Optional[str] = None,
+    warning_contexts: Optional[List[str]] = None,
+    payload_format: Optional[str] = "markdown",
+    graph_context: Optional[str] = None,
 ) -> str:
     """
     Build the user prompt for log analysis.
@@ -717,43 +650,77 @@ def build_analysis_prompt(
     # Dynamic caps: local models get moderately trimmed excerpts to keep
     # the prompt focused without losing important detail; cloud models
     # get the full set.
+    focus_plan = build_focus_payload_plan(focus_mode, summary_data)
+    warning_contexts = warning_contexts or []
+
     if compact:
-        _max_errors = 14
-        _max_err_chars = 2200
         _max_anomalies = 3
         _max_anom_chars = 700
         _max_kb = 4
         _max_rn = 5
+        _quote_top_n = focus_plan.quote_top_n
+        _quote_max_chars = 900
+        _budgets = EvidenceBudgets(line_evidence=600, total_input_target=4500)
     else:
-        _max_errors = 22
-        _max_err_chars = 2600
         _max_anomalies = 4
         _max_anom_chars = 900
-        _max_kb = 5
-        _max_rn = 6
+        _max_kb = 5 if focus_plan.include_kb_release_notes else 0
+        _max_rn = 6 if focus_plan.include_kb_release_notes else 0
+        _quote_top_n = focus_plan.quote_top_n
+        _quote_max_chars = 1200
+        _budgets = EvidenceBudgets()
 
-    sections = []
+    budgeted: List[BudgetedSection] = []
 
-    # Context inventory — tells the model exactly what data is present
-    sections.append(_build_context_inventory(
-        summary_data, error_contexts, anomaly_contexts,
-        file_info, release_notes_context, kb_context,
-    ))
+    def _add(category: str, text: str, priority: int = 3) -> None:
+        if text and text.strip():
+            budgeted.append(BudgetedSection(category=category, text=text.strip(), priority=priority))
 
-    # Deterministic aggregates — give local models grounded counts to cite
-    if compact and error_contexts:
-        agg_block = _build_error_aggregates(error_contexts)
+    _add("facts_inventory", EVIDENCE_PACKAGE_PREAMBLE, priority=1)
+
+    _add(
+        "facts_inventory",
+        _build_context_inventory(
+            summary_data, error_contexts, anomaly_contexts,
+            file_info, release_notes_context, kb_context,
+        ),
+        priority=1,
+    )
+
+    if focus_plan.include_task_config:
+        task_cfg_block = format_task_config(summary_data.get("config"))
+        if task_cfg_block:
+            _add("task_config_tuning", task_cfg_block, priority=1)
+
+    if focus_plan.include_authoritative_facts:
+        facts_block = build_authoritative_facts(summary_data)
+        if facts_block:
+            _add("facts_inventory", facts_block, priority=1)
+
+    if focus_plan.include_error_aggregates and error_contexts:
+        agg_block = build_error_aggregates(error_contexts)
         if agg_block:
-            sections.append(agg_block)
+            _add("error_aggregates", agg_block, priority=1)
 
-    # Domain-specific tuning hints — prefer dynamic ar_props lookup, fallback to static
+    if graph_context and graph_context.strip():
+        _add("graph_structural_facts", graph_context.strip(), priority=2)
+
+    if focus_plan.include_warning_tail and warning_contexts:
+        tail = format_warning_tail(warning_contexts)
+        if tail:
+            _add("line_evidence", tail, priority=2)
+
     if error_contexts:
         combined_text = " ".join(error_contexts[:20])
         if _TUNING_TRIGGERS_ODBC_TIMEOUT.search(combined_text):
             if tuning_reference:
-                sections.append(tuning_reference)
+                _add("task_config_tuning", tuning_reference, priority=2)
             else:
-                sections.append(_TUNING_CHEAT_SHEET_ODBC_TIMEOUT)
+                _add("task_config_tuning", _TUNING_CHEAT_SHEET_ODBC_TIMEOUT, priority=2)
+        elif tuning_reference:
+            _add("task_config_tuning", tuning_reference, priority=2)
+
+    sections: List[str] = []
 
     # === CRITICAL ISSUES FIRST (if any) ===
     # Highlight critical issues at the top for immediate attention
@@ -773,6 +740,15 @@ def build_analysis_prompt(
         if worst_table.get("pain_score", 0) > 50:
             critical_section.append(f"- **Problematic table**: {worst_table.get('table_name', 'Unknown')} showing severe issues")
             has_critical = True
+
+    fl_crit = summary_data.get("full_load_activity") or {}
+    fls_crit = fl_crit.get("summary") or {}
+    if fl_crit.get("available") and (fls_crit.get("reload_events") or 0) > 0:
+        critical_section.append(
+            f"- **Full load reload loops**: {fls_crit.get('reload_events')} reload event(s) across "
+            f"{fls_crit.get('tables_reloaded', 0)} table(s) — segment failure forced table reload"
+        )
+        has_critical = True
     
     ora = summary_data.get("oracle_redo_read_analysis") or {}
     if ora.get("has_red_flags"):
@@ -801,10 +777,13 @@ File: {filename} | Size: {file_info.get('size_bytes', 0):,} bytes | Lines: {file
     # When a non-performance focus mode is active AND there's no telemetry,
     # omit the entire Performance section — its presence misleads the model
     # into discussing performance even when the user asked for something else.
-    _include_perf_section = (
-        focus_mode in (None, "performance")
+    _include_perf_section = focus_plan.include_performance_telemetry and (
+        focus_plan.telemetry_depth != "skip"
         or structured_perf
+        or focus_mode in (None, "performance")
     )
+    if focus_plan.telemetry_depth == "minimal" and not structured_perf:
+        _include_perf_section = focus_plan.include_performance_telemetry
 
     if _include_perf_section:
         sections.append("## Performance & diagnostics")
@@ -995,6 +974,68 @@ File: {filename} | Size: {file_info.get('size_bytes', 0):,} bytes | Lines: {file
             sections.append(
                 "Investigation hints: " + "; ".join(sa["investigation_hints"])
             )
+
+    # Full Load Activity (SOURCE_UNLOAD / TARGET_LOAD / segmented tables)
+    fl = summary_data.get("full_load_activity") or {}
+    if fl.get("available"):
+        fls = fl.get("summary") or {}
+        completed = "Yes" if fls.get("full_load_completed") else "No"
+        sections.append(f"""
+### Full Load Activity
+- **Completed**: {completed}
+- Task: {fls.get('task_name') or 'unknown'} · Mode: {fls.get('running_mode') or 'unknown'}
+- Tables: {fls.get('tables_total', 0)} total · {fls.get('tables_loaded', 0)} loaded · {fls.get('tables_loading', 0)} loading · {fls.get('tables_failed', 0)} failed
+- Rows received: {(fls.get('total_rows_received') or 0):,} · Volume: {(fls.get('total_volume_transferred') or 0):,} bytes
+- Max parallel segments: {fls.get('max_parallel_segments', 0)} · Reload events: {fls.get('reload_events', 0)}
+- Duration: {fls.get('duration_seconds') if fls.get('duration_seconds') is not None else 'n/a'}s
+""")
+        for t in (fl.get("tables") or [])[:10]:
+            segs_done = t.get("segments_complete") or 0
+            segs_total = t.get("segment_count") or len(t.get("segments") or [])
+            sections.append(
+                f"- **{t.get('table_name', 'Unknown')}** [{t.get('status', '?')}]: "
+                f"segs {segs_done}/{segs_total}, "
+                f"rows={(t.get('rows_received') or 0):,}, "
+                f"duration={t.get('duration_seconds') if t.get('duration_seconds') is not None else 'n/a'}s"
+                + (f", reloads={t.get('reload_count')}" if t.get("reload_count") else "")
+            )
+            # Highlight notable segments (slow / error / large gap)
+            notables = []
+            for s in (t.get("segments") or []):
+                reasons = []
+                if s.get("status") == "error":
+                    reasons.append("error")
+                dur = s.get("total_duration_seconds")
+                if dur is not None and dur >= 3600:
+                    reasons.append(f"{dur/3600:.1f}h")
+                gap = s.get("gap_unload_to_load_seconds")
+                if gap is not None and gap >= 30:
+                    reasons.append(f"gap {gap:.0f}s")
+                if reasons:
+                    pred = s.get("split_predicate")
+                    pred_bit = f", split=`{pred[:80]}`" if pred else ""
+                    notables.append(
+                        f"seg #{s.get('segment_num')} ({', '.join(reasons)}; "
+                        f"rows={s.get('rows_received') if s.get('rows_received') is not None else 'n/a'}{pred_bit})"
+                    )
+            if notables:
+                sections.append("  - Notable: " + "; ".join(notables[:4]))
+
+        if fl.get("insights"):
+            sections.append("\n**Full-load insights:**")
+            for ins in fl["insights"][:6]:
+                sections.append(
+                    f"- [{(ins.get('severity') or 'info').upper()}] {ins.get('title') or ins.get('type')}: "
+                    f"{ins.get('message') or ''}"
+                )
+                if ins.get("recommendation"):
+                    sections.append(f"  → {ins['recommendation']}")
+
+        sections.append(
+            "\n> Use these Full Load facts in the Executive Summary when FL is relevant "
+            "(tables loaded, segment skew, reload loops, unload→load gaps). "
+            "Cite row counts and durations from this section; do not invent segment numbers."
+        )
     
     # Error Summary - prioritize critical information
     if "error_summary" in summary_data:
@@ -1050,36 +1091,6 @@ File: {filename} | Size: {file_info.get('size_bytes', 0):,} bytes | Lines: {file
             + "\nTry to map these to vendor messages, RECOB fixes, or KB articles when possible.\n"
         )
 
-    # Error/warning excerpts — structured DB rows + retrieval
-    if error_contexts:
-        # In compact mode, annotate which components appear so the model
-        # has context even though the full reference table was omitted.
-        comp_annotation = ""
-        if compact:
-            referenced = {
-                c for ctx in error_contexts[:_max_errors]
-                for c in COMPONENT_CONTEXT if c in ctx
-            }
-            if referenced:
-                comp_annotation = (
-                    "\nComponents referenced: "
-                    + ", ".join(
-                        f"**{c}** ({COMPONENT_CONTEXT[c]})"
-                        for c in sorted(referenced)
-                    )
-                    + "\n"
-                )
-
-        sections.append(
-            "\n## Log-derived error & warning excerpts\n"
-            "These snippets are taken from parsed log lines (and optional semantic retrieval). "
-            "Reference **LINE** numbers in your write-up.\n"
-            + comp_annotation
-        )
-        for i, ctx in enumerate(error_contexts[:_max_errors], 1):
-            clean_ctx = ctx[:_max_err_chars] if len(ctx) > _max_err_chars else ctx
-            sections.append(f"**Excerpt {i}:**\n```\n{clean_ctx}\n```\n")
-
     if anomaly_contexts:
         _anom_title = (
             "## Performance anomalies (latency-derived context)"
@@ -1091,12 +1102,46 @@ File: {filename} | Size: {file_info.get('size_bytes', 0):,} bytes | Lines: {file
             clean_ctx = ctx[:_max_anom_chars] if len(ctx) > _max_anom_chars else ctx
             sections.append(f"**Note {i}:**\n```\n{clean_ctx}\n```\n")
     
-    # Release notes correlation (omit URLs when web_search is enabled to avoid grounding conflicts)
-    if release_notes_context:
-        sections.append("""
-## Release Notes Correlation
-The following release note entries may be relevant to the issues detected:
-""")
+    if sections:
+        _add("telemetry", "\n".join(sections), priority=2)
+
+    representative = (
+        select_representative_excerpts(
+            error_contexts,
+            top_n=_quote_top_n,
+            max_chars=_quote_max_chars,
+        )
+        if focus_plan.include_representative_quotes
+        else []
+    )
+    if representative:
+        quote_parts = [
+            "## Representative error evidence (top patterns)\n",
+            "One full excerpt per top pattern. Counts are in Log Aggregates above.\n",
+        ]
+        if compact:
+            referenced = {
+                c for ctx in representative
+                for c in COMPONENT_CONTEXT if c in ctx
+            }
+            if referenced:
+                quote_parts.append(
+                    "Components referenced: "
+                    + ", ".join(
+                        f"**{c}** ({COMPONENT_CONTEXT[c]})"
+                        for c in sorted(referenced)
+                    )
+                    + "\n"
+                )
+        for i, ctx in enumerate(representative, 1):
+            quote_parts.append(f"**Pattern {i}:**\n```\n{ctx}\n```\n")
+        _add("line_evidence", "\n".join(quote_parts), priority=3)
+
+    if focus_plan.include_kb_release_notes and release_notes_context:
+        rn_parts = [
+            "## Release Notes Correlation\n",
+            "The following release note entries may be relevant to the issues detected:\n",
+        ]
         for i, rn in enumerate(release_notes_context[:_max_rn], 1):
             title = rn.get("title", "Unknown")
             version = rn.get("version", "")
@@ -1104,91 +1149,29 @@ The following release note entries may be relevant to the issues detected:
             snippet = rn.get("content", "")[:350]
             version_label = f" ({version})" if version else ""
             fix_label = f" [{fix_id}]" if fix_id else ""
-            sections.append(f"{i}. **{title}{version_label}{fix_label}**: {snippet}\n")
+            rn_parts.append(f"{i}. **{title}{version_label}{fix_label}**: {snippet}\n")
+        _add("kb_release_notes", "\n".join(rn_parts), priority=5)
 
-    # KB articles (titles + short summaries only; no URLs to avoid grounding conflicts)
-    if kb_context:
-        sections.append("""
-## Relevant Knowledge Base Articles
-The following KB articles from the Qlik support knowledge base may help:
-""")
+    if focus_plan.include_kb_release_notes and kb_context:
+        kb_parts = [
+            "## Relevant Knowledge Base Articles\n",
+            "The following KB articles from the Qlik support knowledge base may help:\n",
+        ]
         for i, kb in enumerate(kb_context[:_max_kb], 1):
             title = kb.get("title", "Unknown")
             snippet = kb.get("content", "")[:400]
-            sections.append(f"{i}. **{title}**: {snippet}\n")
+            kb_parts.append(f"{i}. **{title}**: {snippet}\n")
+        _add("kb_release_notes", "\n".join(kb_parts), priority=5)
 
-    # Final instruction — use focus-mode template when set, otherwise default
-    focus_def = FOCUS_MODES.get(focus_mode) if focus_mode else None
+    from backend.llm.payload_formats import render_payload
 
-    if focus_def:
-        # Focus-mode: user explicitly chose what they want
-        sections.append(
-            f"\n---\n\n## Analysis Request — {focus_def['title']}\n\n"
-            f"{focus_def['system_addendum']}\n\n"
-            f"{focus_def['analysis_request']}\n"
-        )
-    else:
-        # Default dynamic analysis request
-        extra_items = []
-        if release_notes_context:
-            extra_items.append("**Release Notes Correlation**: Identify which issues may already be fixed in a newer release, referencing fix IDs (RECOB-XXXX) and versions")
-        if kb_context:
-            extra_items.append("**Relevant KB Articles**: Reference specific KB articles that provide guidance for the issues found")
-
-        analysis_items: List[str] = [
-            "1. **Health assessment**: Overall task health (Healthy/Warning/Critical) with justification.",
-            "2. **Root cause analysis**: Tie major issues to **evidence** (metrics and **LINE** references from excerpts). "
-            "Do not invent latency bottlenecks when telemetry is absent unless the log text itself shows slow operations.",
-        ]
-        if err_total > 0 or error_contexts:
-            err_item = (
-                "3. **Error & warning interpretation**: Group related excerpts, cite **LINE** numbers and components, "
-                "explain impact, and propose verification. **Do not** say the full log is missing when excerpts are provided above."
-            )
-            if web_search:
-                err_item += (
-                    " Use **web search** for unfamiliar SQLSTATE / ORA-xxxx / ERR… / internal codes."
-                )
-            analysis_items.extend(
-                [
-                    err_item,
-                    "4. **Priority actions**: Top 3-5 remediation steps ranked by impact.",
-                    "5. **Risk assessment**: What degrades or fails if issues persist?",
-                ]
-            )
-            next_idx = 6
-        else:
-            analysis_items.extend(
-                [
-                    "3. **Priority actions**: Top 3-5 remediation steps ranked by impact.",
-                    "4. **Risk assessment**: What degrades or fails if issues persist?",
-                ]
-            )
-            next_idx = 5
-
-        if extra_items:
-            for j, item in enumerate(extra_items):
-                analysis_items.append(f"{next_idx + j}. {item}")
-
-        base_focus = "Practical guidance for a DBA or Qlik support engineer."
-        if err_total > 0 or error_contexts:
-            base_focus += " Prioritize explaining surfaced log lines before generic advice."
-
-        perf_focus_clause = ""
-        if structured_perf:
-            perf_focus_clause = " Reference throughput/latency statistics when they support a conclusion."
-        else:
-            perf_focus_clause = (
-                " Structured latency/throughput telemetry was limited — keep performance tuning advice cautious."
-            )
-
-        sections.append(
-            "\n---\n\n## Analysis Request\n\n"
-            + "\n".join(analysis_items)
-            + f"\n\n**Focus**: {base_focus}{perf_focus_clause}\n"
-        )
-    
-    return "\n".join(sections)
+    final_sections, _budget_report = enforce_budgets(budgeted, _budgets)
+    return render_payload(
+        final_sections,
+        payload_format,
+        summary_data=summary_data,
+        file_info=file_info,
+    )
 
 
 def build_quick_summary_prompt(
@@ -1228,6 +1211,17 @@ def build_quick_summary_prompt(
         if stq:
             metrics["oracle_redo_log_avg_seconds"] = stq.get("avg", 0)
             metrics["oracle_redo_log_max_seconds"] = stq.get("max", 0)
+
+    fl_q = summary_data.get("full_load_activity") or {}
+    if fl_q.get("available"):
+        fls_q = fl_q.get("summary") or {}
+        metrics["full_load_completed"] = fls_q.get("full_load_completed", False)
+        metrics["full_load_tables_total"] = fls_q.get("tables_total", 0)
+        metrics["full_load_tables_loaded"] = fls_q.get("tables_loaded", 0)
+        metrics["full_load_tables_loading"] = fls_q.get("tables_loading", 0)
+        metrics["full_load_reload_events"] = fls_q.get("reload_events", 0)
+        metrics["full_load_rows_received"] = fls_q.get("total_rows_received", 0)
+        metrics["full_load_duration_seconds"] = fls_q.get("duration_seconds")
     
     # Latency stats
     lp = summary_data.get("latency_profile", {})
@@ -1264,6 +1258,9 @@ def get_messages_for_analysis(
     compact: bool = False,
     focus_mode: Optional[str] = None,
     tuning_reference: Optional[str] = None,
+    warning_contexts: Optional[List[str]] = None,
+    payload_format: Optional[str] = "markdown",
+    graph_context: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """
     Build the complete messages list for the LLM.
@@ -1308,6 +1305,9 @@ def get_messages_for_analysis(
         compact=compact,
         focus_mode=focus_mode,
         tuning_reference=tuning_reference,
+        warning_contexts=warning_contexts,
+        payload_format=payload_format,
+        graph_context=graph_context,
     )
     
     # Select system prompt: compact (local) → short; web_search → augmented; default → full
@@ -1317,6 +1317,11 @@ def get_messages_for_analysis(
         system_prompt = SYSTEM_PROMPT_WITH_WEB_SEARCH
     else:
         system_prompt = SYSTEM_PROMPT
+
+    if focus_mode and focus_mode in FOCUS_MODES:
+        addendum = FOCUS_MODES[focus_mode].get("system_addendum", "")
+        if addendum:
+            system_prompt = system_prompt + f"\n\n## Analysis Focus\n{addendum}\n"
     
     return [
         {"role": "system", "content": system_prompt},

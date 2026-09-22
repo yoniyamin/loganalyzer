@@ -207,6 +207,80 @@ CSV_FILE_NAME_RE = re.compile(
     re.IGNORECASE
 )
 
+# --- Full Load Patterns (SOURCE_UNLOAD / TARGET_LOAD / TASK_MANAGER) ---
+FL_INIT_SEGMENTED_RE = re.compile(
+    r"Start initializing segmented table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\s*by subtask\s*(\d+)",
+    re.IGNORECASE
+)
+FL_INIT_TABLE_RE = re.compile(
+    r"Start initializing table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\s*by subtask\s*(\d+)",
+    re.IGNORECASE
+)
+FL_START_SEGMENT_RE = re.compile(
+    r"Start loading segment #(\d+)\s+of\s+(\d+)\s+of table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\s*by subtask\s*(\d+)",
+    re.IGNORECASE
+)
+FL_START_TABLE_RE = re.compile(
+    r"Start loading table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\s*by subtask\s*(\d+)",
+    re.IGNORECASE
+)
+FL_UNLOAD_SEGMENT_DONE_RE = re.compile(
+    r"Unload finished for segment #(\d+)\s+of segmented table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\.\s*(\d+)\s+rows sent",
+    re.IGNORECASE
+)
+FL_UNLOAD_TABLE_DONE_RE = re.compile(
+    r"Unload finished for table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\.\s*(\d+)\s+rows sent",
+    re.IGNORECASE
+)
+FL_LOAD_SEGMENT_DONE_RE = re.compile(
+    r"Load finished for segment #(\d+)\s+of segmented table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\.\s*"
+    r"(\d+)\s+rows received\.\s*(\d+)\s+rows skipped\.\s*Volume transferred\s+(\d+)",
+    re.IGNORECASE
+)
+FL_LOAD_TABLE_DONE_RE = re.compile(
+    r"Load finished for table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\.\s*"
+    r"(\d+)\s+rows received\.\s*(\d+)\s+rows skipped\.\s*Volume transferred\s+(\d+)",
+    re.IGNORECASE
+)
+FL_TM_SEGMENT_DONE_RE = re.compile(
+    r"Load finished for segment #(\d+)\s+of table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\s*by subtask\s*(\d+)\.\s*"
+    r"(\d+)\s+records transferred",
+    re.IGNORECASE
+)
+FL_TM_TABLE_DONE_RE = re.compile(
+    r"Load finished for table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)\s*by subtask\s*(\d+)\.\s*"
+    r"(\d+)\s+records transferred",
+    re.IGNORECASE
+)
+FL_RELOAD_RE = re.compile(
+    r"Reloading table\s+(\d+)\s+because subtask\s*#(\d+)\s+that was loading segment\s+(\d+)\s+finished with error",
+    re.IGNORECASE
+)
+FL_SEGMENT_WHERE_RE = re.compile(
+    r"Transformation Where\s+'([^']*)'",
+    re.IGNORECASE
+)
+FL_UNLOAD_CMD_RE = re.compile(
+    r"Command 'UNLOAD_TABLE_SEGMENT'\s+received in component 'st_(\d+)_",
+    re.IGNORECASE
+)
+FL_COMPLETED_RE = re.compile(
+    r'Full\s+[Ll]oad\s+completed',
+    re.IGNORECASE
+)
+FL_RUNNING_MODE_RE = re.compile(
+    r"Task\s+'([^']+)'\s+running full load(?:\s+and\s+CDC)?\s+in\s+(.+?)\s+mode",
+    re.IGNORECASE
+)
+FL_TARGET_PREP_RE = re.compile(
+    r"Completed target preparation for (?:segmented )?table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)",
+    re.IGNORECASE
+)
+FL_INIT_FINISHED_RE = re.compile(
+    r"Initialization finished for (?:segmented )?table '([^']+)'\.'([^']+)'\s*\(Id\s*=\s*(\d+)\)",
+    re.IGNORECASE
+)
+
 # --- Sorter Patterns ---
 SORTER_MEMORY_RE = re.compile(
     r'Stop reading when memory limit reached.*is set to (true|false)',
@@ -460,8 +534,8 @@ CLOSURE_REASON_DESCRIPTIONS = {
     "PKu": "PK Update Conflict - An UPDATE changes a PK that was already modified in this batch",
     "PKd": "PK Delete Conflict - A DELETE on a PK that was modified in this batch",
     "MEM": "Memory Limit - Batch closed because memory threshold was exceeded",
-    "TIM": "Stream Timeout - No data received from source within timeout period",
-    "TMO": "Bulk Timeout - Maximum batch duration was reached",
+    "TIM": "Stream Timeout - Bulk apply waits briefly to accumulate more changes (Longer than seconds, default 1)",
+    "TMO": "Bulk Timeout - Bulk released on schedule while sorter still feeds changes (But less than seconds, default 30)",
     "SNG": "Single Table - Batch finished for tables with PK",
     "RES": "Resume - Batch closed for resume operation",
     "LOAD": "Load Table - Batch closed for full load table event",

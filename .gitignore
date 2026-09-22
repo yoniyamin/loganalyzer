@@ -21,3 +21,6 @@ chroma_db
 data/release_notes_cache.json
 log_analyzer.db
 
+*log_analyzer.db*
+graphify-out/*
+prompt_lab_samples/

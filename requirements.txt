@@ -19,3 +19,5 @@ spacy>=3.5.0
 # Chart rendering for vision-capable LLM prompts
 plotly>=5.18.0
 kaleido>=0.2.1
+# Testing
+pytest>=7.0.0

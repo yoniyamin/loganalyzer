@@ -162,8 +162,24 @@ def fuse_answer(
     if local_answer:
         local_facts = local_answer.answer
     elif error_codes:
-        # Search for these error codes in the log
         local_facts = _get_error_facts(error_codes, file_id, db)
+
+    # Append structural_facts from graph neighborhood if available
+    try:
+        from backend.llm.error_resolution import _build_structural_facts
+        structural_xml = _build_structural_facts(db, file_id, None)
+        if not structural_xml and error_codes:
+            from backend.database import LogError
+            first_err = db.query(LogError).filter(
+                LogError.file_id == file_id,
+                LogError.error_code.in_(error_codes) if error_codes else True
+            ).first()
+            if first_err:
+                structural_xml = _build_structural_facts(db, file_id, first_err.line_number)
+        if structural_xml:
+            local_facts = local_facts + "\n\n" + structural_xml if local_facts else structural_xml
+    except Exception:
+        pass  # structural_facts are optional enrichment
     
     # Format KB articles
     kb_articles_formatted = []

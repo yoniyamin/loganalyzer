@@ -7,7 +7,19 @@ from backend.paths import db_path
 DB_PATH = db_path()
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False, "timeout": 30},
+)
+
+from sqlalchemy import event as _sa_event
+
+@_sa_event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -117,6 +129,7 @@ class LogError(Base):
     component = Column(String, nullable=True)
     thread_id = Column(String, nullable=True)
     text = Column(Text)
+    error_code = Column(String, nullable=True, index=True)
 
     file = relationship("LogFile", back_populates="errors")
 
@@ -264,6 +277,11 @@ class LLMConfig(Base):
     # LM Studio generation parameters (overrides client defaults when set)
     lmstudio_temperature = Column(Float, nullable=True)   # default 0.3
     lmstudio_max_tokens = Column(Integer, nullable=True)  # default 1500
+    # OpenAI-compatible local server (e.g. FastFlowLM)
+    openai_api_base_url = Column(String, nullable=True)
+    openai_api_key_encrypted = Column(String, nullable=True)
+    openai_api_temperature = Column(Float, nullable=True)
+    openai_api_max_tokens = Column(Integer, nullable=True)
     # Web search enabled for report generation
     web_search_enabled = Column(Boolean, default=False)
     # Redact log-derived prompt content before Gemini/OpenRouter (ignored for LM Studio)
@@ -283,6 +301,11 @@ class LLMReport(Base):
     cost_usd = Column(Float, default=0.0)
     report_content = Column(Text)  # Markdown formatted report
     generated_at = Column(DateTime, default=datetime.utcnow)
+    llm_duration_seconds = Column(Float, nullable=True)
+    generation_duration_seconds = Column(Float, nullable=True)
+    focus_mode = Column(String, nullable=True)
+    web_search = Column(Boolean, nullable=True)
+    quick = Column(Boolean, nullable=True)
     
     file = relationship("LogFile", backref="llm_reports")
 
@@ -371,6 +394,37 @@ class RoutingFeedback(Base):
     file = relationship("LogFile", backref="routing_feedback")
 
 
+class FileVersion(Base):
+    """Per-file fingerprint sidecar for graph/FTS cache invalidation."""
+    __tablename__ = "file_versions"
+
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"), unique=True, index=True)
+    schema_version = Column(Integer, default=1)
+    extractor_version = Column(Integer, default=1)
+    fts_version = Column(Integer, default=1)
+    findings_epoch = Column(Integer, default=0)
+    indexed_at = Column(DateTime, nullable=True)
+
+    file = relationship("LogFile", backref="file_version")
+
+
+class LogLineMeta(Base):
+    """Dense per-line metadata (offsets, parsed fields) — no body stored."""
+    __tablename__ = "log_line_meta"
+
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"), index=True)
+    line_number = Column(Integer, index=True)
+    byte_offset = Column(Integer)
+    timestamp = Column(DateTime, nullable=True, index=True)
+    component = Column(String, nullable=True)
+    thread_id = Column(String, nullable=True)
+    severity = Column(String, nullable=True)  # E, W, I, T, D or None
+
+    file = relationship("LogFile", backref="line_meta")
+
+
 class QuickPattern(Base):
     """User-defined and built-in quick search regex patterns."""
     __tablename__ = "quick_patterns"
@@ -394,13 +448,15 @@ DEFAULT_QUICK_PATTERNS = [
 ]
 
 
+SCHEMA_VERSION = 2  # Bump when adding ALTER migrations
+
+
 def init_db():
     """Initialize the database and run migrations."""
     Base.metadata.create_all(bind=engine)
-    
-    # Run migrations for LLMConfig table
-    _migrate_llm_config()
+    _migrate_schema()
     _seed_quick_patterns()
+    _init_fts5()
 
 
 def _seed_quick_patterns():
@@ -425,70 +481,116 @@ def _seed_quick_patterns():
         db.close()
 
 
-def _migrate_llm_config():
-    """Add new columns to llm_config table if they don't exist."""
+def _init_fts5():
+    """Create FTS5 virtual table if it doesn't exist.
+
+    Uses regular (content-storing) FTS5 so that file_id and line_number
+    are filterable in queries. Body is tokenized for MATCH; snippets
+    are retrieved via LogReader seek for display (not from FTS).
+    """
     import sqlite3
-    
-    # Get the database path from the engine
-    db_path = str(engine.url).replace('sqlite:///', '')
-    if not db_path or db_path == ':memory:':
+
+    db_file = str(engine.url).replace('sqlite:///', '')
+    if not db_file or db_file == ':memory:':
         return
-    
+
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_file)
         cursor = conn.cursor()
-        
-        # Check if llm_config table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_config'")
-        if not cursor.fetchone():
-            conn.close()
-            return
-        
-        # Get existing columns
-        cursor.execute("PRAGMA table_info(llm_config)")
-        columns = [row[1] for row in cursor.fetchall()]
-        
-        # Add missing columns
-        if 'provider' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN provider TEXT DEFAULT 'gemini'")
-            print("Migration: Added 'provider' column to llm_config")
-        
-        if 'gemini_api_key_encrypted' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN gemini_api_key_encrypted TEXT")
-            print("Migration: Added 'gemini_api_key_encrypted' column to llm_config")
-        
-        if 'web_search_enabled' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN web_search_enabled INTEGER DEFAULT 0")
-            print("Migration: Added 'web_search_enabled' column to llm_config")
-
-        if 'lmstudio_base_url' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_base_url TEXT")
-            print("Migration: Added 'lmstudio_base_url' column to llm_config")
-
-        if 'lmstudio_temperature' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_temperature REAL")
-            print("Migration: Added 'lmstudio_temperature' column to llm_config")
-
-        if 'lmstudio_max_tokens' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN lmstudio_max_tokens INTEGER")
-            print("Migration: Added 'lmstudio_max_tokens' column to llm_config")
-
-        if 'sanitize_log_for_cloud_llm' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN sanitize_log_for_cloud_llm INTEGER DEFAULT 1")
-            print("Migration: Added 'sanitize_log_for_cloud_llm' column to llm_config")
-
-        if 'compile_model' not in columns:
-            cursor.execute("ALTER TABLE llm_config ADD COLUMN compile_model TEXT")
-            cursor.execute(
-                "UPDATE llm_config SET compile_model = default_model "
-                "WHERE compile_model IS NULL AND default_model IS NOT NULL"
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS log_lines_fts USING fts5(
+                body,
+                file_id UNINDEXED,
+                line_number UNINDEXED,
+                tokenize='unicode61'
             )
-            print("Migration: Added 'compile_model' column to llm_config")
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"FTS5 init warning: {e}")
+
+
+def _get_columns(cursor, table_name: str) -> set:
+    """Return set of column names for a table (empty if table doesn't exist)."""
+    cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+    if not cursor.fetchone():
+        return set()
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in cursor.fetchall()}
+
+
+def _migrate_schema():
+    """Unified lightweight migrator: PRAGMA + ALTER for existing tables.
+
+    New tables are handled by create_all above. This only adds columns
+    that were introduced after users already created the table.
+    """
+    import sqlite3
+
+    db_file = str(engine.url).replace('sqlite:///', '')
+    if not db_file or db_file == ':memory:':
+        return
+
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+
+        # --- llm_config migrations (legacy) ---
+        cols = _get_columns(cursor, 'llm_config')
+        if cols:
+            _alter_if_missing(cursor, 'llm_config', cols, [
+                ("provider", "TEXT DEFAULT 'gemini'"),
+                ("gemini_api_key_encrypted", "TEXT"),
+                ("web_search_enabled", "INTEGER DEFAULT 0"),
+                ("lmstudio_base_url", "TEXT"),
+                ("lmstudio_temperature", "REAL"),
+                ("lmstudio_max_tokens", "INTEGER"),
+                ("openai_api_base_url", "TEXT"),
+                ("openai_api_key_encrypted", "TEXT"),
+                ("openai_api_temperature", "REAL"),
+                ("openai_api_max_tokens", "INTEGER"),
+                ("sanitize_log_for_cloud_llm", "INTEGER DEFAULT 1"),
+                ("compile_model", "TEXT"),
+            ])
+            if 'compile_model' not in cols:
+                cursor.execute(
+                    "UPDATE llm_config SET compile_model = default_model "
+                    "WHERE compile_model IS NULL AND default_model IS NOT NULL"
+                )
+
+        # --- errors table: add error_code ---
+        cols = _get_columns(cursor, 'errors')
+        if cols:
+            _alter_if_missing(cursor, 'errors', cols, [
+                ("error_code", "TEXT"),
+            ])
+            if 'error_code' not in cols:
+                cursor.execute("CREATE INDEX IF NOT EXISTS ix_errors_error_code ON errors(error_code)")
+
+        # --- llm_reports table: add timing + metadata columns ---
+        cols = _get_columns(cursor, 'llm_reports')
+        if cols:
+            _alter_if_missing(cursor, 'llm_reports', cols, [
+                ("llm_duration_seconds", "REAL"),
+                ("generation_duration_seconds", "REAL"),
+                ("focus_mode", "TEXT"),
+                ("web_search", "INTEGER"),
+                ("quick", "INTEGER"),
+            ])
 
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"Migration warning: {e}")
+
+
+def _alter_if_missing(cursor, table: str, existing: set, columns: list):
+    """Add each (col_name, col_def) that isn't already in existing."""
+    for col_name, col_def in columns:
+        if col_name not in existing:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+            print(f"Migration: Added '{col_name}' to {table}")
 
 
 def get_db():

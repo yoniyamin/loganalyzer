@@ -70,6 +70,11 @@
     font-weight: 600;
 }
 
+.ai-report-meta-inline .meta-duration {
+    color: var(--text-muted, #6c7086);
+    font-variant-numeric: tabular-nums;
+}
+
 /* Export button in header */
 .ai-export-btn-header {
     display: flex;
@@ -155,6 +160,31 @@
 .ai-report-body {
     padding: 16px;
     min-height: 200px;
+    position: relative;
+}
+
+.ai-report-body.ai-report-regenerating .ai-report-content {
+    opacity: 0.55;
+    pointer-events: none;
+    user-select: none;
+}
+
+.ai-regen-banner {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: -16px -16px 12px;
+    padding: 10px 16px;
+    background: rgba(137, 180, 250, 0.12);
+    border-bottom: 1px solid rgba(137, 180, 250, 0.35);
+}
+
+.ai-regen-banner-inner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.85rem;
+    color: var(--accent-color, #89b4fa);
 }
 
 .ai-report-placeholder {

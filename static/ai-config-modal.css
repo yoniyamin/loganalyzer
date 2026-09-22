@@ -270,6 +270,13 @@
     gap: 4px;
 }
 
+.ai-modal-footer-left {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
 .ai-modal-footer {
     display: flex;
     align-items: center;

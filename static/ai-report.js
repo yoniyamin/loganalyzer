@@ -51,8 +51,11 @@ class AIReportManager {
                 if (config.provider) {
                     this.currentProvider = String(config.provider).toLowerCase();
                 }
+                if (config.auto_generate !== undefined) {
+                    this.autoGenerateEnabled = config.auto_generate !== false;
+                }
                 this.renderSection();
-                // Auto-generate if we have a file and just got configured
+                // Auto-generate only when newly configured — never wipe an existing report on provider switch
                 if (this.isConfigured && this.currentFileId && !this.hasReport) {
                     this.autoGenerate();
                 }
@@ -121,9 +124,15 @@ class AIReportManager {
         return (this.currentProvider || '').toLowerCase() === 'lmstudio';
     }
 
+    _isLocalProviderActive() {
+        const p = (this.currentProvider || '').toLowerCase();
+        return p === 'lmstudio' || p === 'openai_api';
+    }
+
     _getProviderHint() {
         const p = (this.currentProvider || '').toLowerCase();
         if (p === 'lmstudio') return 'local model (LM Studio)';
+        if (p === 'openai_api') return 'OpenAI API (local)';
         if (p === 'gemini') return 'Google Gemini';
         if (p === 'openrouter') return 'OpenRouter';
         return 'the configured model';
@@ -359,14 +368,72 @@ class AIReportManager {
      */
     render(container, fileId) {
         this.container = container;
-        this.renderSection();
-
-        const viewFileId = fileId ?? this.currentFileId;
-        const cached = viewFileId && this._cachedReportByFileId[viewFileId];
-        const generatingForView = this.isGenerating && this._generateReportFileId === viewFileId;
-        if (cached && !generatingForView) {
-            this.displayReport(cached);
+        if (fileId != null) {
+            this.currentFileId = fileId;
         }
+        this.renderSection();
+    }
+
+    /** Re-show cached or server-stored report after renderSection rebuilds the DOM. */
+    _restoreOrFetchReportAfterSectionRender() {
+        const fileId = this.currentFileId;
+        if (!fileId || !this.isConfigured || this.isGenerating) return;
+        if (this._generateReportFileId === fileId && this.isGenerating) return;
+
+        const cached = this._cachedReportByFileId[fileId];
+        if (cached) {
+            this.displayReport(cached);
+            return;
+        }
+
+        this._fetchExistingReportQuietly(fileId);
+    }
+
+    async _fetchExistingReportQuietly(fileId) {
+        if (!fileId || !this.isConfigured) return;
+        try {
+            const response = await fetch(`/api/llm/report/${fileId}`);
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.exists === false) return;
+            if (this.currentFileId !== fileId) return;
+            if (this.isGenerating && this._generateReportFileId === fileId) return;
+            this.displayReport(data);
+        } catch (_) {
+            /* ignore */
+        }
+    }
+
+    _showRegeneratingBanner(message = 'Generating AI insights…') {
+        const body = document.getElementById('aiReportBody');
+        if (!body) return false;
+
+        const hasContent = body.querySelector('.ai-report-content');
+        if (!hasContent) return false;
+
+        body.classList.add('ai-report-regenerating');
+        let banner = body.querySelector('.ai-regen-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.className = 'ai-regen-banner';
+            banner.setAttribute('role', 'status');
+            banner.innerHTML = `
+                <div class="ai-regen-banner-inner">
+                    <div class="ai-btn-spinner"></div>
+                    <span></span>
+                </div>`;
+            body.insertBefore(banner, body.firstChild);
+        }
+        const label = banner.querySelector('span');
+        if (label) label.textContent = message;
+        return true;
+    }
+
+    _clearRegeneratingBanner() {
+        const body = document.getElementById('aiReportBody');
+        if (!body) return;
+        body.classList.remove('ai-report-regenerating');
+        body.querySelector('.ai-regen-banner')?.remove();
     }
     
     renderSection() {
@@ -400,6 +467,7 @@ class AIReportManager {
                             <span class="meta-model" id="metaModelInline"></span>
                             <span class="meta-tokens" id="metaTokensInline"></span>
                             <span class="meta-cost" id="metaCostInline"></span>
+                            <span class="meta-duration" id="metaDurationInline"></span>
                         </div>
                         <button class="ai-delete-btn" id="aiDeleteReportBtn" style="display: none;" title="Delete this report">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -450,6 +518,8 @@ class AIReportManager {
                 this._startTimer();
             }
             this.updateStatusBadge('loading');
+        } else {
+            this._restoreOrFetchReportAfterSectionRender();
         }
     }
 
@@ -613,6 +683,7 @@ class AIReportManager {
                             <span>${dateStr}</span>
                             <span>${report.prompt_tokens + report.completion_tokens} tokens</span>
                             <span class="${report.cost_usd === 0 ? 'cost-free' : ''}">${costStr}</span>
+                            ${report.generation_duration_seconds != null ? `<span>${report.generation_duration_seconds < 60 ? report.generation_duration_seconds.toFixed(1) + 's' : Math.floor(report.generation_duration_seconds / 60) + 'm ' + Math.round(report.generation_duration_seconds % 60) + 's'}</span>` : ''}
                         </div>
                     </div>
                     <div class="history-item-actions">
@@ -852,14 +923,17 @@ class AIReportManager {
      * Show a focus mode selection dialog. Returns a Promise that resolves
      * to the chosen focus_mode string, or null if the user cancels.
      */
-    _showFocusDialog() {
+    _showFocusDialog(preflight = {}) {
+        const subtitle = preflight.needs_focus
+            ? 'This log has limited errors, performance telemetry, full-load activity, and task configuration. Choose what the report should emphasize.'
+            : 'Choose what the report should emphasize for this log.';
         return new Promise((resolve) => {
             const overlay = document.createElement('div');
             overlay.className = 'ai-focus-overlay';
             overlay.innerHTML = `
                 <div class="ai-focus-dialog">
                     <h3>Choose Analysis Focus</h3>
-                    <p class="ai-focus-subtitle">This log has no errors or performance data. What would you like the report to focus on?</p>
+                    <p class="ai-focus-subtitle">${subtitle}</p>
                     <div class="ai-focus-options">
                         <button class="ai-focus-option" data-focus="general_review">
                             <span class="ai-focus-icon">📋</span>
@@ -917,7 +991,7 @@ class AIReportManager {
             if (pf.ok) {
                 const pfData = await pf.json();
                 if (pfData.needs_focus) {
-                    focusMode = await this._showFocusDialog();
+                    focusMode = await this._showFocusDialog(pfData);
                     if (focusMode === null) return; // User cancelled
                 }
             }
@@ -942,25 +1016,28 @@ class AIReportManager {
         if (metaInline) metaInline.style.display = 'none';
         if (exportBtnHeader) exportBtnHeader.style.display = 'none';
         
-        // Show loading state
+        // Show loading state — keep existing report visible when regenerating
         this.isGenerating = true;
         generateBtn.disabled = true;
         generateBtn.innerHTML = `
             <div class="ai-btn-spinner"></div>
             Generating...
         `;
-        body.innerHTML = `
-            <div class="ai-report-loading">
-                <div class="ai-loading-spinner"></div>
-                <p>Generating AI insights...</p>
-                <div class="ai-generation-timer" id="aiGenerationTimer">0s</div>
-                <div class="ai-progress-status">
-                    <span class="ai-progress-phase" id="aiProgressPhase">Preparing</span>
-                    <span class="ai-progress-detail" id="aiProgressDetail"></span>
+        const keptExistingReport = this.hasReport && this._showRegeneratingBanner('Regenerating AI insights…');
+        if (!keptExistingReport) {
+            body.innerHTML = `
+                <div class="ai-report-loading">
+                    <div class="ai-loading-spinner"></div>
+                    <p>Generating AI insights...</p>
+                    <div class="ai-generation-timer" id="aiGenerationTimer">0s</div>
+                    <div class="ai-progress-status">
+                        <span class="ai-progress-phase" id="aiProgressPhase">Preparing</span>
+                        <span class="ai-progress-detail" id="aiProgressDetail"></span>
+                    </div>
+                    <div class="cost-estimate" id="aiCostEstimate">Estimating cost...</div>
                 </div>
-                <div class="cost-estimate" id="aiCostEstimate">Estimating cost...</div>
-            </div>
-        `;
+            `;
+        }
 
         const run = this._beginReportGenerationRun(this.currentFileId);
 
@@ -1003,9 +1080,12 @@ class AIReportManager {
             if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
             if (response.ok) {
                 const report = await response.json();
-                const elapsed = this._reportToastStart != null
-                    ? Math.floor((Date.now() - this._reportToastStart) / 1000)
-                    : 0;
+                const serverDur = report.generation_duration_seconds;
+                const elapsed = serverDur != null
+                    ? Math.round(serverDur)
+                    : (this._reportToastStart != null
+                        ? Math.floor((Date.now() - this._reportToastStart) / 1000)
+                        : 0);
                 const modelBit = report.model_used
                     ? (report.model_used.includes('/') ? report.model_used.split('/').pop() : report.model_used)
                     : this._reportToastProviderHint;
@@ -1031,6 +1111,7 @@ class AIReportManager {
     
     displayReport(report) {
         const body = document.getElementById('aiReportBody');
+        this._clearRegeneratingBanner();
         this.hasReport = true;
         this.currentReportId = report.report_id || null;
         if (this.currentFileId) {
@@ -1080,6 +1161,21 @@ class AIReportManager {
             metaCost.innerHTML = report.cost_usd === 0 
                 ? '<span class="cost-free">FREE</span>'
                 : `$${report.cost_usd.toFixed(4)}`;
+
+            const metaDuration = document.getElementById('metaDurationInline');
+            if (metaDuration) {
+                const genDur = report.generation_duration_seconds;
+                if (genDur != null) {
+                    metaDuration.textContent = genDur < 60
+                        ? `${genDur.toFixed(1)}s`
+                        : `${Math.floor(genDur / 60)}m ${Math.round(genDur % 60)}s`;
+                    metaDuration.style.display = '';
+                } else {
+                    metaDuration.textContent = '';
+                    metaDuration.style.display = 'none';
+                }
+            }
+
             metaInline.style.display = 'flex';
         }
         
@@ -1204,6 +1300,15 @@ class AIReportManager {
     showError(message) {
         const body = document.getElementById('aiReportBody');
         this.updateStatusBadge('error', message);
+        const cached = this.currentFileId && this._cachedReportByFileId[this.currentFileId];
+        if (cached) {
+            this._clearRegeneratingBanner();
+            this.displayReport(cached);
+            if (typeof window.showToast === 'function') {
+                window.showToast(message, 'error', 6000);
+            }
+            return;
+        }
         if (!body) return;
         body.innerHTML = `
             <div class="ai-report-placeholder" style="color: #f38ba8;">
@@ -1262,6 +1367,12 @@ class AIReportManager {
         // Inline code
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         
+        // Promote numbered audit section titles to h2 (legacy reports)
+        html = html.replace(
+            /^(\d+)\.\s+\*?\*?(Executive Summary[^*\n]*|Key Findings[^*\n]*|Performance[^*\n]*|Issues[^*\n]*|Error[^*\n]*|Risk Assessment[^*\n]*)\*?\*?\s*$/gim,
+            '<h2>$2</h2>'
+        );
+
         // Headers - add classes for styling
         html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
         html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
@@ -1395,9 +1506,12 @@ class AIReportManager {
 
         const run = this._beginReportGenerationRun(runForFileId);
         this._manualGeneration = false;
+        const cachedBeforeRun = this._cachedReportByFileId[runForFileId];
         this.isGenerating = true;
         this.updateStatusBadge('loading');
-        this._applyGeneratingBodyToDom();
+        if (!cachedBeforeRun) {
+            this._applyGeneratingBodyToDom();
+        }
         this._startTimer();
 
         try {
@@ -1423,10 +1537,16 @@ class AIReportManager {
                     }
                 }
             } catch (e) {
-                // No cache, generate below
+                // No server report, generate below
             }
 
             if (this._isStaleGenerationRun(run.epoch, run.fileId)) return;
+
+            if (cachedBeforeRun) {
+                this._showRegeneratingBanner('Auto-generating AI insights…');
+            } else {
+                this._applyGeneratingBodyToDom();
+            }
 
             let autoFocus = null;
             try {
@@ -1459,9 +1579,12 @@ class AIReportManager {
 
             if (response.ok) {
                 const report = await response.json();
-                const elapsed = this._reportToastStart != null
-                    ? Math.floor((Date.now() - this._reportToastStart) / 1000)
-                    : 0;
+                const serverDur2 = report.generation_duration_seconds;
+                const elapsed = serverDur2 != null
+                    ? Math.round(serverDur2)
+                    : (this._reportToastStart != null
+                        ? Math.floor((Date.now() - this._reportToastStart) / 1000)
+                        : 0);
                 const modelBit = report.model_used
                     ? (report.model_used.includes('/') ? report.model_used.split('/').pop() : report.model_used)
                     : this._reportToastProviderHint;

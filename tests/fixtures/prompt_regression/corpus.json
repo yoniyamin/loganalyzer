@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "description": "Golden regression corpus for prompt quality pipeline (Phase 0a).",
+  "cases": [
+    {
+      "id": "rich_errors_perf",
+      "title": "Indexed sample log (errors + task config + warnings)",
+      "fixture": "indexed_file",
+      "quick": false,
+      "focus_mode": null,
+      "payload_format": "markdown",
+      "include_graph": true,
+      "status": "active",
+      "checks": ["no_analysis_request", "evidence_preamble", "task_config"]
+    },
+    {
+      "id": "sparse_general_review",
+      "title": "Sparse log — general_review focus",
+      "fixture": "sparse_indexed_file",
+      "quick": false,
+      "focus_mode": "general_review",
+      "payload_format": "markdown",
+      "include_graph": false,
+      "status": "active",
+      "checks": ["needs_focus_preflight", "no_analysis_request"]
+    },
+    {
+      "id": "sparse_configuration",
+      "title": "Sparse log — configuration focus",
+      "fixture": "sparse_indexed_file",
+      "quick": false,
+      "focus_mode": "configuration",
+      "payload_format": "markdown",
+      "include_graph": false,
+      "status": "active",
+      "checks": ["no_representative_errors", "configuration_focus"]
+    },
+    {
+      "id": "sparse_errors_focus",
+      "title": "Sparse log — errors focus (warnings tail)",
+      "fixture": "sparse_indexed_file",
+      "quick": false,
+      "focus_mode": "errors",
+      "payload_format": "markdown",
+      "include_graph": false,
+      "status": "active",
+      "checks": ["no_analysis_request"]
+    },
+    {
+      "id": "payload_json_markdown",
+      "title": "Format B — JSON facts + Markdown",
+      "fixture": "indexed_file",
+      "quick": false,
+      "focus_mode": null,
+      "payload_format": "json_markdown",
+      "include_graph": true,
+      "status": "active",
+      "checks": ["json_facts_block", "log_aggregates"]
+    },
+    {
+      "id": "lab_13_databricks",
+      "title": "Lab 13 — Databricks latency (outline/chart/param regression)",
+      "status": "pending",
+      "note": "Import prompt-lab export package when available"
+    },
+    {
+      "id": "lab_43_sybase_timeouts",
+      "title": "Lab 43 — Sybase timeouts",
+      "status": "pending",
+      "note": "Import prompt-lab export package when available"
+    },
+    {
+      "id": "large_noisy_log",
+      "title": "Large noisy log — budget compression",
+      "status": "pending",
+      "note": "Add dedicated fixture log file"
+    },
+    {
+      "id": "kb_dependent",
+      "title": "KB-dependent grounding case",
+      "status": "pending",
+      "note": "Requires fetch_external=true and known KB hits"
+    },
+    {
+      "id": "flm_openai_api",
+      "title": "FLM / openai_api provider reliability",
+      "status": "pending",
+      "note": "Manual compare run; track flm_empty_response_rate"
+    }
+  ]
+}

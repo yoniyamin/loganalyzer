@@ -121,6 +121,9 @@ def wait_for_server(timeout=15):
 
 
 def main():
+    # Enable multi-model compare in the desktop app (prompt lab UI).
+    os.environ.setdefault("LOG_ANALYZER_PROMPT_LAB", "1")
+
     api = Api()
 
     t = threading.Thread(target=start_server, daemon=True)
