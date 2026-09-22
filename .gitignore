@@ -7,6 +7,8 @@ log_analyzer.db
 llm_reports/
 chroma_db/chroma.sqlite3
 chroma_db/*
+chroma_kb/
+log_graph_cache/
 
 # KB Assistant virtual environment
 kb-assistant/.kb-venv/
