@@ -82,6 +82,7 @@ class LMStudioClient:
 
     def __init__(self, base_url: str = DEFAULT_LMSTUDIO_BASE_URL):
         self.base_url = base_url.rstrip("/")
+        self._reasoning_capability_cache: Dict[str, bool] = {}
 
     def set_base_url(self, url: str):
         self.base_url = url.rstrip("/")
@@ -112,6 +113,75 @@ class LMStudioClient:
             else:  # user
                 parts.append(content)
         return "\n\n".join(parts)
+
+    def _model_exposes_reasoning_config(self, model: Optional[str]) -> bool:
+        """True when LM Studio reports reasoning configuration for this model."""
+        if not model:
+            return False
+        cached = self._reasoning_capability_cache.get(model)
+        if cached is not None:
+            return cached
+
+        exposes = False
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(f"{self.base_url}/api/v1/models")
+                response.raise_for_status()
+                data = response.json()
+            for entry in data.get("models", []):
+                caps = entry.get("capabilities") or {}
+                if not caps.get("reasoning"):
+                    continue
+                key = entry.get("key", "")
+                if key == model:
+                    exposes = True
+                    break
+                for inst in entry.get("loaded_instances", []):
+                    if inst.get("id") == model:
+                        exposes = True
+                        break
+                if exposes:
+                    break
+        except Exception as exc:
+            logger.debug("LM Studio reasoning capability lookup failed: %s", exc)
+
+        self._reasoning_capability_cache[model] = exposes
+        return exposes
+
+    def _apply_reasoning_param(
+        self,
+        payload: Dict[str, Any],
+        *,
+        model: Optional[str],
+        reasoning: Optional[str],
+    ) -> None:
+        """Set reasoning only when the loaded model exposes that configuration."""
+        if reasoning is not None:
+            if self._model_exposes_reasoning_config(model):
+                payload["reasoning"] = reasoning
+            return
+        if self._model_exposes_reasoning_config(model):
+            payload["reasoning"] = "off"
+
+    def _post_chat(
+        self,
+        client: httpx.Client,
+        payload: Dict[str, Any],
+    ) -> httpx.Response:
+        response = client.post(f"{self.base_url}/api/v1/chat", json=payload)
+        if response.status_code != 400 or "reasoning" not in payload:
+            return response
+
+        err = response.text.lower()
+        if "reasoning" not in err or "does not expose" not in err:
+            return response
+
+        logger.info(
+            "LM Studio rejected reasoning param for model %s; retrying without it",
+            payload.get("model"),
+        )
+        retry_payload = {k: v for k, v in payload.items() if k != "reasoning"}
+        return client.post(f"{self.base_url}/api/v1/chat", json=retry_payload)
 
     # ------------------------------------------------------------------
     # Public API
@@ -249,15 +319,21 @@ class LMStudioClient:
         est_prompt_tokens = max(len(input_text) // 4 + 1024, 3072)
         ctx_len = min(max(est_prompt_tokens + max_tokens + 1024, 8192), 65536)
 
+        reasoning_override = kwargs.pop("reasoning", None)
+
         payload: Dict[str, Any] = {
             "input": input_text,
             "temperature": temperature,
             "context_length": ctx_len,
             # Native /api/v1/chat has no output-cap field; max_tokens only sizes ctx_len above.
-            "reasoning": "off",
         }
         if model:
             payload["model"] = model
+        self._apply_reasoning_param(
+            payload,
+            model=model,
+            reasoning=reasoning_override,
+        )
 
         request_timeout = timeout_seconds if timeout_seconds is not None else LMSTUDIO_DEFAULT_TIMEOUT_SECONDS
         logger.info(
@@ -282,7 +358,7 @@ class LMStudioClient:
         try:
             if cancel_file_id is not None:
                 check_cancelled(cancel_file_id, kind=cancel_kind)
-            response = client.post(f"{self.base_url}/api/v1/chat", json=payload)
+            response = self._post_chat(client, payload)
         except httpx.ConnectError as e:
             maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
             raise ValueError(
