@@ -38,10 +38,12 @@ from backend.llm.openai_api_client import (
 from backend.llm.prompts import (
     get_messages_for_analysis,
     count_prompt_tokens,
+    replace_analysis_system_prompt,
     sanitize_dict,
     sanitize_list,
     extract_error_codes_for_prompt,
 )
+from backend.llm.evidence_compiler import build_focus_payload_plan
 from backend.llm.tavily_client import TavilyClient
 
 # Configure logging
@@ -60,6 +62,28 @@ LOCAL_EMPTY_RESPONSE_RETRY_DELAY_SECONDS = 0.5
 
 def _is_empty_completion(result) -> bool:
     return not (getattr(result, "content", None) or "").strip()
+
+
+def resolve_live_web_search(
+    *,
+    user_web_search: bool,
+    provider: str,
+    tavily_configured: bool,
+) -> bool:
+    """
+    Whether to enable provider-native live search (Gemini googleSearch, OpenRouter web plugin).
+
+    Prep-time web (Tavily + KB URLs in the prompt) is controlled separately via ``web_search``
+    on release-notes fetch and the web-augmented system prompt. When Tavily is configured,
+    live API search is redundant and often returns empty completions for long audit prompts.
+    """
+    if not user_web_search:
+        return False
+    if provider in LOCAL_LLM_PROVIDERS:
+        return False
+    if tavily_configured:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +129,7 @@ class ReportPromptBundle:
     compact: bool = False
     focus_mode: Optional[str] = None
     web_search: bool = False
+    live_web_search: bool = False
     quick: bool = False
     chart_image_data: Optional[bytes] = None
     kb_context: List[Dict[str, Any]] = field(default_factory=list)
@@ -614,7 +639,8 @@ class ReportGenerator:
         self,
         file_id: int,
         summary: Dict[str, Any],
-        max_results: int = 8
+        max_results: int = 8,
+        web_search: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve relevant release notes from the indexed collection and
@@ -677,10 +703,10 @@ class ReportGenerator:
                 except Exception:
                     pass
 
-        # Tavily supplement
+        # Tavily supplement (only when report web search is enabled)
         try:
             tavily = TavilyClient()
-            if tavily.is_configured and (source_type or target_type):
+            if web_search and tavily.is_configured and (source_type or target_type):
                 parts = ["Qlik Replicate release notes fix"]
                 if source_type:
                     parts.append(source_type)
@@ -1108,7 +1134,9 @@ class ReportGenerator:
         release_notes_context: List[Dict[str, Any]] = []
         if fetch_external:
             try:
-                release_notes_context = self.get_release_notes_context(file_id, summary)
+                release_notes_context = self.get_release_notes_context(
+                    file_id, summary, web_search=web_search,
+                )
             except Exception as e:
                 logger.warning(f"Error getting release notes context (continuing anyway): {e}")
 
@@ -1212,16 +1240,35 @@ class ReportGenerator:
             graph_context=graph_context,
         )
         est_tokens = count_prompt_tokens(messages)
+        focus_plan = build_focus_payload_plan(focus_mode, summary)
+        if compact:
+            kb_cap, rn_cap = 4, 5
+        else:
+            kb_cap = 5 if focus_plan.include_kb_release_notes else 0
+            rn_cap = 6 if focus_plan.include_kb_release_notes else 0
+        kb_in_prompt = min(len(kb_context), kb_cap) if kb_cap else 0
+        rn_in_prompt = min(len(release_notes_context), rn_cap) if rn_cap else 0
+        tavily_configured = TavilyClient().is_configured
+        live_web_search = (
+            False
+            if quick
+            else resolve_live_web_search(
+                user_web_search=web_search,
+                provider=effective_provider,
+                tavily_configured=tavily_configured,
+            )
+        )
         logger.info(
             "Prompt composition: provider=%s compact=%s focus=%s | "
-            "errors=%d anomalies=%d kb=%d release_notes=%d graph=%s | "
-            "est_prompt_tokens=%d",
+            "errors=%d anomalies=%d kb=%d/%d rn=%d/%d graph=%s | "
+            "web_search=%s live_api_search=%s tavily=%s | est_prompt_tokens=%d",
             effective_provider, compact, focus_mode or "default",
             len(merged_errors),
             len(context.get("anomalies", [])),
-            len(kb_context),
-            len(release_notes_context),
+            kb_in_prompt, len(kb_context),
+            rn_in_prompt, len(release_notes_context),
             "yes" if graph_metrics.get("graph_injected") else "no",
+            web_search, live_web_search, tavily_configured,
             est_tokens,
         )
 
@@ -1259,7 +1306,9 @@ class ReportGenerator:
             "errors": len(merged_errors),
             "anomalies": len(context.get("anomalies", [])),
             "kb": len(kb_context),
+            "kb_in_prompt": kb_in_prompt,
             "release_notes": len(release_notes_context),
+            "release_notes_in_prompt": rn_in_prompt,
             **graph_metrics,
             **insufficiency_stats,
         }
@@ -1273,6 +1322,7 @@ class ReportGenerator:
             compact=compact,
             focus_mode=focus_mode,
             web_search=web_search,
+            live_web_search=live_web_search,
             quick=quick,
             chart_image_data=chart_image_data,
             kb_context=kb_context,
@@ -1349,6 +1399,8 @@ class ReportGenerator:
         kb_context = bundle.kb_context
         release_notes_context = bundle.release_notes_context
         chart_image_data = bundle.chart_image_data
+        live_web_search = bundle.live_web_search
+        live_web_search_used = False
 
         set_progress(
             file_id, "building_prompt",
@@ -1450,16 +1502,26 @@ class ReportGenerator:
                     )
             
             llm_t0 = _time.perf_counter()
-            result = _call_llm(web_search)
+            result = _call_llm(live_web_search)
+            if live_web_search and not _is_empty_completion(result):
+                live_web_search_used = True
 
-            # Retry without web_search if response was empty (grounding conflict).
-            if _is_empty_completion(result) and web_search and not use_local:
+            # Retry without live API search if response was empty (grounding conflict).
+            if _is_empty_completion(result) and live_web_search and not use_local:
                 logger.warning(
-                    "Empty response with web_search enabled (finish_reason=%s). "
-                    "Retrying without web search...",
+                    "Empty response with live API web search (finish_reason=%s). "
+                    "Retrying with standard system prompt and no search tool...",
                     result.finish_reason,
                 )
-                result = _call_llm(False)
+                retry_messages = messages
+                if not quick and web_search:
+                    retry_messages = replace_analysis_system_prompt(
+                        messages,
+                        web_search=False,
+                        compact=bundle.compact,
+                        focus_mode=focus_mode,
+                    )
+                result = _call_llm(False, retry_messages)
 
             # LM Studio can return empty on first request; OpenAI API (FLM) retries
             # inside openai_api_client.complete() on a shared HTTP session.
@@ -1470,7 +1532,7 @@ class ReportGenerator:
                     result.finish_reason,
                 )
                 _time.sleep(LOCAL_EMPTY_RESPONSE_RETRY_DELAY_SECONDS)
-                result = _call_llm(web_search)
+                result = _call_llm(live_web_search)
 
             if _is_empty_completion(result):
                 if use_openai_api:
@@ -1599,6 +1661,7 @@ class ReportGenerator:
             "generated_at": datetime.utcnow().isoformat(),
             "quick": quick,
             "web_search": web_search,
+            "live_web_search_used": live_web_search_used,
             "focus_mode": focus_mode,
             "llm_duration_seconds": llm_duration_seconds,
             "generation_duration_seconds": generation_duration_seconds,

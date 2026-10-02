@@ -1,8 +1,13 @@
+import os
+
+# Desktop uses pywebview for UI — not headless Chrome. Kaleido chart export is optional
+# (LLM vision appendix only); disable it here to avoid choreographer/Chrome noise on startup.
+os.environ.setdefault("LOG_ANALYZER_DISABLE_CHART_EXPORT", "1")
+
 import webview
 import threading
 import uvicorn
 import sys
-import os
 import base64
 import time
 import logging
@@ -13,6 +18,8 @@ from backend.main import app
 
 # Configure logging to avoid clutter in the console
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
+for _noisy in ("choreographer", "choreographer.browsers.chromium", "kaleido", "kaleido.kaleido"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 PORT = 8000
 HOST = "127.0.0.1"

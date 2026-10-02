@@ -1668,8 +1668,12 @@ def estimate_report_cost(
         model = config.default_model if config else DEFAULT_MODEL
     
     try:
+        config = db.query(LLMConfig).first()
+        web_search = bool(config and config.web_search_enabled)
         generator = ReportGenerator(db)
-        estimate = generator.estimate_cost(file_id, model)
+        estimate = generator.estimate_cost(
+            file_id, model, web_search=web_search,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cost estimation failed: {str(e)}")
     

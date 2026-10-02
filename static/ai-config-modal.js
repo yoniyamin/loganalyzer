@@ -22,6 +22,10 @@ class AIConfigModal {
         this._modelsInflight = null;
         this._modelsInflightProvider = null;
         this._modelsRequestId = 0;
+        this._modelsCacheProvider = null;
+        this._modelsLoadedAt = 0;
+        /** Reuse model list briefly to avoid blocking modal open on LM Studio / network. */
+        this._modelsCacheTtlMs = 5 * 60 * 1000;
         
         this.init();
     }
@@ -552,7 +556,8 @@ class AIConfigModal {
         }
     }
     
-    async loadConfig() {
+    async loadConfig(options = {}) {
+        const { skipModels = false } = options;
         try {
             const response = await fetch('/api/llm/config');
             if (response.ok) {
@@ -592,7 +597,9 @@ class AIConfigModal {
                     if (oaMax) oaMax.value = this.currentConfig.openai_api_max_tokens;
                 }
                 this.updateStatusDisplay();
-                await this.loadModels();
+                if (!skipModels) {
+                    await this.loadModels();
+                }
             }
         } catch (error) {
             console.error('Failed to load AI config:', error);
@@ -602,6 +609,16 @@ class AIConfigModal {
     async loadModels(force = false) {
         const provider = this.selectedProvider;
         const requestId = ++this._modelsRequestId;
+
+        if (
+            !force
+            && this.models.length
+            && this._modelsCacheProvider === provider
+            && Date.now() - this._modelsLoadedAt < this._modelsCacheTtlMs
+        ) {
+            this.populateModelSelect();
+            return;
+        }
 
         if (
             !force
@@ -630,6 +647,8 @@ class AIConfigModal {
                     return;
                 }
                 this.models = data.models || [];
+                this._modelsLoadedAt = Date.now();
+                this._modelsCacheProvider = provider;
                 this.populateModelSelect();
             } catch (error) {
                 console.error('Failed to load models:', error);
@@ -1110,38 +1129,43 @@ class AIConfigModal {
         }
     }
     
+    _syncOpenFormFromConfig() {
+        const webSearchCheckbox = document.getElementById('aiWebSearchEnabled');
+        if (webSearchCheckbox && this.currentConfig) {
+            webSearchCheckbox.checked = this.currentConfig.web_search_enabled || false;
+        }
+
+        const aiEnabledCheckbox = document.getElementById('aiEnabled');
+        if (aiEnabledCheckbox && this.currentConfig) {
+            aiEnabledCheckbox.checked = this.currentConfig.ai_enabled !== false;
+            this.updateProviderSectionVisibility();
+        }
+
+        const autoGenerateCheckbox = document.getElementById('aiAutoGenerate');
+        if (autoGenerateCheckbox && this.currentConfig) {
+            autoGenerateCheckbox.checked = this.currentConfig.auto_generate !== false;
+        }
+    }
+
     async open() {
-        await this.loadConfig();
-        await this.loadModels(true);
         this.overlay.classList.add('active');
         this.isOpen = true;
-        
-        // Clear previous test results
+
         document.getElementById('aiTestResult').style.display = 'none';
         document.getElementById('aiApiKey').value = '';
         document.getElementById('aiGeminiKey').value = '';
         document.getElementById('aiOpenAIApiKey').value = '';
         document.getElementById('aiCustomModel').value = '';
         document.getElementById('aiTavilyKey').value = '';
-        
-        // Set web search checkbox
-        const webSearchCheckbox = document.getElementById('aiWebSearchEnabled');
-        if (webSearchCheckbox && this.currentConfig) {
-            webSearchCheckbox.checked = this.currentConfig.web_search_enabled || false;
+
+        await this.loadConfig({ skipModels: true });
+        this._syncOpenFormFromConfig();
+
+        if (this.models.length && this._modelsCacheProvider === this.selectedProvider) {
+            this.populateModelSelect();
         }
-        
-        // Set AI enabled toggle
-        const aiEnabledCheckbox = document.getElementById('aiEnabled');
-        if (aiEnabledCheckbox && this.currentConfig) {
-            aiEnabledCheckbox.checked = this.currentConfig.ai_enabled !== false; // Default to true
-            this.updateProviderSectionVisibility();
-        }
-        
-        // Set auto-generate toggle
-        const autoGenerateCheckbox = document.getElementById('aiAutoGenerate');
-        if (autoGenerateCheckbox && this.currentConfig) {
-            autoGenerateCheckbox.checked = this.currentConfig.auto_generate !== false; // Default to true
-        }
+
+        void this.loadModels(false);
     }
     
     updateProviderSectionVisibility() {

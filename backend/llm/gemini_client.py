@@ -338,10 +338,12 @@ class GeminiClient:
 
             logger.info(f"Gemini response: {prompt_tokens} prompt + {completion_tokens} completion tokens, finish_reason={finish_reason}")
 
-            if completion_tokens == 0 and finish_reason != "STOP":
+            if completion_tokens == 0:
                 logger.warning(
-                    f"Gemini returned 0 completion tokens with finish_reason={finish_reason}. "
-                    f"Candidate: {json.dumps(candidate, default=str)[:500]}"
+                    "Gemini returned 0 completion tokens (finish_reason=%s). "
+                    "Candidate excerpt: %s",
+                    finish_reason,
+                    json.dumps(candidate, default=str)[:800],
                 )
 
             return GeminiCompletionResult(

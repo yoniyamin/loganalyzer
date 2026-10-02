@@ -1309,8 +1309,26 @@ def get_messages_for_analysis(
         payload_format=payload_format,
         graph_context=graph_context,
     )
-    
-    # Select system prompt: compact (local) → short; web_search → augmented; default → full
+
+    system_prompt = get_analysis_system_prompt(
+        web_search=web_search,
+        compact=compact,
+        focus_mode=focus_mode,
+    )
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+
+def get_analysis_system_prompt(
+    *,
+    web_search: bool = False,
+    compact: bool = False,
+    focus_mode: Optional[str] = None,
+) -> str:
+    """System prompt for full (non-quick) analysis reports."""
     if compact and not web_search:
         system_prompt = SYSTEM_PROMPT_LOCAL
     elif web_search:
@@ -1322,11 +1340,25 @@ def get_messages_for_analysis(
         addendum = FOCUS_MODES[focus_mode].get("system_addendum", "")
         if addendum:
             system_prompt = system_prompt + f"\n\n## Analysis Focus\n{addendum}\n"
-    
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
+    return system_prompt
+
+
+def replace_analysis_system_prompt(
+    messages: List[Dict[str, str]],
+    *,
+    web_search: bool,
+    compact: bool = False,
+    focus_mode: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Copy messages and swap the system prompt (e.g. after disabling live search)."""
+    out = [dict(m) for m in messages]
+    if out and out[0].get("role") == "system":
+        out[0]["content"] = get_analysis_system_prompt(
+            web_search=web_search,
+            compact=compact,
+            focus_mode=focus_mode,
+        )
+    return out
 
 
 def count_prompt_tokens(messages: List[Dict[str, str]]) -> int:

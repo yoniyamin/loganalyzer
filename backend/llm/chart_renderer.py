@@ -7,6 +7,7 @@ included in multimodal LLM prompts for vision-capable models.
 
 import base64
 import logging
+import os
 from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -23,16 +24,36 @@ except ImportError:
 
 
 _kaleido_checked: Optional[bool] = None
+_kaleido_working: Optional[bool] = None
+_kaleido_failure_logged: bool = False
 _chart_cache: dict = {}  # file_id -> base64 string
 
 
+def chart_export_disabled() -> bool:
+    """Env kill-switch (desktop.py sets this for pywebview builds)."""
+    return os.environ.get("LOG_ANALYZER_DISABLE_CHART_EXPORT", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
 def is_available() -> bool:
-    """Check whether Plotly + Kaleido are installed (cached after first call)."""
+    """Check whether Plotly + Kaleido can render (cached after first success/failure)."""
     global _kaleido_checked
+    if chart_export_disabled():
+        return False
+    if not PLOTLY_AVAILABLE:
+        return False
+    if _kaleido_working is False:
+        return False
     if _kaleido_checked is not None:
         return _kaleido_checked
-    _kaleido_checked = PLOTLY_AVAILABLE
-    return _kaleido_checked
+    _kaleido_checked = True
+    return True
+
+
+def _mark_kaleido_failed() -> None:
+    global _kaleido_working
+    _kaleido_working = False
 
 
 def render_latency_chart(
@@ -53,8 +74,7 @@ def render_latency_chart(
     Returns:
         PNG image bytes, or None if rendering fails or no data
     """
-    if not PLOTLY_AVAILABLE:
-        logger.warning("Cannot render chart: plotly/kaleido not installed")
+    if not is_available():
         return None
 
     from backend.database import LogPerformance
@@ -103,10 +123,21 @@ def render_latency_chart(
 
     try:
         img_bytes = _plotly_to_image(fig, format="png", width=width, height=height)
+        global _kaleido_working
+        _kaleido_working = True
         logger.info(f"Rendered latency chart for file {file_id}: {len(img_bytes)} bytes")
         return img_bytes
     except Exception as e:
-        logger.error(f"Failed to render chart: {e}")
+        _mark_kaleido_failed()
+        global _kaleido_failure_logged
+        if not _kaleido_failure_logged:
+            _kaleido_failure_logged = True
+            logger.warning(
+                "Optional latency chart PNG export disabled for this session "
+                "(Plotly/Kaleido headless Chrome failed). Reports still work; "
+                "set LOG_ANALYZER_DISABLE_CHART_EXPORT=0 to retry. Detail: %s",
+                e,
+            )
         return None
 
 
@@ -123,6 +154,9 @@ def render_latency_chart_base64(
     Returns:
         Base64-encoded PNG string, or None
     """
+    if not is_available():
+        return None
+
     if file_id in _chart_cache:
         return _chart_cache[file_id]
 
