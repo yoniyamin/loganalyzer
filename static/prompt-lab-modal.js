@@ -13,6 +13,9 @@ class PromptLabModal {
         this.packageSelection = [];
         this.lastCompareData = null;
         this.lastPreviewMeta = null;
+        /** @type {Record<string, object[]>} */
+        this.modelCache = {};
+        this._modelLoadSeq = 0;
         this.init();
     }
 
@@ -75,6 +78,22 @@ class PromptLabModal {
                                         <option value="xml">C — XML-heavy</option>
                                     </select>
                                 </div>
+                                <div class="pl-option-group">
+                                    <label for="plPreviewProvider">Prompt shape for</label>
+                                    <select id="plPreviewProvider" class="ai-select">
+                                        <option value="gemini">Gemini</option>
+                                        <option value="openrouter">OpenRouter</option>
+                                        <option value="lmstudio">LM Studio</option>
+                                        <option value="openai_api">OpenAI API (FLM)</option>
+                                    </select>
+                                </div>
+                                <div class="pl-option-group pl-model-field">
+                                    <label for="plPreviewModel">Model (chart/vision)</label>
+                                    <select id="plPreviewModel" class="ai-select pl-model-select">
+                                        <option value="">Loading models...</option>
+                                    </select>
+                                    <p class="pl-model-hint" id="plPreviewModelHint"></p>
+                                </div>
                             </div>
                             <div class="pl-check-row">
                                 <label><input type="checkbox" id="plQuick"> Quick summary prompt</label>
@@ -126,9 +145,12 @@ class PromptLabModal {
                                                 <option value="openai_api">OpenAI API (FLM)</option>
                                             </select>
                                         </div>
-                                        <div class="pl-config-field">
+                                        <div class="pl-config-field pl-model-field">
                                             <label for="plBaselineModel">Model</label>
-                                            <input type="text" id="plBaselineModel" class="ai-input" placeholder="default from config">
+                                            <select id="plBaselineModel" class="ai-select pl-model-select">
+                                                <option value="">Loading models...</option>
+                                            </select>
+                                            <p class="pl-model-hint" id="plBaselineModelHint"></p>
                                         </div>
                                         <div class="pl-config-field">
                                             <label for="plBaselineTemp">Temp</label>
@@ -177,6 +199,18 @@ class PromptLabModal {
         document.getElementById('plCompareBtn').addEventListener('click', () => this.runCompare());
         document.getElementById('plAddVariantBtn').addEventListener('click', () => this.addVariantRow());
         document.getElementById('plExportPackageBtn').addEventListener('click', () => this.exportAnalysisPackage());
+        document.getElementById('plBaselineProvider')?.addEventListener('change', () => {
+            this.refreshBaselineModels();
+        });
+        document.getElementById('plPreviewProvider')?.addEventListener('change', () => {
+            this.refreshPreviewModels();
+        });
+        document.getElementById('plVariantList')?.addEventListener('change', (e) => {
+            if (e.target.classList.contains('pl-variant-provider')) {
+                const row = e.target.closest('.pl-config-row.variant');
+                if (row) this.refreshVariantModels(row);
+            }
+        });
     }
 
     async loadStatus() {
@@ -305,21 +339,178 @@ class PromptLabModal {
         }
     }
 
-    syncBaselineFromConfig() {
-        const cfgModal = window.aiConfigModal;
-        const provider = cfgModal?.selectedProvider || cfgModal?.currentConfig?.provider || 'gemini';
-        const providerEl = document.getElementById('plBaselineProvider');
-        if (providerEl) providerEl.value = provider;
+    _sortModels(models) {
+        return [...models].sort((a, b) => {
+            const aLoaded = /loaded/i.test(a.name || '') || /^loaded/i.test(a.description || '');
+            const bLoaded = /loaded/i.test(b.name || '') || /^loaded/i.test(b.description || '');
+            if (aLoaded !== bLoaded) return aLoaded ? -1 : 1;
+            return (a.name || a.id || '').localeCompare(b.name || b.id || '');
+        });
+    }
 
+    _buildModelOptionsHtml(models) {
+        if (!models?.length) {
+            return '<option value="">No models available</option>';
+        }
+        const sorted = this._sortModels(models);
+        const freeModels = sorted.filter((m) => m.prompt_price === 0);
+        const paidModels = sorted.filter((m) => m.prompt_price > 0);
+        let html = '';
+        if (freeModels.length) {
+            html += '<optgroup label="Free models">';
+            html += freeModels.map((m) =>
+                `<option value="${this.escapeAttr(m.id)}">${this.escapeHtml(m.name)}</option>`
+            ).join('');
+            html += '</optgroup>';
+        }
+        if (paidModels.length) {
+            html += '<optgroup label="Paid models">';
+            html += paidModels.map((m) =>
+                `<option value="${this.escapeAttr(m.id)}">${this.escapeHtml(m.name)}</option>`
+            ).join('');
+            html += '</optgroup>';
+        }
+        return html || sorted.map((m) =>
+            `<option value="${this.escapeAttr(m.id)}">${this.escapeHtml(m.name)}</option>`
+        ).join('');
+    }
+
+    async _fetchModelsForProvider(provider) {
+        if (this.modelCache[provider]) {
+            return this.modelCache[provider];
+        }
+        const recommendedOnly = provider === 'openrouter';
+        const resp = await fetch(
+            `/api/llm/models?provider=${encodeURIComponent(provider)}&recommended_only=${recommendedOnly}`
+        );
+        if (!resp.ok) {
+            throw new Error(`Could not load models for ${provider}`);
+        }
+        const data = await resp.json();
+        const models = data.models || [];
+        this.modelCache[provider] = models;
+        return models;
+    }
+
+    _populateModelSelect(selectEl, models, preferredId = null, hintEl = null) {
+        if (!selectEl) return;
+        selectEl.disabled = false;
+        if (!models.length) {
+            const localHint = (selectEl.closest('.pl-config-row')?.querySelector('.pl-variant-provider')
+                || document.getElementById('plBaselineProvider'))?.value;
+            const isLocal = localHint === 'lmstudio' || localHint === 'openai_api';
+            selectEl.innerHTML = `<option value="">${isLocal
+                ? 'No models — check local server / AI Config'
+                : 'No models available'}</option>`;
+            if (hintEl) hintEl.textContent = '';
+            return;
+        }
+        selectEl.innerHTML = this._buildModelOptionsHtml(models);
+        const preferred = preferredId || selectEl.dataset.preferred || '';
+        if (preferred && models.some((m) => m.id === preferred)) {
+            selectEl.value = preferred;
+        } else if (models[0]) {
+            selectEl.value = models[0].id;
+        }
+        const selected = models.find((m) => m.id === selectEl.value);
+        if (hintEl && selected?.description) {
+            hintEl.textContent = selected.description;
+        } else if (hintEl) {
+            hintEl.textContent = selected ? `ID: ${selected.id}` : '';
+        }
+    }
+
+    async _loadModelsIntoSelect(selectEl, provider, preferredId = null, hintEl = null) {
+        if (!selectEl) return;
+        const loadId = ++this._modelLoadSeq;
+        selectEl.dataset.loadId = String(loadId);
+        selectEl.disabled = true;
+        selectEl.innerHTML = '<option value="">Loading models...</option>';
+        if (hintEl) hintEl.textContent = '';
+        try {
+            const models = await this._fetchModelsForProvider(provider);
+            if (selectEl.dataset.loadId !== String(loadId)) {
+                return;
+            }
+            this._populateModelSelect(selectEl, models, preferredId, hintEl);
+        } catch (e) {
+            if (selectEl.dataset.loadId !== String(loadId)) {
+                return;
+            }
+            selectEl.innerHTML = `<option value="">${this.escapeHtml(e.message)}</option>`;
+            selectEl.disabled = false;
+        }
+    }
+
+    async refreshBaselineModels() {
+        const provider = document.getElementById('plBaselineProvider')?.value || 'gemini';
+        const select = document.getElementById('plBaselineModel');
+        const hint = document.getElementById('plBaselineModelHint');
+        const preferred = select?.dataset.preferred || '';
+        delete this.modelCache[provider];
+        await this._loadModelsIntoSelect(select, provider, preferred, hint);
+    }
+
+    async refreshVariantModels(row) {
+        const provider = row.querySelector('.pl-variant-provider')?.value || 'gemini';
+        const select = row.querySelector('.pl-variant-model-select');
+        const hint = row.querySelector('.pl-variant-model-hint');
+        const preferred = select?.dataset.preferred || '';
+        delete this.modelCache[provider];
+        await this._loadModelsIntoSelect(select, provider, preferred, hint);
+    }
+
+    async refreshAllCompareModels() {
+        await this.refreshBaselineModels();
+        const rows = document.querySelectorAll('#plVariantList .pl-config-row.variant');
+        for (const row of rows) {
+            await this.refreshVariantModels(row);
+        }
+    }
+
+    _configProviderAndModel(cfgModal) {
+        const provider = cfgModal?.selectedProvider || cfgModal?.currentConfig?.provider || 'gemini';
         const reportModel = document.getElementById('aiReportModel')?.value
             || cfgModal?.currentConfig?.default_model
             || '';
+        return { provider, reportModel };
+    }
+
+    syncBaselineFromConfig() {
+        const cfgModal = window.aiConfigModal;
+        const { provider, reportModel } = this._configProviderAndModel(cfgModal);
+        const providerEl = document.getElementById('plBaselineProvider');
+        if (providerEl) providerEl.value = provider;
+
         const modelEl = document.getElementById('plBaselineModel');
-        if (modelEl && reportModel) modelEl.value = reportModel;
+        if (modelEl) modelEl.dataset.preferred = reportModel;
 
         const temp = this._temperatureForProvider(provider, cfgModal?.currentConfig);
         const tempEl = document.getElementById('plBaselineTemp');
         if (tempEl && temp != null) tempEl.value = temp;
+
+        return this.refreshBaselineModels();
+    }
+
+    syncPreviewFromConfig() {
+        const cfgModal = window.aiConfigModal;
+        const { provider, reportModel } = this._configProviderAndModel(cfgModal);
+        const providerEl = document.getElementById('plPreviewProvider');
+        if (providerEl) providerEl.value = provider;
+
+        const modelEl = document.getElementById('plPreviewModel');
+        if (modelEl) modelEl.dataset.preferred = reportModel;
+
+        return this.refreshPreviewModels();
+    }
+
+    async refreshPreviewModels() {
+        const provider = document.getElementById('plPreviewProvider')?.value || 'gemini';
+        const select = document.getElementById('plPreviewModel');
+        const hint = document.getElementById('plPreviewModelHint');
+        const preferred = select?.dataset.preferred || '';
+        delete this.modelCache[provider];
+        await this._loadModelsIntoSelect(select, provider, preferred, hint);
     }
 
     _temperatureForProvider(provider, config) {
@@ -329,9 +520,13 @@ class PromptLabModal {
         return 0.3;
     }
 
-    open() {
+    async open() {
+        this.modelCache = {};
         this.refreshFileBadge();
-        this.syncBaselineFromConfig();
+        await Promise.all([
+            this.syncBaselineFromConfig(),
+            this.syncPreviewFromConfig(),
+        ]);
         this.loadStatus();
         this.loadReportHistory();
         this.updatePackageUi();
@@ -351,6 +546,33 @@ class PromptLabModal {
         this.overlay.querySelectorAll('.pl-tab-panel').forEach((p) => {
             p.classList.toggle('active', p.dataset.plPanel === tabName);
         });
+        if (tabName === 'compare') {
+            this.refreshAllCompareModels();
+        } else if (tabName === 'preview') {
+            this.refreshPreviewModels();
+        }
+    }
+
+    _previewProviderValue() {
+        return document.getElementById('plPreviewProvider')?.value || 'gemini';
+    }
+
+    _previewModelValue() {
+        return (document.getElementById('plPreviewModel')?.value || '').trim() || null;
+    }
+
+    _compareTabOptions() {
+        return {
+            quick: document.getElementById('plCompareQuick')?.checked ?? false,
+            web_search: document.getElementById('plCompareWebSearch')?.checked || false,
+            focus_mode: this._focusModeValue(),
+            include_chart: document.getElementById('plCompareIncludeChart')?.checked || false,
+            fetch_external: document.getElementById('plCompareFetchExternal')?.checked || false,
+            payload_format: this._payloadFormatValue('plCompare'),
+            include_graph: document.getElementById('plCompareIncludeGraph')?.checked ?? true,
+            prompt_provider: document.getElementById('plBaselineProvider')?.value || 'gemini',
+            model: (document.getElementById('plBaselineModel')?.value || '').trim() || null,
+        };
     }
 
     _requireFileId() {
@@ -396,6 +618,8 @@ class PromptLabModal {
             fetch_external: document.getElementById('plFetchExternal')?.checked || false,
             payload_format: this._payloadFormatValue('pl'),
             include_graph: document.getElementById('plIncludeGraph')?.checked ?? true,
+            prompt_provider: this._previewProviderValue(),
+            model: this._previewModelValue(),
         };
 
         try {
@@ -464,9 +688,12 @@ class PromptLabModal {
                     <option value="openai_api">OpenAI API (FLM)</option>
                 </select>
             </div>
-            <div class="pl-config-field">
+            <div class="pl-config-field pl-model-field">
                 <label>Model</label>
-                <input type="text" class="ai-input pl-variant-model" placeholder="model id" value="${this.escapeHtml(initial.model || '')}">
+                <select class="ai-select pl-model-select pl-variant-model-select" data-preferred="${this.escapeAttr(initial.model || '')}">
+                    <option value="">Loading models...</option>
+                </select>
+                <p class="pl-model-hint pl-variant-model-hint"></p>
             </div>
             <div class="pl-config-field">
                 <label>Temp</label>
@@ -481,12 +708,13 @@ class PromptLabModal {
         if (prov && initial.provider) prov.value = initial.provider;
         row.querySelector('.pl-remove-variant').addEventListener('click', () => row.remove());
         list.appendChild(row);
+        this.refreshVariantModels(row);
     }
 
     _readVariant(el) {
         return {
             provider: el.querySelector('.pl-variant-provider')?.value || 'gemini',
-            model: (el.querySelector('.pl-variant-model')?.value || '').trim() || null,
+            model: (el.querySelector('.pl-variant-model-select')?.value || '').trim() || null,
             temperature: parseFloat(el.querySelector('.pl-variant-temp')?.value || '0.3'),
         };
     }
@@ -657,20 +885,19 @@ class PromptLabModal {
                     quick: this.lastPreviewMeta?.quick,
                     web_search: this.lastPreviewMeta?.web_search,
                     focus_mode: this.lastPreviewMeta?.focus_mode,
+                    fetch_external: this.lastPreviewMeta?.fetch_external,
+                    include_chart: this.lastPreviewMeta?.include_chart,
+                    include_graph: this.lastPreviewMeta?.include_graph,
+                    payload_format: this.lastPreviewMeta?.payload_format,
                 },
                 note: 'Prompt from the most recent preview in this session.',
             };
         }
+        const compareOpts = this._compareTabOptions();
         const resp = await fetch(`/api/llm/report/${fileId}/prompt-preview`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                quick: document.getElementById('plCompareQuick')?.checked ?? false,
-                web_search: document.getElementById('plCompareWebSearch')?.checked || false,
-                focus_mode: this._focusModeValue(),
-                include_chart: false,
-                fetch_external: false,
-            }),
+            body: JSON.stringify(compareOpts),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Could not build prompt for package');
@@ -678,7 +905,12 @@ class PromptLabModal {
             prompt_text: data.prompt_text,
             est_tokens: data.est_tokens,
             context_stats: data.context_stats,
-            note: 'Prompt reconstructed at export time — may differ from original generation.',
+            compare_options: {
+                ...compareOpts,
+                prompt_provider: data.provider || compareOpts.prompt_provider,
+                prompt_compact: !!data.compact,
+            },
+            note: 'Prompt reconstructed at export time from Compare tab options.',
         };
     }
 
@@ -735,9 +967,17 @@ class PromptLabModal {
         (data.variants || []).forEach((v, i) => {
             cards.push(this.renderResultCard(`Variant ${i + 1}`, v, false, `compare-variant-${i}`));
         });
+        const opts = data.compare_options || {};
+        const stats = data.context_stats || {};
+        const provider = opts.prompt_provider || '—';
+        const compact = opts.prompt_compact ? 'compact' : 'full';
         return `
             <div class="pl-meta-bar" style="margin-top:12px;">
                 <span class="pl-meta-chip">Prompt ~${Number(data.prompt_est_tokens || 0).toLocaleString()} tokens</span>
+                <span class="pl-meta-chip">shape: ${this.escapeHtml(provider)} (${compact})</span>
+                <span class="pl-meta-chip">format: ${this.escapeHtml(opts.payload_format || 'markdown')}</span>
+                <span class="pl-meta-chip">kb: ${stats.kb ?? 0}</span>
+                <span class="pl-meta-chip">release notes: ${stats.release_notes ?? 0}</span>
             </div>
             <div class="pl-results">${cards.join('')}</div>
         `;
@@ -776,6 +1016,14 @@ class PromptLabModal {
                 <div class="pl-result-excerpt">${this.escapeHtml(excerpt)}</div>
             </div>
         `;
+    }
+
+    escapeAttr(text) {
+        if (text == null) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;');
     }
 
     escapeHtml(text) {

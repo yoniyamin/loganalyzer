@@ -149,24 +149,13 @@ class ReportGenerator:
         self.gemini_client = gemini_client or get_gemini_client()
         self.lmstudio_client = lmstudio_client or get_lmstudio_client()
         self.openai_api_client = openai_api_client or get_openai_api_client()
-        
-        # Get provider preference from config; sync local server URLs and parameters
+
+        from backend.llm.client_config import sync_llm_clients_from_db
+
+        # Get provider preference from config; sync all singleton clients from DB
         config = self.db.query(LLMConfig).first()
+        sync_llm_clients_from_db(self.db)
         self.provider = (config.provider or PROVIDER_GEMINI).strip().lower() if config else PROVIDER_GEMINI
-        if config and self.provider == PROVIDER_LMSTUDIO:
-            lmstudio_url = getattr(config, "lmstudio_base_url", None) or DEFAULT_LMSTUDIO_BASE_URL
-            self.lmstudio_client.set_base_url(lmstudio_url)
-        if config and self.provider == PROVIDER_OPENAI_API:
-            oa_url = getattr(config, "openai_api_base_url", None) or DEFAULT_OPENAI_API_BASE_URL
-            self.openai_api_client.set_base_url(oa_url)
-            encrypted_key = getattr(config, "openai_api_key_encrypted", None)
-            if encrypted_key:
-                try:
-                    key = base64.b64decode(encrypted_key.encode()).decode().strip()
-                    if key:
-                        self.openai_api_client.set_api_key(key)
-                except Exception:
-                    pass
         # Store user-configured overrides (None = use hardcoded defaults)
         self.lmstudio_temperature: Optional[float] = getattr(config, "lmstudio_temperature", None) if config else None
         self.lmstudio_max_tokens: Optional[int] = getattr(config, "lmstudio_max_tokens", None) if config else None
@@ -996,19 +985,27 @@ class ReportGenerator:
         cancel_check: bool = True,
         payload_format: Optional[str] = "markdown",
         include_graph: bool = True,
+        prompt_provider: Optional[str] = None,
     ) -> ReportPromptBundle:
         """
         Build the complete prompt for report generation (single source of truth).
 
         Used by generate_report, estimate_cost, prompt-preview, and compare.
+
+        ``prompt_provider`` overrides ``self.provider`` for prompt shape only
+        (compact vs full, vision chart eligibility). Used by Prompt Lab compare
+        so the baseline model receives the prompt it would get in production.
         """
         from backend.llm.payload_formats import normalize_payload_format
 
         payload_format = normalize_payload_format(payload_format)
-        use_gemini = self.provider == PROVIDER_GEMINI
-        use_lmstudio = self.provider == PROVIDER_LMSTUDIO
-        use_openai_api = self.provider == PROVIDER_OPENAI_API
-        use_local = self.provider in LOCAL_LLM_PROVIDERS
+        effective_provider = (
+            (prompt_provider or self.provider).strip().lower()
+        )
+        use_gemini = effective_provider == PROVIDER_GEMINI
+        use_lmstudio = effective_provider == PROVIDER_LMSTUDIO
+        use_openai_api = effective_provider == PROVIDER_OPENAI_API
+        use_local = effective_provider in LOCAL_LLM_PROVIDERS
 
         if model is None:
             if use_gemini:
@@ -1190,7 +1187,7 @@ class ReportGenerator:
             logger.debug(f"Graph enrichment skipped: {e}")
 
         # --- build messages ---
-        compact = self.provider in LOCAL_LLM_PROVIDERS
+        compact = effective_provider in LOCAL_LLM_PROVIDERS
         sd, ec, ac, fi = self._sanitize_log_bundle(
             summary,
             merged_errors,
@@ -1219,7 +1216,7 @@ class ReportGenerator:
             "Prompt composition: provider=%s compact=%s focus=%s | "
             "errors=%d anomalies=%d kb=%d release_notes=%d graph=%s | "
             "est_prompt_tokens=%d",
-            self.provider, compact, focus_mode or "default",
+            effective_provider, compact, focus_mode or "default",
             len(merged_errors),
             len(context.get("anomalies", [])),
             len(kb_context),
@@ -1272,7 +1269,7 @@ class ReportGenerator:
             est_tokens=est_tokens,
             context_stats=context_stats,
             prompt_text=prompt_text,
-            provider=self.provider,
+            provider=effective_provider,
             compact=compact,
             focus_mode=focus_mode,
             web_search=web_search,

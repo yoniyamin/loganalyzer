@@ -404,10 +404,14 @@ class TablePerformanceAnalyzer:
         
         for name, stats in self.table_stats.items():
             # Calculate pain score
-            apply_time = stats.get('total_apply_time_seconds', 0)
-            errors = stats.get('error_count', 0)
-            obo_count = stats.get('one_by_one_count', 0)
-            total_ops = stats.get('total_inserts', 0) + stats.get('total_updates', 0) + stats.get('total_deletes', 0)
+            apply_time = stats.get('total_apply_time_seconds') or 0
+            errors = stats.get('error_count') or 0
+            obo_count = stats.get('one_by_one_count') or 0
+            total_ops = (
+                (stats.get('total_inserts') or 0)
+                + (stats.get('total_updates') or 0)
+                + (stats.get('total_deletes') or 0)
+            )
             
             # Weighted score
             pain_score = apply_time + (errors * 10) + (obo_count * 5)
@@ -417,8 +421,8 @@ class TablePerformanceAnalyzer:
                 "pain_score": round(pain_score, 2),
                 "total_apply_time": round(apply_time, 2),
                 "total_operations": total_ops,
-                "avg_apply_time": round(stats.get('avg_apply_time_seconds', 0), 3),
-                "max_apply_time": round(stats.get('max_apply_time_seconds', 0), 2),
+                "avg_apply_time": round(stats.get('avg_apply_time_seconds') or 0, 3),
+                "max_apply_time": round(stats.get('max_apply_time_seconds') or 0, 2),
                 "error_count": errors,
                 "one_by_one_count": obo_count,
                 "has_pk": stats.get('has_pk'),

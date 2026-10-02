@@ -21,6 +21,7 @@ class AIConfigModal {
         this.onConfigSaved = null; // Callback when config is saved
         this._modelsInflight = null;
         this._modelsInflightProvider = null;
+        this._modelsRequestId = 0;
         
         this.init();
     }
@@ -442,6 +443,17 @@ class AIConfigModal {
         document.getElementById('aiProviderSelect').addEventListener('change', (e) => {
             this.switchProvider(e.target.value);
         });
+
+        document.getElementById('aiLMStudioUrl')?.addEventListener('change', () => {
+            if (this.selectedProvider === 'lmstudio') {
+                this.loadModels(true);
+            }
+        });
+        document.getElementById('aiOpenAIApiUrl')?.addEventListener('change', () => {
+            if (this.selectedProvider === 'openai_api') {
+                this.loadModels(true);
+            }
+        });
         
         // Toggle password visibility - Gemini
         document.getElementById('aiToggleGeminiKey').addEventListener('click', () => {
@@ -587,25 +599,43 @@ class AIConfigModal {
         }
     }
     
-    async loadModels() {
+    async loadModels(force = false) {
         const provider = this.selectedProvider;
-        if (this._modelsInflight && this._modelsInflightProvider === provider) {
+        const requestId = ++this._modelsRequestId;
+
+        if (
+            !force
+            && this._modelsInflight
+            && this._modelsInflightProvider === provider
+        ) {
             return this._modelsInflight;
         }
 
+        this._setModelSelectLoading(true);
         this._modelsInflightProvider = provider;
         this._modelsInflight = (async () => {
             try {
+                const recommendedOnly = provider === 'openrouter';
                 const response = await fetch(
-                    `/api/llm/models?provider=${encodeURIComponent(provider)}&recommended_only=true`
+                    `/api/llm/models?provider=${encodeURIComponent(provider)}&recommended_only=${recommendedOnly}`
                 );
-                if (response.ok) {
-                    const data = await response.json();
-                    this.models = data.models;
-                    this.populateModelSelect();
+                if (!response.ok) {
+                    return;
                 }
+                const data = await response.json();
+                if (requestId !== this._modelsRequestId) {
+                    return;
+                }
+                if (provider !== this.selectedProvider) {
+                    return;
+                }
+                this.models = data.models || [];
+                this.populateModelSelect();
             } catch (error) {
                 console.error('Failed to load models:', error);
+                if (requestId === this._modelsRequestId && provider === this.selectedProvider) {
+                    this._setModelSelectLoading(false, 'Could not load models');
+                }
             } finally {
                 if (this._modelsInflightProvider === provider) {
                     this._modelsInflight = null;
@@ -615,6 +645,18 @@ class AIConfigModal {
         })();
 
         return this._modelsInflight;
+    }
+
+    _setModelSelectLoading(loading, emptyLabel = 'Loading models...') {
+        const reportSelect = document.getElementById('aiReportModel');
+        const compileSelect = document.getElementById('aiCompileModel');
+        [reportSelect, compileSelect].forEach((select) => {
+            if (!select) return;
+            select.disabled = loading;
+            if (loading) {
+                select.innerHTML = `<option value="">${emptyLabel}</option>`;
+            }
+        });
     }
     
     _buildModelOptionsHtml() {
@@ -663,6 +705,9 @@ class AIConfigModal {
         const customInput = document.getElementById('aiCustomModel');
         if (!reportSelect || !compileSelect) return;
 
+        reportSelect.disabled = false;
+        compileSelect.disabled = false;
+
         const cfg = this.currentConfig;
         const savedProv = cfg?.provider ? String(cfg.provider).toLowerCase() : null;
         const applySaved = savedProv === this.selectedProvider;
@@ -670,8 +715,16 @@ class AIConfigModal {
         const savedCompile = applySaved && cfg?.compile_model ? cfg.compile_model : null;
 
         const optionsHtml = this._buildModelOptionsHtml();
-        reportSelect.innerHTML = optionsHtml;
-        compileSelect.innerHTML = optionsHtml;
+        if (!this.models.length) {
+            const emptyLabel = this._isLocalProvider()
+                ? 'No models available — start the local server, then Test Connection'
+                : 'No models available';
+            reportSelect.innerHTML = `<option value="">${emptyLabel}</option>`;
+            compileSelect.innerHTML = `<option value="">${emptyLabel}</option>`;
+        } else {
+            reportSelect.innerHTML = optionsHtml;
+            compileSelect.innerHTML = optionsHtml;
+        }
 
         if (customInput) customInput.value = '';
 
@@ -916,6 +969,9 @@ class AIConfigModal {
             const result = await response.json();
             
             if (result.success) {
+                if (isLocal) {
+                    await this.loadModels(true);
+                }
                 resultDiv.className = 'ai-test-result success';
                 resultDiv.innerHTML = `
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1054,8 +1110,9 @@ class AIConfigModal {
         }
     }
     
-    open() {
-        this.loadConfig();
+    async open() {
+        await this.loadConfig();
+        await this.loadModels(true);
         this.overlay.classList.add('active');
         this.isOpen = true;
         

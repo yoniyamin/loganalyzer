@@ -43,6 +43,29 @@ class TestPromptLabStatus:
 
 
 class TestReportPromptPreview:
+    def test_preview_honors_prompt_provider_override(self, indexed_file):
+        db, file_id, _ = indexed_file
+        from backend.database import LLMConfig
+        from fastapi import FastAPI
+
+        cfg = db.query(LLMConfig).first()
+        if cfg is None:
+            cfg = LLMConfig(provider="lmstudio")
+            db.add(cfg)
+        else:
+            cfg.provider = "lmstudio"
+        db.commit()
+
+        client = _make_llm_client(FastAPI(), db)
+        resp = client.post(
+            f"/api/llm/report/{file_id}/prompt-preview",
+            json={"quick": False, "prompt_provider": "gemini"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "gemini"
+        assert data["compact"] is False
+
     def test_preview_returns_prompt(self, indexed_file):
         db, file_id, _ = indexed_file
         from fastapi import FastAPI
@@ -270,3 +293,61 @@ class TestReportCompare:
         assert data["baseline"]["grade"] is not None
         assert "normalized_score" in data["baseline"]["grade"]
         assert data["baseline"]["grade"].get("quality_per_input_token") is not None
+
+    def test_compare_uses_baseline_provider_for_prompt(self, indexed_file, monkeypatch):
+        from tests.test_report_grader import SAMPLE_REPORT
+
+        monkeypatch.setenv("LOG_ANALYZER_PROMPT_LAB", "1")
+        db, file_id, _ = indexed_file
+        from backend.database import LLMConfig
+        from backend.llm import endpoints as llm_endpoints
+        from backend.llm.endpoints import CompareRunResult
+        from backend.llm.report_generator import ReportGenerator
+        from fastapi import FastAPI
+
+        cfg = db.query(LLMConfig).first()
+        if cfg is None:
+            cfg = LLMConfig(provider="lmstudio")
+            db.add(cfg)
+        else:
+            cfg.provider = "lmstudio"
+        db.commit()
+
+        captured = {}
+
+        original_build = ReportGenerator.build_report_messages
+
+        def _spy_build(self, fid, **kwargs):
+            captured.update(kwargs)
+            return original_build(self, fid, **kwargs)
+
+        def _fake_compare(*_args, **_kwargs):
+            return CompareRunResult(
+                provider="gemini",
+                model="test-model",
+                temperature=0.3,
+                llm_duration_seconds=1.0,
+                prompt_tokens=3000,
+                completion_tokens=800,
+                cost_usd=0.01,
+                content=SAMPLE_REPORT,
+                content_excerpt=SAMPLE_REPORT[:500],
+            )
+
+        monkeypatch.setattr(ReportGenerator, "build_report_messages", _spy_build)
+        monkeypatch.setattr(llm_endpoints, "_run_single_compare", _fake_compare)
+
+        client = _make_llm_client(FastAPI(), db)
+        resp = client.post(
+            f"/api/llm/report/{file_id}/compare",
+            json={
+                "baseline": {"provider": "gemini", "temperature": 0.3},
+                "variants": [],
+                "quick": False,
+            },
+        )
+        assert resp.status_code == 200
+        assert captured.get("prompt_provider") == "gemini"
+        opts = resp.json().get("compare_options") or {}
+        assert opts.get("prompt_provider") == "gemini"
+        assert opts.get("prompt_compact") is False

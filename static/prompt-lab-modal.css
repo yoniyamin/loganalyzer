@@ -319,7 +319,7 @@
 .pl-config-row {
     display: grid;
     gap: 10px;
-    align-items: end;
+    align-items: start;
     overflow: hidden;
 }
 
@@ -337,6 +337,18 @@
 
 .pl-config-field {
     min-width: 0;
+}
+
+.pl-model-field {
+    min-width: 220px;
+}
+
+.pl-model-hint {
+    margin: 4px 0 0;
+    min-height: 2.6em;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--text-muted, #585b70);
 }
 
 .pl-config-field label {
@@ -362,7 +374,8 @@
 }
 
 .pl-config-field.pl-config-actions {
-    align-self: end;
+    align-self: start;
+    padding-top: 21px;
 }
 
 .pl-baseline-block {

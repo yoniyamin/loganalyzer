@@ -130,6 +130,12 @@ class GeminiClient:
     def set_api_key(self, api_key: str):
         """Set the API key."""
         self.api_key = api_key
+
+    def _auth_headers(self) -> Dict[str, str]:
+        """Auth headers for Gemini REST calls (never put the key in the URL)."""
+        if not self.api_key:
+            return {}
+        return {"x-goog-api-key": self.api_key}
     
     def get_models(self) -> List[GeminiModelInfo]:
         """Get list of available Gemini models."""
@@ -174,9 +180,9 @@ class GeminiClient:
         
         try:
             # Try to list models as a simple test
-            url = f"{self.base_url}/models?key={self.api_key}"
+            url = f"{self.base_url}/models"
             with httpx.Client(timeout=10.0) as client:
-                response = client.get(url)
+                response = client.get(url, headers=self._auth_headers())
                 return response.status_code == 200
         except Exception as e:
             logger.error(f"Gemini connection test failed: {e}")
@@ -262,8 +268,8 @@ class GeminiClient:
         if web_search:
             payload["tools"] = [{"googleSearch": {}}]
         
-        # Make API request
-        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
+        # Make API request (key in header — not query string — so httpx logs stay safe)
+        url = f"{self.base_url}/models/{model}:generateContent"
         
         logger.info(f"Calling Gemini API: model={model}, max_tokens={max_tokens}")
 
@@ -281,7 +287,7 @@ class GeminiClient:
         try:
             if cancel_file_id is not None:
                 check_cancelled(cancel_file_id, kind=cancel_kind)
-            response = client.post(url, json=payload)
+            response = client.post(url, json=payload, headers=self._auth_headers())
         except Exception as e:
             maybe_raise_cancelled(cancel_file_id, e, kind=cancel_kind)
             raise

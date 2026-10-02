@@ -432,11 +432,17 @@ def _ensure_client_configured(db: Session):
 
 def _ensure_gemini_configured(db: Session):
     """Ensure the Gemini client has the API key loaded."""
-    client = get_gemini_client()
-    if not client.is_configured:
-        api_key = _load_api_key_from_db(db, PROVIDER_GEMINI)
-        if api_key:
-            set_gemini_api_key(api_key)
+    from backend.llm.client_config import ensure_gemini_configured
+
+    ensure_gemini_configured(db)
+
+
+def _ensure_all_llm_clients_configured(db: Session):
+    """Sync Gemini, OpenRouter, local URLs, and Tavily from DB."""
+    from backend.llm.client_config import sync_llm_clients_from_db
+
+    sync_llm_clients_from_db(db)
+    _ensure_client_configured(db)
 
 
 # ============================================================
@@ -1035,9 +1041,7 @@ def generate_report(
     db: Session = Depends(get_db)
 ):
     """Generate an LLM analysis report for a log file."""
-    # Ensure both clients are configured
-    _ensure_client_configured(db)
-    _ensure_gemini_configured(db)
+    _ensure_all_llm_clients_configured(db)
     
     # Check file exists
     file = db.query(LogFile).filter(LogFile.id == file_id).first()
@@ -1819,6 +1823,8 @@ class ReportPromptPreviewRequest(BaseModel):
     fetch_external: bool = False
     payload_format: Optional[str] = "markdown"
     include_graph: bool = True
+    prompt_provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 class ReportPromptPreviewResponse(BaseModel):
@@ -1851,18 +1857,27 @@ def report_prompt_preview(
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
 
+    _ensure_all_llm_clients_configured(db)
+
     try:
         generator = ReportGenerator(db)
+        prompt_provider = (
+            request.prompt_provider.strip().lower()
+            if request.prompt_provider
+            else None
+        )
         bundle = generator.build_report_messages(
             file_id,
             quick=request.quick,
             web_search=request.web_search,
             focus_mode=request.focus_mode,
+            model=request.model,
             include_chart=request.include_chart,
             fetch_external=request.fetch_external,
             cancel_check=False,
             payload_format=request.payload_format,
             include_graph=request.include_graph,
+            prompt_provider=prompt_provider,
         )
     except Exception as e:
         logger.error(f"Prompt preview failed: {e}\n{traceback.format_exc()}")
@@ -2060,6 +2075,10 @@ def report_compare(
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
 
+    _ensure_all_llm_clients_configured(db)
+
+    baseline_provider = request.baseline.provider.strip().lower()
+
     try:
         generator = ReportGenerator(db)
         bundle = generator.build_report_messages(
@@ -2067,11 +2086,13 @@ def report_compare(
             quick=request.quick,
             web_search=request.web_search,
             focus_mode=request.focus_mode,
+            model=request.baseline.model,
             include_chart=request.include_chart,
             fetch_external=request.fetch_external,
             cancel_check=False,
             payload_format=request.payload_format,
             include_graph=request.include_graph,
+            prompt_provider=baseline_provider,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prompt build failed: {e}")
@@ -2161,6 +2182,8 @@ def report_compare(
             "fetch_external": request.fetch_external,
             "payload_format": request.payload_format,
             "include_graph": request.include_graph,
+            "prompt_provider": bundle.provider,
+            "prompt_compact": bundle.compact,
         },
         sample_path=sample_path,
     )
